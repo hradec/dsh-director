@@ -16,11 +16,20 @@ export const inject=['tools','jobs','skills','fs','connection','webServer','atta
 export const Config=z.object({
   comfyBaseUrl:z.string().default('http://127.0.0.1:8188'),
   llamaSwapBaseUrl:z.string().default('http://127.0.0.1:11435'),
+  llmHandoffMode:z.union(['llama-swap','comfy-only']).default('llama-swap').volatile(),
   mediaRoot:z.string().default(join(process.env.DSH_HOME||join(homedir(),'.dsh'),'director-media')),
   skillCacheRoot:z.string().default(join(process.env.DSH_HOME||join(homedir(),'.dsh'),'director-skills'))
 });
 export async function apply(ctx,config={}){
-  for(const key of ['comfyBaseUrl','llamaSwapBaseUrl'])if(config[key]){
+  ctx.inject(['settings'],scoped=>{
+    scoped.effect(()=>scoped.settings.configure({auto:false},ctx.fiber),'director custom settings section');
+  });
+  const currentHandoffMode=()=>{
+    const value=config.llmHandoffMode;
+    return value&&typeof value.get==='function'?value.get():value??'llama-swap';
+  };
+  const llmHandoffMode=currentHandoffMode();
+  for(const key of ['comfyBaseUrl',...(llmHandoffMode==='llama-swap'?['llamaSwapBaseUrl']:[])])if(config[key]){
     const url=new URL(config[key]);
     if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.pathname!=='/'||url.search||url.hash)throw new Error(`${key} must be an HTTP(S) origin, not a path or credentials.`);
   }
@@ -32,8 +41,9 @@ export async function apply(ctx,config={}){
   ctx.inject(['tools','userQuestions'],scoped=>{
     scoped.effect(()=>scoped.tools.register(createH3GuideTool({guideStore,userQuestions:scoped.userQuestions})),'director optional H3 guide setup');
   });
-  const gpuStatus=createGpuStatus(config);
-  registerSubmit(ctx,{...config,onGpuState:value=>gpuStatus.update(value)});
+  const handoffConfig={...config,llmHandoffMode:currentHandoffMode};
+  const gpuStatus=createGpuStatus(handoffConfig);
+  registerSubmit(ctx,{...handoffConfig,onGpuState:value=>gpuStatus.update(value)});
   ctx.effect(()=>registerGpuStatusRoute(ctx,gpuStatus),'director GPU status');
   ctx.effect(()=>registerGpuReleaseRoute(ctx,gpuStatus),'director GPU release');
   const store=createMediaStore({root:config.mediaRoot||join(process.env.DSH_HOME||join(homedir(),'.dsh'),'director-media')});

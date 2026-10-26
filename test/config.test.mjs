@@ -1,7 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createSubmitComfyVideo} from '../src/submit-comfy-video.mjs';
+import {Config} from '../src/index.mjs';
 import {createServer} from 'node:http';
+
+test('handoff mode is a live setting with the original shared-GPU default',()=>{
+  const defaultConfig=Config({}),externalConfig=Config({llmHandoffMode:'comfy-only'});
+  assert.equal(defaultConfig.llmHandoffMode.get(),'llama-swap');
+  assert.equal(externalConfig.llmHandoffMode.get(),'comfy-only');
+});
 
 test('configured Comfy and swap origins own every network request',async()=>{
   const urls=[];
@@ -11,6 +18,15 @@ test('configured Comfy and swap origins own every network request',async()=>{
   }});
   await submit({workflow:{1:{class_type:'Test',inputs:{}}}},{concludeTurn(){}});
   assert.deepEqual(urls,['http://comfy.example:8000/prompt','http://swap.example:9000/api/models/unload','http://swap.example:9000/running']);
+});
+test('comfy-only handoff never resolves or contacts a llama-swap origin',async()=>{
+  const urls=[];let concluded=0;
+  const submit=createSubmitComfyVideo({comfyBaseUrl:'http://comfy.example:8000',llamaSwapBaseUrl:'not a URL',llmHandoffMode:'comfy-only',startJob:()=> 'j',fetchImpl:async u=>{
+    urls.push(String(u));return Response.json({prompt_id:'p'});
+  }});
+  const result=await submit({workflow:{1:{class_type:'Test',inputs:{}}}},{concludeTurn(){concluded++;}});
+  assert.deepEqual(urls,['http://comfy.example:8000/prompt']);
+  assert.equal(result.llm_handoff_mode,'comfy-only');assert.equal(result.llm_unload_skipped,true);assert.equal('llm_unloaded' in result,false);assert.equal(concluded,1);
 });
 test('service redirects cannot forward workflow bytes to another origin',async t=>{
   let forwarded=0;

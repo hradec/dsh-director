@@ -31,6 +31,14 @@ test('two mounted views share protection and either disposal order restores nati
   }
 });
 
+test('external LLM activity never blocks native send but a lost connection still does',async()=>{
+  const protect=await guard();let calls=0;const shell={submit(){calls++;}};
+  const dispose=protect(shell,{check:async()=>({phase:'generating',blocked:true,llm:'external',connection_blocked:false}),onBlocked(){}});
+  shell.submit();await flush();assert.equal(calls,1);dispose();
+  const remove=protect(shell,{check:async()=>({phase:'generating',blocked:true,llm:'external',connection_blocked:true}),onBlocked(){}});
+  shell.submit();await flush();assert.equal(calls,1);remove();
+});
+
 test('an unavailable optional GPU service does not block a send explicitly cleared by the status owner',async()=>{
   const protect=await guard();let calls=0;const shell={submit(){calls++;}};
   const dispose=protect(shell,{check:async()=>({phase:'unknown',blocked:false}),onBlocked(){}});

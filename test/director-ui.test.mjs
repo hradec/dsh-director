@@ -29,13 +29,54 @@ const result=(name,text,error=false,subCalls=[])=>({kind:'tool-result',seq:2,tim
 const connected={state:{getSnapshot:()=> 'connected',subscribe:()=>()=>{}}};
 
 test('Director extends only its own tool views and resolves the native session input facade',async()=>{
-  const apply=await component('src/client/index.jsx','apply'),registrations=[];
+  const apply=await component('src/client/index.jsx','apply'),registrations=[],settingsForm={set(){}};
   const shell={submit(){}},scope={get:()=>conversation},conversation={input:{for:value=>{assert.equal(value,scope);return shell;}},send:async()=>{}};
-  apply({connection:connected,conversation,sessions:{scope:id=>{assert.equal(id,'s');return scope;}},effect(){},slots:{inject(_name,fn){fn();},register(def,Component){registrations.push({def,Component});return()=>{};}}});
+  const sessionList={getSnapshot:()=>({byId:{s:{projectionValues:{agentPreset:'director'}}}}),subscribe:()=>()=>{}};
+  const configForms={get:id=>{assert.equal(id,'dsh-director');return settingsForm;},whileServed:(ids,register)=>{assert.equal(ids.join(','),'dsh-director');return register(new Set(ids));}};
+  apply({connection:connected,conversation,sessions:{list:sessionList,scope:id=>{assert.equal(id,'s');return scope;}},inject:(names,run)=>{assert.equal(names.join(','),'configForms');run({configForms,effect:(fn,label)=>{if(label==='director Settings section')fn();}});},effect(){},slots:{inject(_name,fn){fn();},register(def,Component){registrations.push({def,Component});return()=>{};}}});
   assert.equal(registrations.some(({def})=>def.name==='conversation.chat.node'),false,'native tool-call tree must retain file diffs, search, image and question interaction');
   assert.deepEqual(registrations.filter(({def})=>def.name==='tool.call.toolview').map(({def})=>def.key).sort(),['director_edit_review','director_show_media']);
+  const settings=registrations.find(({def})=>def.name==='settings.section'&&def.id==='director');
+  assert.ok(settings);assert.equal(settings.def.label(),'Director');assert.equal(settings.def.inject().form,settingsForm);
   const dock=registrations.find(({def})=>def.name==='conversation.input.dock');
   assert.equal(dock.def.inject('s').shell,shell);
+  assert.equal(dock.def.inject('s').sessionId,'s');
+  assert.equal(dock.def.inject('s').sessionList,sessionList);
+});
+
+test('Director Settings switch maps disabled and enabled to comfy-only and llama-swap',async t=>{
+  const Component=await component('src/client/GpuUsageSettings.jsx','GpuUsageSettings');
+  let current={status:'ready',value:{llmHandoffMode:'comfy-only'},writable:true};const listeners=new Set(),writes=[];
+  const form={getSnapshot:()=>current,subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},async set(field,value){assert.equal(field,'llmHandoffMode');writes.push(value);current={...current,value:{...current.value,[field]:value}};for(const listener of listeners)listener();return true;}};
+  await render(t,Component,{form});
+  const toggle=document.querySelector('[role="switch"]');assert.ok(toggle);assert.equal(toggle.checked,false);
+  assert.match(document.body.textContent,/Manage Local LLM\/ComfyUI GPU Usage/);assert.match(document.body.textContent,/Disabled skips local-LLM handoff/);
+  await act(async()=>{toggle.click();await new Promise(resolve=>setImmediate(resolve));});
+  assert.deepEqual(writes,['llama-swap']);assert.equal(toggle.checked,true);assert.match(document.body.textContent,/Enabled/);
+  await act(async()=>{toggle.click();await new Promise(resolve=>setImmediate(resolve));});
+  assert.deepEqual(writes,['llama-swap','comfy-only']);assert.equal(toggle.checked,false);
+  await act(()=>{current={...current,writable:false};for(const listener of listeners)listener();});
+  assert.equal(toggle.disabled,true);assert.match(document.body.textContent,/read-only/);
+});
+
+test('GPU panel and Send protection mount strictly for the Director preset',async t=>{
+  const Component=await component('src/client/GpuStatus.jsx','PresetAwareGpuStatus');
+  let preset='standard',status={phase:'generating',blocked:true,llm:'unloaded'},reads=0,sent=0;
+  const listeners=new Set(),sessionList={getSnapshot:()=>({byId:{s:{projectionValues:{agentPreset:preset}}}}),subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener);}};
+  const shell={submit(){sent++;}};
+  await render(t,Component,{sessionId:'s',sessionList,shell,connection:connected,readStatus:async()=>{reads++;return status;},pollMs:10});
+  await act(()=>new Promise(resolve=>setTimeout(resolve,20)));
+  assert.equal(document.querySelector('[role="status"]'),null,'non-Director active VRAM blocks must not render a panel');
+  assert.equal(reads,0,'non-Director Sessions must not poll GPU status');
+  await act(()=>shell.submit());assert.equal(sent,1,'non-Director Send must remain native and unblocked');
+  await act(async()=>{preset='director';for(const listener of listeners)listener();await new Promise(resolve=>setTimeout(resolve,20));});
+  assert.match(document.querySelector('[role="status"]').textContent,/LLM unloaded.*ComfyUI generating/);
+  await act(()=>shell.submit());assert.equal(sent,1,'Director active VRAM blocks still protect Send');
+  status={phase:'ready',blocked:false,llm:'unloaded'};await act(()=>new Promise(resolve=>setTimeout(resolve,20)));
+  assert.match(document.querySelector('[role="status"]').textContent,/GPU ready/);
+  await act(async()=>{preset='standard';for(const listener of listeners)listener();await Promise.resolve();});
+  assert.equal(document.querySelector('[role="status"]'),null);
+  await act(()=>shell.submit());assert.equal(sent,2,'switching away from Director restores native Send');
 });
 
 test('optional GPU status outage leaves ordinary coding send available',async t=>{
@@ -218,6 +259,21 @@ test('GPU status keeps editable draft, disables only Send and restores sending a
   assert.match(document.querySelector('[role="status"]').textContent,/GPU ready.*send messages/);
   assert.equal(document.querySelector('[data-send]').getAttribute('aria-disabled'),null);
   await act(()=>document.querySelector('[data-send]').click());assert.equal(sent,1);
+});
+
+test('comfy-only GPU status never blocks native Send or offers manual recovery',async t=>{
+  const GpuStatus=await component('src/client/GpuStatus.jsx','GpuStatus');
+  let status={phase:'generating',blocked:true,llm:'external'},releaseCalls=0,sent=0;
+  const shell={submit(){sent++;}};
+  await render(t,GpuStatus,{shell,connection:connected,readStatus:async()=>status,releaseMemory:async()=>{releaseCalls++;},pollMs:10});
+  await act(()=>new Promise(r=>setTimeout(r,20)));assert.match(document.querySelector('[role="status"]').textContent,/External LLM.*ComfyUI generating/);
+  await act(()=>shell.submit());await act(()=>new Promise(r=>setTimeout(r,0)));assert.equal(sent,1);
+  status={phase:'releasing_vram',blocked:true,llm:'external'};await act(()=>new Promise(r=>setTimeout(r,20)));
+  assert.equal(document.querySelector('[data-action="release-comfy-vram"]'),null);
+  assert.doesNotMatch(document.querySelector('[role="status"]').textContent,/Release ComfyUI memory/);
+  assert.equal(releaseCalls,0);
+  status={phase:'ready',blocked:false,llm:'external'};await act(()=>new Promise(r=>setTimeout(r,20)));
+  await act(()=>shell.submit());await act(()=>new Promise(r=>setTimeout(r,0)));assert.equal(sent,2);
 });
 
 test('idle VRAM block offers manual recovery without sending or clearing the draft',async t=>{

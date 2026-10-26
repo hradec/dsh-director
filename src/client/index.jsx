@@ -1,5 +1,6 @@
 import {MediaCard} from './MediaCard.jsx';
-import {GpuStatus,readLiveStatus} from './GpuStatus.jsx';
+import {GpuUsageSettings} from './GpuUsageSettings.jsx';
+import {PresetAwareGpuStatus,readLiveStatus} from './GpuStatus.jsx';
 import {watchSessionWake} from './session-recovery.mjs';
 import css from './media.css';
 export const name='dsh-director-ui';
@@ -7,6 +8,12 @@ export const inject=['slots','conversation','connection','sessions'];
 export function apply(ctx){
   ctx.effect(()=>watchSessionWake(ctx.connection),'director foreground recovery');
   ctx.effect(()=>{const style=document.createElement('style');style.dataset.director='media';style.textContent=css;document.head.append(style);return ()=>style.remove();},'director media styles');
+  if(typeof ctx.inject==='function')ctx.inject(['configForms'],scoped=>{
+    scoped.effect(()=>scoped.configForms.whileServed(['dsh-director'],()=>{
+      const form=scoped.configForms.get('dsh-director');
+      return ctx.slots.inject('settings.section',()=>ctx.slots.register({name:'settings.section',id:'director',order:25,label:()=>'Director',inject:()=>({form})},GpuUsageSettings));
+    }),'director Settings section');
+  });
   const reviewInject=sessionId=>({sendConfirmation:async text=>{
     if(ctx.connection.state.getSnapshot()!=='connected')throw Error('Reconnect before sending confirmation.');
     const status=await readLiveStatus();
@@ -21,6 +28,6 @@ export function apply(ctx){
   // Director contributes only its own keyed media/review rows.
   ctx.slots.inject('conversation.input.dock',()=>ctx.slots.register({name:'conversation.input.dock',id:'director-gpu-status',order:-10,inject:sessionId=>{
     const scope=ctx.sessions?.scope(sessionId);
-    return {shell:scope?ctx.conversation.input.for(scope):ctx.conversation.input.shell?.(sessionId),connection:ctx.connection};
-  }},GpuStatus));
+    return {sessionId,sessionList:ctx.sessions?.list,shell:scope?ctx.conversation.input.for(scope):ctx.conversation.input.shell?.(sessionId),connection:ctx.connection};
+  }},PresetAwareGpuStatus));
 }

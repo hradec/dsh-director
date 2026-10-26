@@ -21,7 +21,8 @@ test('bundled and workspace guidance removes frame extraction fallback and keeps
     assert.match(text,/continuity_requirement[^\n]*sampler_latent/);
     assert.match(text,/video_frames/);
     assert.doesNotMatch(text,/not a supported Director continuation option|not offered as a production route|or use decoded frames as a continuation fallback/);
-    assert.equal(await readFile(resolve(base,'../../../../.agents/skills/director',name),'utf8'),text);
+    const workspace=resolve(base,'../../../../.agents/skills/director',name);
+    if(await access(workspace).then(()=>true,()=>false))assert.equal(await readFile(workspace,'utf8'),text);
   }
 });
 

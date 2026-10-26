@@ -1,8 +1,10 @@
 # Connections and changing ports
 
 This is the configuration guide referenced by the demo's installation chapter.
-The example assumes Harness, ComfyUI and llama-swap are already installed. The
-plugin does not start these services or change their listening ports.
+The shared-GPU example assumes Harness, ComfyUI and llama-swap are already
+installed. A remote-LLM setup can use `llmHandoffMode: comfy-only` without
+llama-swap. The plugin does not start these services or change their listening
+ports.
 
 ## Which setting do I change?
 
@@ -11,7 +13,8 @@ plugin does not start these services or change their listening ports.
 | Browser → Harness Web | `http://127.0.0.1:3080` | Harness launch flag `--port` |
 | Harness → model API | `http://127.0.0.1:11435/v1` | Harness **Settings → Models**, provider API address |
 | Director → ComfyUI | `http://127.0.0.1:8188` | Director plugin `config.comfyBaseUrl` |
-| Director → llama-swap control API | `http://127.0.0.1:11435` | Director plugin `config.llamaSwapBaseUrl` |
+| Director LLM handoff | `llama-swap` | Harness **Settings → Director → Manage Local LLM/ComfyUI GPU Usage** (or `config.llmHandoffMode`) |
+| Director → llama-swap control API | `http://127.0.0.1:11435` | Director plugin `config.llamaSwapBaseUrl` (ignored in `comfy-only` mode) |
 
 `3080` is an example Harness port, not a required default. `8188` and `11435`
 are this plugin's default service ports. The model API includes `/v1` for the
@@ -76,6 +79,30 @@ Changing the llama-swap port also requires changing the model provider's API
 address in **Settings → Models** to `http://127.0.0.1:11535/v1`. The plugin control
 URL remains `http://127.0.0.1:11535`, without `/v1`.
 
+## Select the GPU handoff mode
+
+Use Harness **Settings → Director → Manage Local LLM/ComfyUI GPU Usage** to switch
+modes live. **Enabled** uses the original `llama-swap` shared-GPU handoff; the
+Director unloads the local LLM and waits for verified ComfyUI VRAM release.
+**Disabled** selects `comfy-only`, which skips llama-swap and VRAM-release gating.
+Disable it only when the DSH language-model provider is remote, on another GPU, or
+otherwise guaranteed not to consume the GPU used by ComfyUI. A running generation
+keeps the mode it started with; the selection applies to new submissions.
+
+The default remains `llama-swap`. The equivalent profile override is:
+
+```yaml
+- id: dsh-director
+  config:
+    llmHandoffMode: comfy-only
+```
+
+`comfy-only` never resolves or contacts `llamaSwapBaseUrl`. Managed submission
+queues and monitors ComfyUI, concludes the active LLM turn, and settles as soon as
+terminal ComfyUI history is available; it does not pause native sends, call
+ComfyUI `/free`, show a VRAM release control, or wait for physical VRAM headroom.
+Do not use a fake llama-swap endpoint to bypass shared-GPU coordination.
+
 ## Configure model and image input
 
 In Harness **Settings → Models**, add or edit your model provider:
@@ -93,12 +120,11 @@ model into a vision model or configure the server's vision projector. Follow
 your backend's own vision setup instructions. llama-swap, Ollama and LM Studio
 do not share identical configuration or model IDs.
 
-Other compatible servers can provide the conversation model, but Director's
-managed unload/handoff currently calls llama-swap's control API. Pointing
-`llamaSwapBaseUrl` at an Ollama or LM Studio server does not add that API. The
-managed handoff therefore requires a separately reachable, applicable llama-swap
-service; general model-provider compatibility does not imply GPU coordination
-with every backend.
+Other compatible servers can provide the conversation model. In the default
+`llama-swap` mode, managed unload/handoff calls llama-swap's control API; pointing
+`llamaSwapBaseUrl` at an Ollama or LM Studio server does not add that API. Use
+`comfy-only` for an off-GPU provider instead. General model-provider compatibility
+does not itself prove that two runtimes can safely share one GPU.
 
 ## Another machine, WSL or a container
 
@@ -121,16 +147,16 @@ on Linux/macOS use `curl`.
 ```sh
 curl --fail http://127.0.0.1:8190/system_stats
 curl --fail http://127.0.0.1:11535/v1/models
-curl --fail http://127.0.0.1:11535/running
+curl --fail http://127.0.0.1:11535/running # llama-swap mode only
 ```
 
-The first checks ComfyUI, the second the example model API, and the third
-llama-swap's control endpoint. A server requiring credentials needs its own
-authenticated check. The plugin's current service-origin settings do not accept
-embedded credentials or arbitrary API paths.
+The first checks ComfyUI, the second the example model API, and the optional third
+checks llama-swap's control endpoint. A server requiring credentials needs its own
+authenticated check. The plugin's service-origin settings do not accept embedded
+credentials or arbitrary API paths.
 
 If chat works but Director cannot stage references or submit, check
-`comfyBaseUrl`. If chat works but unloading fails, check `llamaSwapBaseUrl` and
-the actual llama-swap service. If images upload but the model cannot see them,
+`comfyBaseUrl`. In `llama-swap` mode, if unloading fails, check
+`llamaSwapBaseUrl` and the actual llama-swap service. If images upload but the model cannot see them,
 check both Harness's **Image** input option and the server/model's vision support.
 No ComfyUI workflow, node or model weight is supplied by the plugin.

@@ -2,7 +2,6 @@ import {createHash,randomUUID} from 'node:crypto';
 import {mkdir,open,readFile,rename,unlink} from 'node:fs/promises';
 import {extname,join,resolve} from 'node:path';
 import {imageType} from './image-type.mjs';
-import {rejectLinkedSource} from './local-source.mjs';
 import {inspectedExternalImage} from './media-tool.mjs';
 
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -28,7 +27,6 @@ export async function localImage(path,{cwd,fs,session,signal,maxBytes,knownUploa
   if(fs.processPathFromHostPath?.(host)!==host)fail('filesystem is not mapped to this host; make the file available through the authorized Harness filesystem first.');
   if(!fs.contains(parent,target)&&!knownUpload&&!inspectedExternalImage(session,source_path))fail(`source is outside the workspace; first call read_image(${JSON.stringify({file_path:source_path})}) in this session.`);
   if(fs.processPathFromHostPath?.(source_path)!==source_path)fail('original source path is not mapped to this host.');
-  await rejectLinkedSource(source_path,signal);
   const handle=await open(host,'r');
   try{
     const before=await handle.stat();

@@ -107,7 +107,23 @@ test('signature mismatch, URLs, symlink escape, unmapped backend and cancellatio
   const c=new AbortController();c.abort();await assert.rejects(f.store.register({...f.input,signal:c.signal}));
 });
 
-test('internal workspace junctions cannot become gallery source files',async()=>{
+test('internal workspace junctions resolve to their canonical gallery source files',async()=>{
   const f=await fixture(),link=join(f.cwd,'alias');await symlink(f.cwd,link,'junction');
-  await assert.rejects(f.store.register({...f.input,path:join(link,'a.png')}),/link|junction/i);
+  const item=await f.store.register({...f.input,path:join(link,'a.png')});
+  assert.equal(item.source,f.path);assert.equal(item.sha256,(await f.store.lookup(item.id,'session-test')).sha256);
+  const opened=await f.store.openOriginal(item.id,'session-test');assert.equal(opened.source,f.path);await opened.handle.close();
+});
+
+test('gallery snapshots open through a configured symlinked media root',async()=>{
+  const f=await fixture(),actual=join(f.root,'media'),alias=join(f.root,'media-alias');
+  await mkdir(actual);await symlink(actual,alias,'junction');
+  const {createMediaStore}=await import('../src/media-store.mjs'),store=createMediaStore({root:alias});
+  const item=await store.register(f.input),opened=await store.openForPlayback(item.id,'session-test');
+  try{assert.deepEqual(await opened.handle.readFile(),png);}finally{await opened.handle.close();}
+});
+
+test('gallery playback refuses a snapshot replaced by a symlink',async()=>{
+  const f=await fixture(),item=await f.store.register(f.input),snapshot=join(f.root,'media',item.id+'.bin');
+  await unlink(snapshot);await symlink(f.path,snapshot,'file');
+  await assert.rejects(f.store.openForPlayback(item.id,'session-test'),/stored media changed/i);
 });

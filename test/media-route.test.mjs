@@ -33,7 +33,7 @@ test('real HTTP media delivery supports GET HEAD seeking and refuses requests be
 test('native connection enforces Host Origin and enabled cookie auth before media lookup',async()=>{
   const {HostConnectionService}=harnessRequire('@deepseek-ai/dsh-client-connection');
   const {Context}=harnessRequire('@deepseek-ai/cordis');
-  const connection=new HostConnectionService(new Context(),['example.test:3080'],{isAuthenticated:req=>req.headers.cookie==='session=fixture'});
+  const connection=new HostConnectionService(new Context(),['example.test:3080'],{isAuthenticated:req=>req.headers.cookie==='session=fixture',authenticateApi:()=>undefined});
   const good={headers:{host:'example.test:3080',origin:'http://example.test:3080',cookie:'session=fixture'}};
   assert.equal(connection.requestRejection(good),undefined);
   assert.equal(connection.requestRejection({headers:{...good.headers,cookie:undefined}}),401);

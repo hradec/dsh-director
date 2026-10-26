@@ -1,8 +1,8 @@
 import {randomBytes,createHash} from 'node:crypto';
-import {mkdir,open,readFile,rename,realpath,unlink} from 'node:fs/promises';
+import {constants} from 'node:fs';
+import {lstat,mkdir,open,readFile,rename,realpath,unlink} from 'node:fs/promises';
 import {basename,extname,join,resolve} from 'node:path';
 import {imageType} from './image-type.mjs';
-import {rejectLinkedSource} from './local-source.mjs';
 
 export class MediaError extends Error {
   constructor(message,status=400){super(message);this.status=status;}
@@ -64,7 +64,6 @@ export function createMediaStore({root,maxBytes=512*1024*1024}){
     if(!fs.contains(parent,target)&&!externalEvidence)throw new MediaError('Source is outside the session workspace; inspect the actual uploaded image first.',403);
     const supplied=resolve(cwd,path);
     if(fs.processPathFromHostPath?.(supplied)!==supplied)throw new MediaError('Original source path is not mapped to this host.');
-    await rejectLinkedSource(supplied,signal);
     const canonical=await realpath(hostPath), id=randomBytes(32).toString('base64url');
     await mkdir(root,{recursive:true,mode:0o700});
     const temporary=join(root,id+'.part'), snapshot=join(root,id+'.bin');
@@ -92,8 +91,9 @@ export function createMediaStore({root,maxBytes=512*1024*1024}){
     let handle;
     try{
       const snapshot=join(root,record.id+'.bin');
-      await rejectLinkedSource(snapshot,signal);
-      handle=await open(snapshot,'r');
+      const entry=await lstat(snapshot);
+      if(!entry.isFile())throw new MediaError('Stored media changed.',409);
+      handle=await open(snapshot,constants.O_RDONLY|(constants.O_NOFOLLOW??0));
       const before=await handle.stat({bigint:true}),stamp=fileStamp(before);
       if(!before.isFile()||before.size!==BigInt(record.size))throw new MediaError('Stored media changed.',409);
       const verification=record.sha256+':'+stamp;

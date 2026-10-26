@@ -2,6 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {execFileSync,spawnSync} from 'node:child_process';import {mkdtemp,readFile,readdir} from 'node:fs/promises';import {tmpdir} from 'node:os';import {join} from 'node:path';import {createRequire} from 'node:module';
 test('release archive excludes personal media and works without workspace skills',async()=>{
   const metadata=JSON.parse(await readFile(join(process.cwd(),'package.json'),'utf8'));
+  assert.ok(metadata.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-settings'),'the client bundle must load the shared Settings form service');
   const tarball=join(process.cwd(),`dsh-director-${metadata.version}.tgz`);
   const files=execFileSync('tar',['-tzf',tarball],{encoding:'utf8'}).trim().split(/\r?\n/);
   for(const file of ['lib/index.mjs','lib/client.js','skills/director/SKILL.md','skills/director/references/continuity.md','skills/h3-prompt-writing/SKILL.md','skills/h3-prompt-writing/references/UPSTREAM.md','LICENSE','NOTICE','THIRD_PARTY_NOTICES.md'])assert.ok(files.includes('package/'+file));
@@ -16,7 +17,13 @@ test('release archive excludes personal media and works without workspace skills
   const provider=await createBundledProvider();const result=await provider.list();assert.equal(result.candidates.length,2);
   const pkg=JSON.parse(await readFile(join(root,'package/package.json'),'utf8'));
   assert.equal(pkg.dsh.bundle.patch,'./cordis.patch.yml');
-  assert.match(await readFile(join(root,'package/cordis.patch.yml'),'utf8'),/name: dsh-director/);
+  const bundle=await readFile(join(root,'package/cordis.patch.yml'),'utf8');
+  assert.match(bundle,/name: dsh-director/);assert.equal([...bundle.matchAll(/^\s+name: dsh-director$/gm)].length,1);
+  const presetStart=bundle.indexOf('    - id: preset-director');assert.notEqual(presetStart,-1);const preset=bundle.slice(presetStart);
+  assert.match(preset,/name: '@deepseek-ai\/dsh-agent-preset'/);assert.match(preset,/^\s+id: director$/m);assert.match(preset,/^\s+name: Director$/m);
+  for(const id of ['persona','agent-instructions','time-context','tool-bash','tool-pwsh','tool-fs','tool-fs-search','tool-jobs','skill-filesystem','tool-skill','tool-ask-user','compaction','present'])assert.match(preset,new RegExp(`^\\s+- id: ${id}$`,'m'));
+  assert.match(preset,/- id: tool-bash[\s\S]*?disabled: !!js process\.platform === 'win32'/);assert.match(preset,/- id: tool-pwsh[\s\S]*?disabled: !!js process\.platform !== 'win32'/);
+  assert.doesNotMatch(preset,/^\s+name: dsh-director$/m);
   // A shared archive must advertise a runnable helper in its own installation,
   // not a source-checkout path or a dependency supplied only by this machine.
   const definitions=[];

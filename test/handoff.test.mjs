@@ -9,10 +9,11 @@ function stats(free = 23 * GiB, reserved = 0) {
   return {devices: [{name: 'cuda:0', type: 'cuda', index: 0, vram_total: 24 * GiB,
     vram_free: free, torch_vram_total: reserved, torch_vram_free: 0}]}
 }
-async function run({history, queue = () => idle, memory = () => stats(), freeStatus = 200} = {}) {
+async function run({history, queue = () => idle, memory = () => stats(), freeStatus = 200, llmHandoffMode = 'llama-swap'} = {}) {
   let hooks, clock = 0
   const calls = []
   const submit = createSubmitComfyVideo({
+    llmHandoffMode,
     startJob(spec) {hooks = spec.run(); return 'j'},
     now: () => clock, releaseTimeoutMs: 5, historyPollIntervalMs: 1, handoffRetryIntervalMs: 1,
     sleep: async ms => {clock += ms},
@@ -54,6 +55,38 @@ test('completion waits for idle queue and actual VRAM headroom, not just /free 2
   assert.equal(calls.filter(c => c.path === '/prompt').length, 1)
   assert.equal(calls.some(c => c.path === '/interrupt'), false)
 })
+
+test('comfy-only completion skips memory release verification and settles at terminal history', async () => {
+  const {outcome, calls} = await run({llmHandoffMode: 'comfy-only'})
+  assert.equal(outcome.status, 'completed')
+  const result = JSON.parse(outcome.output)
+  assert.deepEqual(result.comfy_release, {skipped: true, reason: 'external_llm'})
+  assert.equal(calls.some(call => call.path === '/free'), false)
+  assert.equal(calls.some(call => call.path === '/system_stats'), false)
+})
+
+test('a live mode change affects new submissions but not an active monitor',async()=>{
+  let mode='comfy-only',promptCount=0,hooks,releaseFirstHistory;
+  const firstHistory=new Promise(resolve=>{releaseFirstHistory=resolve}),calls=[];
+  const submit=createSubmitComfyVideo({llmHandoffMode:()=>mode,startJob(spec){hooks=spec.run();return `job-${promptCount}`;},sleep:async()=>{},fetchImpl:async url=>{
+    const path=new URL(url).pathname;calls.push(path);
+    if(path==='/prompt')return Response.json({prompt_id:`p${++promptCount}`});
+    if(path==='/api/models/unload'||path==='/running'||path==='/free')return Response.json({});
+    if(path==='/queue')return Response.json(idle);
+    if(path==='/system_stats')return Response.json(stats());
+    if(path.startsWith('/history/')){const id=path.split('/').at(-1);if(id==='p1')await firstHistory;return Response.json({[id]:{status:{completed:true},outputs:{}}});}
+    throw Error(`Unexpected ${path}`);
+  }});
+  const first=await submit({workflow:graph},{agent:{id:'s'},concludeTurn(){}});
+  assert.equal(first.llm_handoff_mode,'comfy-only');
+  mode='llama-swap';releaseFirstHistory();
+  const firstOutcome=await hooks.done;assert.deepEqual(JSON.parse(firstOutcome.output).comfy_release,{skipped:true,reason:'external_llm'});
+  assert.equal(calls.includes('/api/models/unload'),false);assert.equal(calls.includes('/free'),false);
+  const second=await submit({workflow:graph},{agent:{id:'s'},concludeTurn(){}});
+  assert.equal(second.llm_handoff_mode,'llama-swap');assert.equal(second.llm_unloaded,true);
+  const secondOutcome=await hooks.done;assert.equal(JSON.parse(secondOutcome.output).comfy_release.verified,true);
+  assert.equal(calls.includes('/api/models/unload'),true);assert.equal(calls.includes('/free'),true);
+});
 
 test('a failed Comfy execution also releases memory before settling', async () => {
   const {outcome, calls} = await run({history: {

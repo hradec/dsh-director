@@ -12,6 +12,12 @@ async function releaseLiveMemory(){
   if(!response.ok)throw Error(result?.error||'ComfyUI memory release failed');
   return result;
 }
+export function PresetAwareGpuStatus({sessionId,sessionList,...props}){
+  const subscribe=useCallback(listener=>sessionList?.subscribe(listener)??(()=>{}),[sessionList]);
+  const snapshot=useCallback(()=>sessionList?.getSnapshot()?.byId?.[sessionId]?.projectionValues?.agentPreset,[sessionList,sessionId]);
+  const preset=useSyncExternalStore(subscribe,snapshot,snapshot);
+  return preset==='director'?<GpuStatus {...props}/>:null;
+}
 export function GpuStatus({shell,connection,readStatus=readLiveStatus,releaseMemory=releaseLiveMemory,pollMs=2000}){
   const subscribe=useCallback(listener=>connection.state.subscribe(listener),[connection]);
   const snapshot=useCallback(()=>connection.state.getSnapshot(),[connection]);
@@ -20,14 +26,15 @@ export function GpuStatus({shell,connection,readStatus=readLiveStatus,releaseMem
   const [recovering,setRecovering]=useState(false),[recoveryError,setRecoveryError]=useState('');
   const check=useCallback(async()=>{
     const startedConnected=connection.state.getSnapshot()==='connected';
-    const unavailable=()=>({...unknown,blocked:lastStatus.current.blocked});
+    const unavailable=()=>({...unknown,blocked:lastStatus.current.blocked,llm:lastStatus.current.llm});
     let next;try{next=await readStatus();if(!['ready','generating','releasing_vram','unknown'].includes(next?.phase)||typeof next.blocked!=='boolean')next=unavailable();}catch{next=unavailable();}
     lastStatus.current=next;
     if(alive.current)setStatus(next);
     const connection_blocked=!startedConnected||connection.state.getSnapshot()!=='connected';
     return {...next,blocked:next.blocked||connection_blocked,connection_blocked};
   },[readStatus,connection]);
-  const blocked=status.blocked||connectionState!=='connected';
+  const handoffBlocked=status.llm!=='external'&&status.blocked;
+  const blocked=handoffBlocked||connectionState!=='connected';
   const canRecover=status.phase==='releasing_vram'&&status.llm==='unloaded'&&connectionState==='connected';
   const recover=useCallback(async()=>{
     setRecovering(true);setRecoveryError('');
@@ -57,10 +64,10 @@ export function GpuStatus({shell,connection,readStatus=readLiveStatus,releaseMem
     if(blocked)observer.observe(seat,{subtree:true,childList:true});
     return ()=>{observer.disconnect();for(const [button,original] of marked){delete button.dataset.directorSendPaused;if(original===null)button.removeAttribute('aria-disabled');else button.setAttribute('aria-disabled',original);}};
   },[blocked]);
-  const title=status.phase==='generating'?`${status.llm==='unloaded'?'LLM unloaded':status.llm==='loaded'?'LLM loaded':'Checking LLM'} · ComfyUI generating`:
-    status.phase==='releasing_vram'?'Generation finished · Releasing VRAM':status.phase==='ready'?`GPU ready${!blocked?' · You can send messages':''}`:status.blocked?'Checking GPU handoff · Sending paused':'GPU status unavailable · Chat available';
+  const title=status.phase==='generating'?`${status.llm==='external'?'External LLM':status.llm==='unloaded'?'LLM unloaded':status.llm==='loaded'?'LLM loaded':'Checking LLM'} · ComfyUI generating`:
+    status.phase==='releasing_vram'?'Generation finished · Releasing VRAM':status.phase==='ready'?`GPU ready${!blocked?' · You can send messages':''}`:handoffBlocked?'Checking GPU handoff · Sending paused':'GPU status unavailable · Chat available';
   const connectionTitle=connectionState==='connected'?'Connected':connectionState==='connecting'?'Reconnecting · Restoring live updates':connectionState==='disconnected'?'Disconnected · Messages may be out of date':'Checking connection · Sending paused';
   return <div ref={anchor} className={`dsh-director-gpu dsh-director-gpu-${status.phase}`} role="status" aria-live="polite" data-gpu-phase={status.phase}>
-    <span className="dsh-director-gpu-light" aria-hidden="true"/><div><span>{title}</span><small data-connection-state={connectionState??'unknown'}>{connectionTitle}</small>{connectionState!=='connected'?<small>You can keep editing. Sending resumes when connected.</small>:status.blocked&&<small>You can write a draft. Sending resumes after verified GPU release.</small>}{status.warning&&<small className="dsh-director-gpu-warning">{status.warning}</small>}{canRecover&&<button type="button" data-action="release-comfy-vram" disabled={recovering} onClick={recover}>{recovering?'Releasing…':'Release ComfyUI memory'}</button>}{recoveryError&&<small className="dsh-director-gpu-warning">{recoveryError}</small>}</div>
+    <span className="dsh-director-gpu-light" aria-hidden="true"/><div><span>{title}</span><small data-connection-state={connectionState??'unknown'}>{connectionTitle}</small>{connectionState!=='connected'?<small>You can keep editing. Sending resumes when connected.</small>:handoffBlocked&&<small>You can write a draft. Sending resumes after verified GPU release.</small>}{status.warning&&<small className="dsh-director-gpu-warning">{status.warning}</small>}{canRecover&&<button type="button" data-action="release-comfy-vram" disabled={recovering} onClick={recover}>{recovering?'Releasing…':'Release ComfyUI memory'}</button>}{recoveryError&&<small className="dsh-director-gpu-warning">{recoveryError}</small>}</div>
   </div>;
 }

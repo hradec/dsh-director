@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 
-const GiB=1024**3;
+const MiB=1024**2,GiB=1024**3;
 async function fixture(){
   const mod=await import('../src/gpu-status.mjs').catch(e=>{if(e.code==='ERR_MODULE_NOT_FOUND')return {};throw e;});
   assert.equal(typeof mod.createGpuStatus,'function','live GPU status must exist');
@@ -15,6 +15,39 @@ test('live queue blocks sending and reports actual unloaded LLM without model ca
   const s=await f.status.snapshot();assert.equal(s.blocked,true);assert.equal(s.phase,'generating');assert.equal(s.llm,'unloaded');
   assert.deepEqual(f.calls.sort(),['/queue','/running','/system_stats']);
 });
+test('comfy-only status skips VRAM release gating and llama-swap evidence',async()=>{
+  const {createGpuStatus}=await import('../src/gpu-status.mjs');
+  const remote={queue:{queue_running:[[0,'p']],queue_pending:[]},stats:{devices:[{type:'cuda',vram_total:24*GiB,vram_free:23*GiB,torch_vram_total:0,torch_vram_free:0}]}};const calls=[];
+  const status=createGpuStatus({llmHandoffMode:'comfy-only',llamaSwapBaseUrl:'not a URL',fetchImpl:async(url,init={})=>{
+    const path=new URL(url).pathname;calls.push({path,method:init.method??'GET'});
+    if(path==='/queue')return Response.json(remote.queue);
+    if(path==='/system_stats')return Response.json(remote.stats);
+    if(path==='/free'){remote.stats.devices[0].vram_free=23*GiB;remote.stats.devices[0].torch_vram_total=0;remote.stats.devices[0].torch_vram_free=0;return Response.json({});}
+    throw Error(`Unexpected ${path}`);
+  }});
+  let value=await status.snapshot();assert.equal(value.phase,'generating');assert.equal(value.blocked,true);assert.equal(value.llm,'external');
+  remote.queue.queue_running=[];value=await status.snapshot();assert.equal(value.phase,'ready');assert.equal(value.blocked,false);assert.equal(value.llm,'external');
+  remote.stats.devices[0].vram_free=17*GiB;remote.stats.devices[0].torch_vram_total=96*MiB;remote.stats.devices[0].torch_vram_free=80*MiB;
+  const releaseState=await status.snapshot();assert.equal(releaseState.phase,'ready');assert.equal(releaseState.blocked,false);assert.equal(releaseState.llm,'external');assert.equal((await status.recover()).phase,'ready');
+  assert.equal(calls.some(call=>call.path==='/running'),false);assert.equal(calls.some(call=>call.path==='/free'),false);
+});
+test('live mode changes apply to idle status while active prompts retain their selected handoff',async()=>{
+  const {createGpuStatus}=await import('../src/gpu-status.mjs');
+  let mode='llama-swap';const calls=[];
+  const status=createGpuStatus({llmHandoffMode:()=>mode,fetchImpl:async url=>{
+    const path=new URL(url).pathname;calls.push(path);
+    if(path==='/queue')return Response.json({queue_running:[],queue_pending:[]});
+    if(path==='/running')return Response.json({running:[]});
+    return Response.json({devices:[{type:'cuda',vram_total:24*GiB,vram_free:23*GiB,torch_vram_total:0,torch_vram_free:0}]});
+  }});
+  status.update({prompt_id:'p',phase:'generating',llm_handoff_mode:'llama-swap'});
+  mode='comfy-only';assert.equal((await status.snapshot()).phase,'generating');
+  assert.ok(calls.includes('/running'),'an in-flight shared-GPU job keeps querying local LLM state');
+  status.update({prompt_id:'p',phase:'ready_for_review'});calls.length=0;
+  const idle=await status.snapshot();assert.equal(idle.phase,'ready');assert.equal(idle.llm,'external');
+  assert.equal(calls.includes('/running'),false,'idle comfy-only mode stops querying llama-swap');
+});
+
 test('managed GPU handoff remains blocked until verified release, including failed video runs',async()=>{
   const f=await fixture();f.status.update({prompt_id:'p',phase:'waiting_for_vram',execution_status:'failed'});
   assert.equal((await f.status.snapshot()).phase,'releasing_vram');

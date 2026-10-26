@@ -128,10 +128,11 @@ test('a saved binding from another ComfyUI origin is never reused as current end
   const value=await second.execute({source_paths:[f.path]},f.exec);assert.equal(value.images[0].reused,false);assert.equal(uploaded,1);
 });
 
-test('internal workspace junctions are rejected before contacting ComfyUI',async()=>{
+test('internal workspace junctions stage their canonical image bytes',async()=>{
   const f=await fixture(),link=join(f.cwd,'alias');await symlink(f.cwd,link,'junction');
-  await assert.rejects(f.tool.execute({source_paths:[join(link,'actor.png')]},f.exec),/link|junction/i);
-  assert.equal(f.requests.length,0);
+  const source=join(link,'actor.png'),result=await f.tool.execute({source_paths:[source]},f.exec);
+  assert.equal(result.images[0].source_path,source);assert.equal(result.images[0].sha256,createHash('sha256').update(png).digest('hex'));
+  assert.deepEqual(f.uploads[0].bytes,png);
 });
 
 test('cancellation during final remote verification cannot publish a successful binding',async()=>{

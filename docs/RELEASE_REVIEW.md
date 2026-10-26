@@ -25,11 +25,14 @@ not the source test suite. The package includes only root-level compiled JavaScr
 `.gitignore` blocks unlisted top-level files and common credentials/media/data
 patterns even under allowed directories. Never force-add local artifacts.
 
-No workflow template or preset builder is committed or distributed. Harness's
-native coding tools discover/adapt the user's local ComfyUI API graph, then pass
-`workflow` or `workflow_path` to the generic managed submit tool. Existing local
-workflow templates remain untracked and are not deleted. No live Harness profile,
-session, generated clip or installed runtime plugin is migrated by this cleanup.
+No ComfyUI workflow template or workflow preset builder is committed or
+distributed. The bundle does declare one lean DSH Agent preset that selects native
+supporting tools and points the agent to the bundled Director skill; it contains no
+model, endpoint, workflow or user configuration. Harness's native coding tools
+discover/adapt the user's local ComfyUI API graph, then pass `workflow` or
+`workflow_path` to the generic managed submit tool. Existing local workflow
+templates remain untracked and are not deleted. No live Harness profile, session,
+generated clip or installed runtime plugin is migrated by this cleanup.
 
 ## Reproduce without model/GPU access
 

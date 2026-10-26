@@ -32,9 +32,11 @@ terms after native human confirmation. See [LICENSE](LICENSE),
    ID. For the llama-swap example, use `http://127.0.0.1:11435/v1`. In the model's
    options, enable **Text** and **Image**, and use limits supported by your server.
    Both the model and its server must actually support image input.
-5. Select the model and a project folder, upload your references, and ask the
-   agent to load `director` and use an existing local ComfyUI workflow. For H3,
-   also load `h3-prompt-writing`; its optional official-guide setup asks separately.
+5. Select the **Director** agent preset, your model and a project folder, then
+   upload your references and use an existing local ComfyUI workflow. The preset
+   directs the agent to load `director`; for H3 it also loads `h3-prompt-writing`
+   when needed, whose optional official-guide setup asks separately. Other agent
+   presets can still use the plugin by loading `director` explicitly.
 
 **Using different ports, another machine, WSL or a container?** Follow
 [Connections and changing ports](docs/CONFIGURATION.md). The Harness browser port,
@@ -45,12 +47,15 @@ settings. Changing one does not change the others.
 
 - **Director skill:** story beats, shots versus clips, pacing, reference casting,
   exact dialogue and continuity handoffs. Creative decisions remain with the agent.
+- **Director agent preset:** a selectable lean production session with native
+  file/image, search, shell, job, skill, confirmation and presentation tools. It
+  does not select a model, configure ComfyUI or duplicate the Host plugin.
 - **Optional H3 guidance:** a local Ref2AV wrapper, image-inspection requirements
   and six-section prompt checks; complete official guides are downloaded separately.
 - **Review UI:** distinguishable shot/reference cards, incremental reference edits,
   versioned human confirmation, inline media and enlarged previews.
 - **Managed submission:** preflight, actual reference-byte/order checks, ComfyUI
-  monitoring, llama-swap unload, turn conclusion and verified GPU handoff.
+  monitoring, configured LLM handoff, turn conclusion and verified GPU release.
 - **Asset reuse:** recover session upload paths, register selected local/generated
   images and stage selected references with byte-verified bindings.
 - **Web integration:** dedicated Director media/review views alongside Harness's
@@ -85,6 +90,9 @@ detected and checked with generic intent.
 This plugin extends the native Web tool renderer and composer through Harness
 extension APIs. Compatibility with a different Harness version needs testing.
 It does not modify global Harness files or install a standalone application.
+The composer GPU status and its Send protection are mounted only while a Session
+uses the stable `director` Agent preset. Other presets do not poll or display GPU
+status and remain usable even when the configured remote ComfyUI GPU is full.
 
 ## Command-line installation alternative
 
@@ -280,13 +288,18 @@ Optional values in the `config` of the `dsh-director` profile entry:
 
 ```yaml
 comfyBaseUrl: http://127.0.0.1:8188
+llmHandoffMode: llama-swap # or comfy-only when the DSH LLM is off the ComfyUI GPU
 llamaSwapBaseUrl: http://127.0.0.1:11435
 mediaRoot: C:/path/to/private/director-media
 skillCacheRoot: C:/path/to/private/director-skills
 ```
 
 Service addresses must be HTTP(S) origins without embedded credentials, paths or
-queries. This package contains no local profile, model aliases or machine paths.
+queries. `llmHandoffMode` defaults to `llama-swap`, which unloads and verifies a
+local shared-GPU LLM. Use `comfy-only` only when the DSH model provider is remote
+or otherwise does not occupy the ComfyUI GPU; that mode never contacts llama-swap
+and does not wait for ComfyUI cache or physical VRAM release. This
+package contains no local profile, model aliases or machine paths.
 
 The default private cache is `DSH_HOME/director-media`, or the user's
 `.dsh/director-media`. It stores session-scoped catalog metadata and media
@@ -317,17 +330,22 @@ directly to the Internet.
 
 ## Jobs, GPU handoff and limitations
 
-An accepted managed submission posts the selected graph, unloads llama-swap and
-concludes the current turn. Completion monitoring waits for an idle ComfyUI queue
-and verified memory release before waking the agent. `waiting_for_vram` means
-execution has ended but handoff is pending; inspect saved job output, **do not
-resubmit**. Cancelling a waiting monitor is not proof of GPU release.
+An accepted managed submission posts the selected graph, performs the configured
+LLM handoff and concludes the current turn. `llama-swap` mode unloads and verifies
+the local LLM; `comfy-only` mode treats it as external and makes no swap request.
+In `llama-swap` mode, completion monitoring waits for an idle ComfyUI queue and
+verified memory release before waking the agent. In `comfy-only` mode, terminal
+ComfyUI history is sufficient; no `/free` call, VRAM release button or
+`waiting_for_vram` cleanup state is emitted. Cancelling a local handoff monitor is
+not proof of GPU release; inspect saved job output and **do not resubmit** a
+completed/failed prompt.
 
-The browser keeps drafts editable while unsafe sending is paused. It does not
-automatically send a saved draft when generation ends. A service outage alone
-does not block ordinary chat when no managed handoff or previous GPU risk is
-known. Known generation or unverified release still pauses sending, including
-when a subsequent status request fails. This is not a global GPU
+The browser keeps drafts editable while unsafe sending is paused for a local
+`llama-swap` handoff. It does not automatically send a saved draft when generation
+ends. `comfy-only` uses an external LLM, so ComfyUI generation or release status is
+informational and never pauses native DSH chat; only a lost Harness connection can
+prevent that Send action. A service outage alone does not block ordinary chat when
+no managed handoff or previous GPU risk is known. This is not a global GPU
 scheduler: direct API calls, other applications and unrelated automatic job wakes
 can still load models. Standard ComfyUI has no atomic idle-and-free operation.
 Monitoring is process-local and is lost on a Harness restart; generated output

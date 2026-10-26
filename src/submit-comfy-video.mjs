@@ -386,7 +386,7 @@ function monitorSleep(ms, {sleep, signal}) {
 }
 
 async function monitorComfyPrompt(promptId, options) {
-  const { fetchImpl, signal, pollIntervalMs, comfyBaseUrl, publish, handoffRetryIntervalMs } = options
+  const { fetchImpl, signal, pollIntervalMs, comfyBaseUrl, publish, handoffRetryIntervalMs, llmHandoffMode = 'llama-swap' } = options
   // A cached/fast workflow must not wake the model before the submitting turn yields.
   await monitorWait(() => options.handoffReady, signal)
   while (!signal.aborted) {
@@ -415,6 +415,11 @@ async function monitorComfyPrompt(promptId, options) {
       const output = {prompt_id: promptId, execution_status: failed ? 'failed' : 'completed', execution_detail: detail,
         output_files: files, output_artifacts: artifacts,
         review_instruction: 'Download the exact recorded output_artifacts view_url files into this session workspace. Verify the files and required saved latent slots, then call director_show_media with the local file paths to show images, videos or audio in the conversation. Visual and creative review belongs to the user unless explicitly requested; continue an already-authorized chain after technical checks. Do not create unrequested rerenders. Display does not establish acceptance.'}
+      if(llmHandoffMode==='comfy-only'){
+        const final={...output,phase:'ready_for_review',comfy_release:{skipped:true,reason:'external_llm'}}
+        publish(final)
+        return {status: output.execution_status, detail, output: JSON.stringify(final)}
+      }
       const pending = release => publish({...output, phase: 'waiting_for_vram', comfy_release: release,
         handoff_instruction: 'ComfyUI execution has ended. Waiting for verified GPU handoff; do not resubmit or regenerate this prompt. Read saved output_artifacts without waiting for the job to finish, or cancel only this monitor. A new user message can still load the LLM.'})
       // Publish artifacts before cleanup, but do not settle the registry job: any
@@ -502,6 +507,7 @@ export function createSubmitComfyVideo({
   fetchImpl: suppliedFetch = globalThis.fetch,
   comfyBaseUrl = 'http://127.0.0.1:8188',
   llamaSwapBaseUrl = 'http://127.0.0.1:11435',
+  llmHandoffMode = 'llama-swap',
   sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
   readFileImpl = readFile,
   unloadTimeoutMs = DEFAULT_UNLOAD_TIMEOUT_MS,
@@ -513,10 +519,12 @@ export function createSubmitComfyVideo({
   startJob,
   onGpuState: observeGpuState,
 } = {}) {
-  // UI observation must never alter the managed submission/handoff protocol.
-  const onGpuState=value=>{try{observeGpuState?.(value)}catch{}};
-  // One transport boundary covers preflight/monitor/cancel/unload.
-  const origins = new Map([['http://127.0.0.1:8188', new URL(comfyBaseUrl).origin], ['http://127.0.0.1:11435', new URL(llamaSwapBaseUrl).origin]])
+  const readHandoffMode=()=>typeof llmHandoffMode==='function'?llmHandoffMode():llmHandoffMode
+  const initialMode=readHandoffMode()
+  if(!['llama-swap','comfy-only'].includes(initialMode))throw new Error(`Unknown LLM handoff mode: ${initialMode}`)
+  // One transport boundary covers preflight/monitor/cancel and optional unload.
+  const origins = new Map([['http://127.0.0.1:8188', new URL(comfyBaseUrl).origin]])
+  if(initialMode==='llama-swap')origins.set('http://127.0.0.1:11435',new URL(llamaSwapBaseUrl).origin)
   comfyBaseUrl = origins.get('http://127.0.0.1:8188')
   const fetchImpl = (input, init) => {
     const url = new URL(input)
@@ -524,6 +532,12 @@ export function createSubmitComfyVideo({
     return suppliedFetch(origin ? origin + url.pathname + url.search : input, { ...init, redirect: 'error' })
   }
   return async function submitComfyVideo(args, exec, preparedWorkflow) {
+    const llmHandoffMode=readHandoffMode()
+    if(!['llama-swap','comfy-only'].includes(llmHandoffMode))throw new Error(`Unknown LLM handoff mode: ${llmHandoffMode}`)
+    const usesLlamaSwap=llmHandoffMode==='llama-swap'
+    if(usesLlamaSwap)origins.set('http://127.0.0.1:11435',new URL(llamaSwapBaseUrl).origin)
+    // A submission and its monitor retain the mode selected when this call began.
+    const onGpuState=value=>{try{observeGpuState?.({...value,llm_handoff_mode:value?.llm_handoff_mode??llmHandoffMode})}catch{}}
     const loaded = preparedWorkflow ?? await loadWorkflow(args, {
       readFileImpl,
     })
@@ -600,7 +614,7 @@ export function createSubmitComfyVideo({
     if (typeof queued.prompt_id !== 'string' || queued.prompt_id === '') {
       throw new Error(`ComfyUI accepted no prompt id: ${JSON.stringify(queued)}`)
     }
-    onGpuState?.({prompt_id:queued.prompt_id,phase:'unloading_llm'});
+    if(usesLlamaSwap)onGpuState?.({prompt_id:queued.prompt_id,phase:'unloading_llm'});
 
     let jobId
     let jobWarning
@@ -615,6 +629,7 @@ export function createSubmitComfyVideo({
         handoffReady,
         releaseTimeoutMs,
         handoffRetryIntervalMs,
+         llmHandoffMode,
         now,
         onGpuState,
       })
@@ -625,7 +640,7 @@ export function createSubmitComfyVideo({
     let unload = { unloaded: false, runningModels: [] }
     let warning
     try {
-      unload = await unloadLlamaSwap(
+      if(usesLlamaSwap)unload = await unloadLlamaSwap(
         fetchImpl,
         exec.signal,
         sleep,
@@ -635,7 +650,7 @@ export function createSubmitComfyVideo({
     } catch (error) {
       warning = `ComfyUI job was queued, but LLM unload failed: ${errorText(error)}`
     } finally {
-      onGpuState?.({prompt_id:queued.prompt_id,phase:jobId===undefined?'unmonitored':'generating',llm_unloaded:unload.unloaded,...(warning?{warning}:{})});
+      onGpuState?.({prompt_id:queued.prompt_id,phase:jobId===undefined?'unmonitored':'generating',llm_handoff_mode:llmHandoffMode,...(usesLlamaSwap?{llm_unloaded:unload.unloaded}:{llm_external:true}),...(warning?{warning}:{})});
       try { exec.concludeTurn() } finally { resolveHandoff() }
     }
 
@@ -643,8 +658,8 @@ export function createSubmitComfyVideo({
       prompt_id: queued.prompt_id,
       ...(jobId !== undefined ? { job_id: jobId } : {}),
       ...(queued.number !== undefined ? { number: queued.number } : {}),
-      llm_unloaded: unload.unloaded,
-      running_models: unload.runningModels,
+      llm_handoff_mode: llmHandoffMode,
+      ...(usesLlamaSwap?{llm_unloaded:unload.unloaded,running_models:unload.runningModels}:{llm_unload_skipped:true}),
       ...((warning ?? jobWarning) !== undefined ? { warning: [jobWarning, warning].filter(Boolean).join(' ') } : {}),
       terminal: true,
       continuity,
@@ -704,7 +719,7 @@ function toolDefinition({ startJob, toolName = 'submit_comfy_job', ...options } 
       isLegacyVideoName
         ? 'Compatibility name for submit_comfy_job; submit exactly one prepared ComfyUI workflow as a managed background job.'
         : 'Submit exactly one prepared ComfyUI API workflow for image, video, preprocessing, or another ComfyUI task as a managed background job.',
-      'Managed Director productions use this for completion monitoring, llama-swap handoff and turn conclusion. Standalone workflow debugging and ordinary coding retain native Harness tools.',
+      'Managed Director productions use this for completion monitoring, configured LLM handoff and turn conclusion. llama-swap mode unloads a shared-GPU LLM and verifies VRAM release; comfy-only mode treats the LLM as external, skips llama-swap and ComfyUI cleanup handoff, and settles on terminal ComfyUI history. Standalone workflow debugging and ordinary coding retain native Harness tools.',
       'Planning comes first: use director_workflows inspect for capability, dimensions and timing; show a shot/ref card and wait for user confirmation before writing its final H3 prompt. H3 validation/submission requires card_id and clip_id from that approved card. Do not manufacture a final prompt just to plan or obtain approval.',
       'Reuse a previously verified workflow for the same task unless the user requests a change or its capabilities no longer fit. Check only relevant installed nodes/models when needed; do not print full object_info responses or perform recursive filesystem model searches when a targeted query answers the check.',
       `For fresh-H3 timing-only planning, run node ${H3_TIMING_SHELL_PATH} --shots 5.5,3 (repeat --shots per clip). This offline helper computes 24-fps shot boundaries and 17k+5 clip lengths; no workflow/creative-guide lookup is needed for that calculation. Review its actual durations before approval. It does not rewrite workflows or handle latent-context overlap.`,
@@ -718,7 +733,7 @@ function toolDefinition({ startJob, toolName = 'submit_comfy_job', ...options } 
       'A failed background job is terminal for that submission. Never retry an identical failed workflow automatically; inspect the error and change the workflow before submitting again.',
       'After completion, use job output_artifacts and its ComfyUI view_url to retrieve outputs for review. For a loopback view_url, download it to the workspace with a shell HTTP client such as PowerShell Invoke-WebRequest or curl, then inspect that exact file; never use web_fetch for localhost and do not search entire drives.',
       'This tool concludes the turn after an accepted submission.',
-      'Monitoring waits for verified GPU release before waking the Agent. waiting_for_vram means handoff, not new generation: inspect job_output, never resubmit a completed/failed prompt.',
+      'llama-swap monitoring waits for verified GPU release before waking the Agent. In comfy-only mode terminal ComfyUI history is sufficient and no waiting_for_vram cleanup state is emitted. When waiting_for_vram does occur, it means handoff, not new generation: inspect job_output, never resubmit a completed/failed prompt.',
       'Use validate_only=true before submission. Check submission_ready and issues/submission_blockers; validation never queues, unloads or ends the turn. status=blocked is an actionable prerequisite, not a failed generation. retry_identical=false means repair its cause or wait for confirmation; never retry the same arguments or re-create an unchanged card to clear it.',
       'For dependent H3 clips prefer compatible saved sampler latent Motion Context. A previous clip video can also supply consecutive context_frames (video_frames), plus context_audio when supported; this multi-frame motion history is different from extracting one tail frame as a Picture or guide. Set continuity_requirement to the inspected route (sampler_latent or video_frames) on validation and submission; never label video_frames as original sampler latent. Honor an explicit saved-latent requirement and report missing latent before proposing a rerender. Verify source, conditioning-to-sampler wiring, trim and output; a MotionContext node alone is not proof of continuation. Put the actual workflow path, route and source on the review card before approval. Independent I2V/FLF workflows remain available.',
       'Provide exactly one of workflow_path or workflow. Raw node graphs and {prompt: ...} wrappers are accepted.',
@@ -771,8 +786,10 @@ function toolDefinition({ startJob, toolName = 'submit_comfy_job', ...options } 
           ...h3CanvasLines(value),
           `Continuity route: ${value.continuity.mode}. ${value.continuity.explanation}`,
           ...(value.h3_effective_prompt?[`Effective H3 prompt (${value.h3_effective_prompt.source}, SHA256 ${value.h3_effective_prompt.sha256}): ${value.h3_effective_prompt.summary}`]:[]),
-          ...(value.job_id ? [`Harness background job: ${value.job_id}. Completion will wake this Agent for review only after verified GPU handoff; unverified release keeps the job waiting with saved outputs readable via job_output.`] : []),
-          value.llm_unloaded
+          ...(value.job_id ? [`Harness background job: ${value.job_id}. ${value.llm_handoff_mode==='comfy-only'?'Terminal ComfyUI history wakes this Agent for review; no VRAM cleanup handoff is required.':'Completion will wake this Agent for review only after verified GPU handoff; unverified release keeps the job waiting with saved outputs readable via job_output.'}`] : []),
+          value.llm_handoff_mode==='comfy-only'
+            ? 'External-LLM mode; llama-swap unload skipped and Harness turn concluded.'
+            : value.llm_unloaded
             ? 'llama-swap model unloaded; Harness turn concluded.'
             : 'Harness turn concluded, but llama-swap unload needs attention.',
         ]
