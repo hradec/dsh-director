@@ -63,3 +63,14 @@ test('media parser preserves only safe saved card identities for explicit confir
   assert.equal(parse('00000000-0000-4000-8000-000000000001').card_id,'00000000-0000-4000-8000-000000000001');
   for(const card_id of [{bad:true},'', 'card1\nconfirm other', 'x'.repeat(129)])assert.equal(parse(card_id).card_id,undefined);
 });
+test('media parser whitelists review display status and unattended reason',async()=>{
+  const {parseMediaResult}=await import('../src/client/media-result.mjs');
+  const proposal={version:'v1',shots:[{shot_id:'s1',clip_id:'c1',duration_seconds:4,content:'Cat waves.',reference_numbers:[1]}]};
+  const parse=patch=>parseMediaResult({...block,content:[{type:'text',text:JSON.stringify({...value,card_id:'card-1',proposal,...patch})}]},'s');
+  const visible=parse({review_status:'awaiting_display',card_displayed:false});
+  assert.equal(visible.review_status,'awaiting_display');assert.equal(visible.card_displayed,false);
+  const auto=parse({review_status:'auto_authorized',authorization_reason:'active_goal',card_displayed:true,presented_at:123});
+  assert.equal(auto.review_status,'auto_authorized');assert.equal(auto.authorization_reason,'active_goal');assert.equal(auto.card_displayed,true);assert.equal(auto.presented_at,123);
+  const unsafe=parse({review_status:{status:'auto_authorized'},authorization_reason:'password',card_displayed:{yes:true},presented_at:'123'});
+  assert.equal(unsafe.review_status,undefined);assert.equal(unsafe.authorization_reason,undefined);assert.equal(unsafe.card_displayed,undefined);assert.equal(unsafe.presented_at,undefined);
+});

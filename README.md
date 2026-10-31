@@ -203,8 +203,12 @@ before an explicitly authorized reinstall rather than overwriting user files.
 
 Supply exactly one of `workflow` (inline ComfyUI API graph) or `workflow_path`.
 Large graphs should use a file. The plugin preserves the caller's model, sampler,
-dimensions, reference wiring, latent context and output settings. It does not pick
-or build a preset on the caller's behalf.
+dimensions, reference wiring, latent context and output settings. When a Director
+Settings workflow name is nonempty for the task kind, the submit tool requires that
+exact saved name and a successful `director_workflows inspect` in the current session.
+The model must adapt a saved UI canvas to an API graph; the plugin does not perform
+that conversion or prove the converted graph's ancestry. Blank settings leave normal
+workflow selection available.
 
 For an existing H3 graph, `h3_prompt` or `h3_prompt_path` can replace only its
 prompt in the submitted copy, using exactly six non-empty section strings:

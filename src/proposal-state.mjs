@@ -117,6 +117,8 @@ function readOnlyReply(text){
   // requested creative change before recognizing conversational questions.
   if(text.replace(/\bremove\s+the\s+sample\b[^\n;；]{0,120}\bwording\b/giu,'reuse template structure').split(/[，,。;；\n]/u).some(clause=>!/(?:不要|不需要|不用|禁止|勿|别|不改|不变|do not|don't|unchanged)/iu.test(clause)&&/(?:改成|修改|更改|替换|调整|换|增加|删除|\b(?:change|replace|revise|add|remove)\b)[^。\n]{0,70}(?:剧情|对白|台词|服装|衣服|角色|动作|场景|镜头|时长|参考图|卡片|近景|远景|\b(?:dialogue|line|action|shot|duration|costume|scene|reference|plan)\b)|(?:剧情|对白|台词|服装|衣服|角色|动作|场景|镜头|时长|参考图|卡片)[^。\n]{0,35}(?:改|换|调整|增加|删除)/iu.test(clause)))return false;
   if(/^(?:请|帮我)?(?:改|换|加|去掉|删除|调整|重新|让|用)|^(?:please\s+)?(?:change|replace|remove|add|revise|use)\b/iu.test(text))return false;
+  const explicitUnattended=unattendedDirective(text)&&!referenceRequest(text)&&!/(?:改成|修改|更改|替换|调整|换成|增加|添加|删除|移除|更新|\b(?:change|replace|revise|add|remove|edit|modify|update)\b)[^.!?\n]{0,70}(?:镜头|片段|台词|服装|角色|动作|场景|时长|参考图|卡片|方案|\b(?:shot|scene|dialogue|costume|character|action|duration|reference|plan|prompt|workflow|clip)\b)/iu.test(text);
+  if(explicitUnattended)return true;
   if(/^(?:好|弄好|完成|准备好)了吗[?？]?$/u.test(text.trim()))return true;
   return /[?？]|(?:跑完|进度|状态|谢谢)|^(?:thanks|thank you|what|how|why|is|has|did)\b/iu.test(text);
 }
@@ -132,11 +134,20 @@ function confirmation(text,version,cardId){
   if(/^(?:好|好的|确认|可以|同意)[，,\s]*(?:开始吧|开始|按这个生成|按这个做|生成吧|生成|继续吧)$|^继续(?:吧)?$|^(?:ok|okay|yes)[,\s]+(?:go ahead|start|proceed)$/iu.test(normalized))return true;
   return false;
 }
+const unattendedDirective=text=>{
+  if(typeof text!=='string'||/\b(?:do not|don't|never)\s+(?:run|work|continue|proceed|generate|render)\b[^.!?\n]{0,80}\b(?:unattended|without\s+(?:approval|confirmation|asking))\b|\bnot\s+unattended\b|(?:不要|别|不准|禁止)[^。！？\n]{0,24}(?:无人值守|自动继续|不经确认|未经批准)/iu.test(text))return false;
+  return /\b(?:run|work|continue|proceed|generate|render|operate)\b[^.!?\n]{0,60}\bunattended\b|\bno\s+(?:further\s+)?(?:approval|confirmation)\s+(?:is\s+)?(?:needed|required)\b|\b(?:do\s+not|don't)\s+(?:ask|interrupt|stop\s+to\s+ask)\b|\bwithout\s+(?:asking|interruption|approval|confirmation)\b|\bkeep\s+going\s+without\s+asking\b|\buse\s+your\s+judg(?:e)?ment\b[^.!?\n]{0,60}\b(?:continue|proceed|without\s+asking|no\s+approval)\b|(?:无需|不必|不用|不需要)(?:你)?(?:询问|批准|确认|审批|打断)|(?:不要|别)(?:询问|打断|等待)[^。！？\n]{0,20}(?:我)?(?:确认|批准)?|无人值守|自动(?:继续|执行|处理)/iu.test(text);
+};
+export function unattendedAuthorization(entries,goal){
+  if(goal?.phase==='active'&&goal?.activation==='armed')return 'active_goal';
+  const latest=[...entries].filter(entry=>entry.kind==='user').sort((a,b)=>a.seq-b.seq).at(-1);
+  return unattendedDirective(latest?.text)?'user_instruction':undefined;
+}
 export function entriesFromEvents(events){
   const entries=[],calls=new Map(),seen=new Set();
   for(const event of [...events??[]].sort((a,b)=>a.seq-b.seq)){
     if(event.type==='tool/call')calls.set(event.data?.callId,event.data);
-    if(event.type==='user/message'&&event.data?.source?.kind==='user')entries.push({seq:event.seq,kind:'user',text:textOf(event.data.content)});
+    if(event.type==='user/message'&&event.data?.source?.kind==='user')entries.push({seq:event.seq,time:event.time,kind:'user',text:textOf(event.data.content)});
     if(event.type==='tool/result'){
       const message=event.data?.message;
       const blocks=message?.role==='tool'||message?.source?.kind==='tool'?[{...message,toolCallId:message.toolCallId??message.source?.callId}]:(message?.content??[]).filter(block=>block.type==='tool-result');
@@ -157,13 +168,17 @@ export function entriesFromChat(snapshot){
     for(const child of block?.subCalls??[])tools(child);
   }
   for(const key of snapshot?.order??[]){const node=snapshot.nodes.get(key);
-    if(['user','steering'].includes(node?.kind)&&node.data.source?.kind==='user')entries.push({seq:node.data.seq,kind:'user',text:textOf(node.data.content)});
+    if(['user','steering'].includes(node?.kind)&&node.data.source?.kind==='user')entries.push({seq:node.data.seq,time:node.data.time,kind:'user',text:textOf(node.data.content)});
     if(node?.kind==='tool-call')tools(node.data.root);
   }
   return entries;
 }
-export function proposalState(entries,version,card){
+export function proposalState(entries,version,card,authorization={}){
   let latest,displayed,approvedSeq,referenceError,latestHashes=[],status='awaiting_confirmation',equivalentCards=[];const requests=[];
+  const requirePresentation=authorization.requirePresentation===true;
+  const unattendedReason=unattendedAuthorization(entries,authorization.goal);
+  const presentedAt=(value,time)=>!requirePresentation||Number.isFinite(time)&&authorization.isPresented?.(value?.session_id,value?.card_id,time)===true;
+  const cardPresented=value=>!requirePresentation||authorization.isPresented?.(value?.session_id,value?.card_id)===true;
   const userLines=new Set(entries.filter(e=>e.kind==='user').flatMap(e=>e.text.split(/[\n。.!！]/u).map(t=>t.trim())));
   const clips=value=>[...new Set(value.proposal.shots.map(s=>s.clip_id))];
   const applies=(request,value)=>!request.clips.length||request.clips.some(id=>clips(value).includes(id));
@@ -179,11 +194,14 @@ export function proposalState(entries,version,card){
         }
         requests.push({...request,clips:clipId?[clipId]:existingClips,clipId,baseline,targetHash:request.target===undefined?undefined:latest?.value.items?.[request.target-1]?.sha256?.toLowerCase()});
       }
-      if(latest&&!referenceError&&equivalentCards.some(card=>confirmation(entry.text,card.value.proposal.version,card.value.card_id))){
+      const confirmationMatches=latest&&!referenceError&&equivalentCards.some(card=>confirmation(entry.text,card.value.proposal.version,card.value.card_id));
+      if(confirmationMatches){
         const showingCurrent=equivalentCards.some(card=>displayed===card||card.value.card_id&&displayed?.value.card_id===card.value.card_id);
-        if(showingCurrent||equivalentCards.some(card=>explicitConfirmation(entry.text,card.value.proposal.version,card.value.card_id))){approvedSeq=entry.seq;status='confirmed';}
-      }
-      else if(latest&&!readOnlyReply(entry.text)){approvedSeq=undefined;status='changes_requested';}
+        const displayedAlias=equivalentCards.find(card=>displayed===card||card.value.card_id&&displayed?.value.card_id===card.value.card_id);
+        const explicitlyNamed=equivalentCards.find(card=>card.value.card_id&&confirmationNormalized(entry.text)===`确认卡片 ${card.value.card_id}`.toLowerCase());
+        const wasPresented=explicitlyNamed?presentedAt(explicitlyNamed.value,entry.time):displayedAlias?presentedAt(displayedAlias.value,entry.time):equivalentCards.some(card=>presentedAt(card.value,entry.time));
+        if((showingCurrent||equivalentCards.some(card=>explicitConfirmation(entry.text,card.value.proposal.version,card.value.card_id)))&&wasPresented){approvedSeq=entry.seq;status='confirmed';}
+      }else if(latest&&!readOnlyReply(entry.text)){approvedSeq=undefined;status='changes_requested';}
     }else if(entry.kind==='proposal'){
       displayed=entry;
       if(entry.value.replay)continue;
@@ -214,9 +232,14 @@ export function proposalState(entries,version,card){
   const viewedCardId=card?.card_id??entries.find(entry=>entry.kind==='proposal'&&entry.seq===card?.seq&&(card?.callId===undefined||entry.callId===undefined||entry.callId===card.callId))?.value.card_id;
   const equivalentViewedCard=viewedCardId&&equivalentCards.some(entry=>entry.value.card_id===viewedCardId);
   if(!equivalentViewedCard&&(version!==latest.value.proposal.version||(viewedCardId?viewedCardId!==latest.value.card_id:card?.seq!==undefined&&(card.seq!==latest.seq||card.callId!==undefined&&latest.callId!==undefined&&card.callId!==latest.callId))))return {status:'superseded',pending:[],latestVersion:latest.value.proposal.version};
-  return {status:referenceError?'invalid_references':pending.length?'references_pending':status,pending:[...new Set(pending)],approvedSeq,latestVersion:latest.value.proposal.version,value:latest.value,...referenceError?{referenceError}:{},...unverifiable.length?{unverifiable}:{}};
+  let reviewStatus=referenceError?'invalid_references':pending.length?'references_pending':status;
+  if(reviewStatus==='awaiting_confirmation'){
+    if(unattendedReason)reviewStatus='auto_authorized';
+    else if(!cardPresented(latest.value))reviewStatus='awaiting_display';
+  }
+  return {status:reviewStatus,pending:[...new Set(pending)],approvedSeq,latestVersion:latest.value.proposal.version,value:latest.value,...referenceError?{referenceError}:{},...unverifiable.length?{unverifiable}:{},...requirePresentation?{card_displayed:cardPresented(latest.value)}:{},...reviewStatus==='auto_authorized'?{authorization_reason:unattendedReason}:{} };
 }
-export function assertProposalSubmission(entries,references,generation,workflow,selection){
+export function assertProposalSubmission(entries,references,generation,workflow,selection,authorization={}){
   const latest=latestProposal(entries);
   if(!latest){if(selection)throw Error('Director review: selected card is unavailable. Show a complete review card and obtain confirmation, then use its card_id and clip_id.');if(entries.some(e=>e.kind==='user'&&referenceRequest(e.text)))throw Error('Director review: requested reference is pending. Show a proposal with the actual requested reference image and wait for user confirmation.');return;}
   const proposal=latest.value.proposal;
@@ -227,11 +250,12 @@ export function assertProposalSubmission(entries,references,generation,workflow,
     if(!matching.includes(selection.clip_id))throw Error(`Director review: clip_id ${selection.clip_id} is not on the selected card. Use one of: ${matching.join(', ')}.`);
     matching=[selection.clip_id];
   }
-  const state=proposalState(entries,latest.value.proposal.version);
+  const state=proposalState(entries,latest.value.proposal.version,{card_id:latest.value.card_id},authorization);
+  if(state.status==='awaiting_display')throw Error('Director review: the current card has not been acknowledged as rendered by the Director client. Do not ask for approval or submit; resolve the card-view issue first.');
   if(state.status==='invalid_references')throw Error(`Director review: latest proposal has invalid references (${state.referenceError}). Show a NEW valid complete proposal and obtain fresh confirmation; an older approval cannot authorize this card.`);
   if(state.unverifiable?.length)throw Error(`Director review: reference edit has an invalid saved baseline (${state.unverifiable.join('; ')}). Its original image bindings cannot be verified. Another full card or confirmation cannot prove this edit was fulfilled. Reconcile the intended references with the user; do not retry unchanged cards or borrow an older approval.`);
   if(state.status==='references_pending')throw Error(`Director review: requested reference is pending (${state.pending.join('; ')}). The bound image differences must fulfill the requested operation: add keeps old images and binds new ones; replace removes the requested old image and binds its replacement; remove actually unbinds the requested image without adding others. Show a NEW complete proposal and wait for confirmation. Changing prose or relabeling identical bytes is not a reference update.`);
-  if(state.status!=='confirmed')throw Error(`Director review: confirm the latest complete proposal ${state.latestVersion} before video submission. Model claims and approvals of an older version do not grant approval.`);
+  if(!['confirmed','auto_authorized'].includes(state.status))throw Error(`Director review: confirm the latest complete proposal ${state.latestVersion} before video submission. Model claims and approvals of an older version do not grant approval.`);
   const dimensions=generation?clipDimensionLists(proposal):null;
   if(generation&&!dimensions)throw Error('Director review: the approved card has no clip dimensions. Show a new card with planned width and height for every clip, then obtain fresh confirmation.');
   if(generation&&(!Number.isSafeInteger(generation.width)||generation.width<1||!Number.isSafeInteger(generation.height)||generation.height<1))throw Error('Director review: H3 graph dimensions are unresolved; use numeric width and height before submitting against an approved clip size.');
@@ -268,7 +292,7 @@ export function assertProposalSubmission(entries,references,generation,workflow,
     if(!dialogueMatches(expected,selection.dialogue))throw Error('Director review: submitted dialogue does not match the selected approved clip. Use exact spoken text, or one line per utterance in the form Speaker [Language]: exact words on the card; use an empty string for silence. Preserve order, speaker/language when specified, and all words, or revise the card and obtain confirmation.');
   }
   const reviewedWorkflow=matching.length===1?approved?.find(clip=>clip.clip_id===matching[0]):undefined;
-  return {version:state.latestVersion,approval_seq:state.approvedSeq,...latest.value.card_id?{card_id:latest.value.card_id}:{},...matching.length===1?{clip_id:matching[0]}:{},...reviewedWorkflow&&workflow?{reviewed_workflow_path:reviewedWorkflow.workflow_path,submitted_workflow_path:workflow.path??null}:{}};
+  return {version:state.latestVersion,review_status:state.status,approval_seq:state.approvedSeq,...state.status==='auto_authorized'?{authorization_reason:state.authorization_reason}:{},...latest.value.card_id?{card_id:latest.value.card_id}:{},...matching.length===1?{clip_id:matching[0]}:{},...reviewedWorkflow&&workflow?{reviewed_workflow_path:reviewedWorkflow.workflow_path,submitted_workflow_path:workflow.path??null}:{}};
 }
 
 const silenceLabel=text=>/^(?:无|无台词|无对白|无对话|no dialogue|no speech|silent|none)[。.!！]?$/iu.test(text.trim());

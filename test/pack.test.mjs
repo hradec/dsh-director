@@ -23,7 +23,7 @@ test('release archive excludes personal media and works without workspace skills
   assert.match(preset,/name: '@deepseek-ai\/dsh-agent-preset'/);assert.match(preset,/^\s+id: director$/m);assert.match(preset,/^\s+name: Director$/m);
   for(const id of ['persona','agent-instructions','time-context','tool-bash','tool-pwsh','tool-fs','tool-fs-search','tool-jobs','skill-filesystem','tool-skill','tool-ask-user','compaction','present'])assert.match(preset,new RegExp(`^\\s+- id: ${id}$`,'m'));
   assert.match(preset,/- id: tool-bash[\s\S]*?disabled: !!js process\.platform === 'win32'/);assert.match(preset,/- id: tool-pwsh[\s\S]*?disabled: !!js process\.platform !== 'win32'/);
-  assert.doesNotMatch(preset,/^\s+name: dsh-director$/m);
+  assert.match(preset,/- id: tool-ask-user[\s\S]*?mode: timed[\s\S]*?timeout: 180/);assert.doesNotMatch(preset,/^\s+name: dsh-director$/m);
   // A shared archive must advertise a runnable helper in its own installation,
   // not a source-checkout path or a dependency supplied only by this machine.
   const definitions=[];

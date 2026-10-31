@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {localFs} from './harness.mjs';
 import {createMediaStore} from '../src/media-store.mjs';
+import {createCardPresentationRegistry} from '../src/card-presentation.mjs';
 test('flat media interface still rejects empty calls and mixed replay/create before IO',async()=>{
   const {createMediaTool}=await import('../src/media-tool.mjs');
   const tool=createMediaTool({store:{register(){assert.fail('invalid modes must not touch storage');}}});
@@ -67,4 +68,19 @@ test('shot proposal preserves ordered bindings to registered media without appro
   assert.equal(result.items[0].filename,'actor-a.png');
   await assert.rejects(tool.execute({items:[{path:'actor-a.png'}],proposal:{...proposal,shots:[{...proposal.shots[0],reference_numbers:[2]}]}},{agent:{session:{id:'s',header:{cwd}}}}),/reference/i);
   await assert.rejects(tool.execute({items:[{path:'actor-a.png'}],proposal:{...proposal,shots:[{...proposal.shots[0],duration_seconds:-1}]}},{agent:{session:{id:'s',header:{cwd}}}}),/duration/i);
+});
+
+test('review result distinguishes unrendered cards from active-goal and direct-request authorization',async()=>{
+  const {createMediaTool}=await import('../src/media-tool.mjs');
+  const cwd=await mkdtemp(join(tmpdir(),'dsh-review-state-'));await writeFile(join(cwd,'actor.png'),Buffer.from('89504e470d0a1a0a0000000000000000','hex'));
+  const store=createMediaStore({root:join(cwd,'state')}),proposal={version:'v1',shots:[{shot_id:'s1',clip_id:'c1',duration_seconds:4,content:'The cat waves.',dialogue:'',reference_numbers:[1]}]};
+  const normalPresentation=createCardPresentationRegistry();
+  const normal=await createMediaTool({store,fs:localFs(),cardPresentation:normalPresentation}).execute({items:[{path:'actor.png'}],proposal},{agent:{session:{id:'normal-session',header:{cwd}}}});
+  assert.equal(normal.review_status,'awaiting_display');assert.equal(normal.card_displayed,false);assert.equal(normal.presented_at,undefined);
+  const goalPresentation=createCardPresentationRegistry();
+  const goal=await createMediaTool({store,fs:localFs(),cardPresentation:goalPresentation,getGoal:()=>({phase:'active',activation:'armed'})}).execute({items:[{path:'actor.png'}],proposal},{agent:{session:{id:'goal-session',header:{cwd}}}});
+  assert.equal(goal.review_status,'auto_authorized');assert.equal(goal.authorization_reason,'active_goal');assert.equal(goal.card_displayed,false);
+  const events=[{seq:1,time:1,type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:'Run this task unattended; no approval needed.'}]}}];
+  const direct=await createMediaTool({store,fs:localFs(),cardPresentation:createCardPresentationRegistry()}).execute({items:[{path:'actor.png'}],proposal},{agent:{session:{id:'direct-session',header:{cwd},snapshotEvents:()=>events}}});
+  assert.equal(direct.review_status,'auto_authorized');assert.equal(direct.authorization_reason,'user_instruction');
 });

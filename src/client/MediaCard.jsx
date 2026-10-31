@@ -5,7 +5,7 @@ import {MediaDialog} from './MediaDialog.jsx';
 import {entriesFromChat,proposalState,proposalConfirmationText} from '../proposal-state.mjs';
 import {clipReferenceLists} from '../shot-proposal.mjs';
 const chatSnapshot=s=>s;
-const statusLabels={confirmed:'Confirmed',superseded:'Superseded',invalid_references:'Invalid references',references_pending:'References pending',changes_requested:'Changes requested',unverified:'Confirmation unverified',awaiting_confirmation:'Awaiting confirmation'};
+const statusLabels={confirmed:'Confirmed',auto_authorized:'Authorized for unattended continuation',awaiting_display:'Waiting for card display acknowledgement',superseded:'Superseded',invalid_references:'Invalid references',references_pending:'References pending',changes_requested:'Changes requested',unverified:'Confirmation unverified',awaiting_confirmation:'Awaiting confirmation'};
 
 function MediaItem({item,onEnlarge}){
   const player=useRef(null);const [failed,setFailed]=useState(false);
@@ -30,6 +30,25 @@ export function MediaCard({block,sessionId,useChat,leadingIcon,turnClosed,sendCo
   const snapshot=useChat?.(chatSnapshot);
   const result=parseMediaResult(block,sessionId),[selected,setSelected]=useState(null);
   const [confirming,setConfirming]=useState(false),[confirmationError,setConfirmationError]=useState('');
+  const [presentation,setPresentation]=useState(null),[presentationError,setPresentationError]=useState('');
+  const proposal=result.kind==='ready'?result.proposal:undefined,hasProposal=Boolean(proposal);
+  const hasPresentationState=result.kind==='ready'&&typeof result.card_displayed==='boolean';
+  const localPresentedAt=presentation&&presentation.card_id===result.card_id?presentation.presentedAt:undefined;
+  const presentedAt=result.kind==='ready'?(result.presented_at??localPresentedAt):undefined;
+  const displayAcknowledged=!hasPresentationState||result.card_displayed===true||Number.isFinite(localPresentedAt);
+  useEffect(()=>{
+    if(!hasProposal||!result.card_id||!sessionId||!hasPresentationState)return;
+    if(result.card_displayed===true){if(Number.isFinite(result.presented_at))setPresentation({card_id:result.card_id,presentedAt:result.presented_at});return;}
+    if(typeof fetch!=='function'){setPresentationError('The review card display could not be verified; its Confirm button remains unavailable.');return;}
+    let active=true;
+    fetch('/director-media/presented',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({session_id:sessionId,card_id:result.card_id})}).then(async response=>{
+      if(!response.ok)throw Error(`HTTP ${response.status}`);
+      const value=await response.json();
+      if(!Number.isSafeInteger(value?.presented_at)||value.presented_at<=0)throw Error('Invalid presentation acknowledgement.');
+      if(active){setPresentation({card_id:result.card_id,presentedAt:value.presented_at});setPresentationError('');}
+    }).catch(()=>{if(active)setPresentationError('The review card display could not be verified; its Confirm button remains unavailable.');});
+    return()=>{active=false;};
+  },[hasProposal,result.card_id,result.card_displayed,result.presented_at,hasPresentationState,sessionId]);
   const owner=snapshot?.order?.map(key=>snapshot.nodes.get(key)).find(node=>node?.kind==='tool-call'&&containsCall(node.data.root,block.callId));
   const closed=turnClosed??owner?.location?.turn?.status!=='open';
   const keepVisible=result.kind==='ready'&&(Boolean(result.proposal)||result.items.some(item=>item.type==='video'));
@@ -37,10 +56,11 @@ export function MediaCard({block,sessionId,useChat,leadingIcon,turnClosed,sendCo
   if(result.kind==='running')return <div className="dsh-director-card" role="status">Preparing media preview…</div>;
   if(result.kind==='error')return <div className="dsh-director-card" role="alert">{result.message}</div>;
   const close=time=>{if(selected.inline&&Number.isFinite(time))try{selected.inline.currentTime=time;}catch{}setSelected(null);};
-  const proposal=result.proposal;
-  const review=proposal?(snapshot?proposalState(entriesFromChat(snapshot),proposal.version,{seq:block.seq,callId:block.callId,card_id:result.card_id}):{status:proposal.pending_references?.length?'references_pending':'awaiting_confirmation',pending:proposal.pending_references??[]}):null;
+  const reviewContext={requirePresentation:hasPresentationState,isPresented:(sid,cid,time)=>sid===sessionId&&cid===result.card_id&&displayAcknowledged&&(time===undefined||Number.isFinite(time)&&Number.isFinite(presentedAt)&&time>=presentedAt)};
+  const localReview=proposal?(snapshot?proposalState(entriesFromChat(snapshot),proposal.version,{seq:block.seq,callId:block.callId,card_id:result.card_id},reviewContext):{status:hasPresentationState&&!displayAcknowledged?'awaiting_display':result.review_status==='awaiting_display'?'awaiting_confirmation':result.review_status??(proposal.pending_references?.length?'references_pending':'awaiting_confirmation'),pending:proposal.pending_references??[]}):null;
+  const review=result.review_status==='auto_authorized'&&['awaiting_confirmation','awaiting_display','unverified'].includes(localReview?.status)?{...localReview,status:'auto_authorized',authorization_reason:result.authorization_reason}:localReview;
   const confirm=async()=>{
-    if(confirming)return;
+    if(confirming||!displayAcknowledged||review.status!=='awaiting_confirmation')return;
     setConfirming(true);setConfirmationError('');
     try{await sendConfirmation(proposalConfirmationText(result));}
     catch(error){setConfirmationError(error?.message||'Could not send confirmation. Please try again.');}
@@ -65,8 +85,8 @@ export function MediaCard({block,sessionId,useChat,leadingIcon,turnClosed,sendCo
         {shot.reference_numbers.length?<div className="dsh-director-shot-refs"><strong>Relevant references:</strong> {shot.reference_numbers.map((number,i)=><span key={number}>{i>0?', ':''}Reference #{number}{proposal.clip_references&&` · Picture ${clips.find(c=>c.clip_id===shot.clip_id).reference_numbers.indexOf(number)+1}`}</span>)}</div>:<p className="dsh-director-missing-ref">{proposal.clip_references?(clips.find(c=>c.clip_id===shot.clip_id).reference_numbers.length?'No shot-specific references assigned; clip-wide inputs still apply.':'No references are connected to this clip. Confirm whether any should be added.'):'No references are bound to this shot. Confirm whether any should be added.'}</p>}
       </article>)}
       {result.items.some((_,i)=>!bound.has(i+1))&&<aside><h4>Other media (not bound to these shots)</h4><div className="dsh-director-gallery">{result.items.map((item,i)=>!bound.has(i+1)&&<MediaItem key={item.id} item={item} onEnlarge={setSelected}/>)}</div></aside>}
-      <p className="dsh-director-confirm-note">{review.unverifiable?.length?'A reference edit has an invalid saved baseline. Its original image bindings cannot be verified; another full card or confirmation cannot resolve it. Reconcile the intended references with the user before production.':review.status==='references_pending'?'This reference list has pending changes and cannot be approved for video generation. Apply the requested add, replace or remove operation to the actual bound images, show a new complete version, then confirm that proposal.':review.status==='confirmed'?`Confirmed in chat: ${proposal.version}. Video submission must match these actual references.`:review.status==='superseded'?`This version was superseded by ${review.latestVersion}. Review and confirm the latest complete proposal instead.`:<>Confirm {proposal.version} in chat, or describe changes to shots and references. This card presents the plan; it does not approve generation.</>}</p>
-      {result.card_id&&sendConfirmation&&review.status==='awaiting_confirmation'&&<button type="button" data-action="confirm-proposal" disabled={confirming} onClick={confirm}>{confirming?'Sending confirmation…':`Confirm ${proposal.version}`}</button>}
+      <p className="dsh-director-confirm-note">{review.unverifiable?.length?'A reference edit has an invalid saved baseline. Its original image bindings cannot be verified; another full card or confirmation cannot resolve it. Reconcile the intended references with the user before production.':review.status==='awaiting_display'?'The client has not verified that this card rendered. No approval request is active; confirmation remains disabled.':review.status==='auto_authorized'?`Authorized for this request (${result.authorization_reason==='active_goal'?'active goal':result.authorization_reason==='user_instruction'?'current-task instruction':'unattended instruction'}); reference, canvas, duration, workflow and H3 preflight checks still apply.`:review.status==='references_pending'?'This reference list has pending changes and cannot be submitted. Apply the requested add, replace or remove operation to the actual bound images and show a complete revised card.':review.status==='confirmed'?`Confirmed in chat: ${proposal.version}. Video submission must match these actual references.`:review.status==='superseded'?`This version was superseded by ${review.latestVersion}. Review and confirm the latest complete proposal instead.`:<>Use the visible Confirm button to approve {proposal.version}, or describe changes. The button appears only after the client acknowledges this card rendered.</>}</p>
+      {result.card_id&&sendConfirmation&&displayAcknowledged&&review.status==='awaiting_confirmation'&&<button type="button" data-action="confirm-proposal" disabled={confirming} onClick={confirm}>{confirming?'Sending confirmation…':`Confirm ${proposal.version}`}</button>}
       {confirmationError&&<p role="alert">{confirmationError}</p>}
     </div>:<div className="dsh-director-gallery">{result.items.map(item=><MediaItem key={item.id} item={item} onEnlarge={setSelected}/>)}</div>}
     {selected&&<MediaDialog item={selected.item} startTime={selected.startTime} opener={selected.opener} onClose={close}/>}</section>;

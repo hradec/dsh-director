@@ -6,11 +6,12 @@ import vm from 'node:vm';
 import {JSDOM} from 'jsdom';
 import React,{act} from 'react';
 import {createRoot} from 'react-dom/client';
+import {Simulate} from 'react-dom/test-utils';
 
 async function component(file,name){
   const built=await build({entryPoints:[file],bundle:true,write:false,format:'cjs',platform:'node',external:['react','react-dom'],jsx:'automatic',loader:{'.css':'text'}});
   const module={exports:{}};
-  vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:createRequire(import.meta.url),setTimeout,clearTimeout});
+  vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:createRequire(import.meta.url),setTimeout,clearTimeout,fetch:(...args)=>globalThis.fetch(...args)});
   return module.exports[name];
 }
 async function render(t,Component,props){
@@ -36,6 +37,7 @@ test('Director extends only its own tool views and resolves the native session i
   apply({connection:connected,conversation,sessions:{list:sessionList,scope:id=>{assert.equal(id,'s');return scope;}},inject:(names,run)=>{assert.equal(names.join(','),'configForms');run({configForms,effect:(fn,label)=>{if(label==='director Settings section')fn();}});},effect(){},slots:{inject(_name,fn){fn();},register(def,Component){registrations.push({def,Component});return()=>{};}}});
   assert.equal(registrations.some(({def})=>def.name==='conversation.chat.node'),false,'native tool-call tree must retain file diffs, search, image and question interaction');
   assert.deepEqual(registrations.filter(({def})=>def.name==='tool.call.toolview').map(({def})=>def.key).sort(),['director_edit_review','director_show_media']);
+  assert.equal(registrations.find(({def})=>def.key==='director_show_media').def.inject('s').sessionId,'s');
   const settings=registrations.find(({def})=>def.name==='settings.section'&&def.id==='director');
   assert.ok(settings);assert.equal(settings.def.label(),'Director');assert.equal(settings.def.inject().form,settingsForm);
   const dock=registrations.find(({def})=>def.name==='conversation.input.dock');
@@ -57,6 +59,24 @@ test('Director Settings switch maps disabled and enabled to comfy-only and llama
   assert.deepEqual(writes,['llama-swap','comfy-only']);assert.equal(toggle.checked,false);
   await act(()=>{current={...current,writable:false};for(const listener of listeners)listener();});
   assert.equal(toggle.disabled,true);assert.match(document.body.textContent,/read-only/);
+});
+
+test('Director Settings saves exact names for all five ComfyUI workflow kinds',async t=>{
+  const Component=await component('src/client/GpuUsageSettings.jsx','GpuUsageSettings');
+  const fields=[['workflowTextToImage','Text to image'],['workflowImageEdit','Image edit'],['workflowReferenceToVideo','Reference to Video'],['workflowFirstLastFrameToVideo','First and/or last frame to Video'],['workflowVideoEdit','Video Edit']];
+  let current={status:'ready',value:{llmHandoffMode:'comfy-only',...Object.fromEntries(fields.map(([key])=>[key,'']))},writable:true};const listeners=new Set(),writes=[];
+  const form={getSnapshot:()=>current,subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},async set(field,value){writes.push([field,value]);current={...current,value:{...current.value,[field]:value}};for(const listener of listeners)listener();return true;}};
+  await render(t,Component,{form});
+  assert.equal(document.querySelectorAll('input[type="text"]').length,5);assert.equal(document.querySelectorAll('input[type="text"]')[0].value,'');
+  const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+  for(const [index,[key,label]] of fields.entries()){
+    const name=`${label} ComfyUI workflow name`,input=document.querySelector(`[aria-label="${name}"]`),value=`workflow-${index}.json`;assert.ok(input);
+    await act(()=>{setter.call(input,value);Simulate.change(input,{target:{value}});});
+  }
+  const save=document.querySelector('.dsh-director-workflow-save');assert.ok(save);assert.equal(save.disabled,false);
+  await act(async()=>{save.click();await new Promise(resolve=>setImmediate(resolve));});
+  assert.deepEqual(writes,fields.map(([key],index)=>[key,`workflow-${index}.json`]));
+  assert.deepEqual(fields.map(([key])=>current.value[key]),fields.map((_,index)=>`workflow-${index}.json`));
 });
 
 test('GPU panel and Send protection mount strictly for the Director preset',async t=>{
@@ -105,6 +125,34 @@ test('review displays clip Picture order, shot relevance and each reference imag
   assert.match(document.querySelector('[data-shot-id="s1"] .dsh-director-shot-refs').textContent,/Reference #1 · Picture 2/);
   assert.deepEqual([...document.querySelectorAll('[data-director-reference-gallery] img')].map(img=>img.alt),['Asset 1','Asset 2','Asset 3']);
   assert.match(document.querySelector('[data-proposal-status]').textContent,/Awaiting confirmation/);
+});
+
+test('review confirmation stays hidden until the mounted card receives a render acknowledgement',async t=>{
+  const MediaCard=await component('src/client/MediaCard.jsx','MediaCard');
+  const originalFetch=globalThis.fetch;let acknowledge;
+  globalThis.fetch=async()=>new Promise(resolve=>{acknowledge=resolve;});t.after(()=>{globalThis.fetch=originalFetch;});
+  const value={...media,card_id:'card-1',card_displayed:false,review_status:'awaiting_display'};
+  const block=result('director_show_media',JSON.stringify(value));
+  const nodes=[{key:'card',kind:'tool-call',data:{root:block}},{key:'early-reply',kind:'user',data:{seq:3,time:50,source:{kind:'user'},content:[{type:'text',text:'ok'}]}}];
+  const useChat=selector=>selector({order:nodes.map(node=>node.key),nodes:{get:key=>nodes.find(node=>node.key===key)}});
+  const sent=[];const root=await render(t,MediaCard,{block,sessionId:'s',useChat,sendConfirmation:async text=>{sent.push(text);}});
+  assert.equal(document.querySelector('[data-proposal-status]').dataset.proposalStatus,'awaiting_display');
+  assert.equal(document.querySelector('[data-action="confirm-proposal"]'),null);
+  await act(async()=>{acknowledge(new Response(JSON.stringify({presented_at:100}),{status:200,headers:{'content-type':'application/json'}}));await new Promise(resolve=>setImmediate(resolve));});
+  assert.equal(document.querySelector('[data-proposal-status]').dataset.proposalStatus,'awaiting_confirmation','the earlier reply remains non-approval after a later display');
+  const button=document.querySelector('[data-action="confirm-proposal"]');assert.ok(button);
+  await act(async()=>{button.click();await Promise.resolve();});
+  assert.equal(sent.length,1);assert.match(sent[0],/card-1/);
+  void root;
+});
+
+test('an active-goal authorization is visible and does not request card confirmation',async t=>{
+  const MediaCard=await component('src/client/MediaCard.jsx','MediaCard');
+  const value={...media,card_id:'card-auto',review_status:'auto_authorized',authorization_reason:'active_goal',card_displayed:true,presented_at:100};
+  await render(t,MediaCard,{block:result('director_show_media',JSON.stringify(value)),sessionId:'s',sendConfirmation:async()=>{throw Error('auto-authorized card must not ask for confirmation');}});
+  assert.equal(document.querySelector('[data-proposal-status]').dataset.proposalStatus,'auto_authorized');
+  assert.match(document.querySelector('.dsh-director-confirm-note').textContent,/active goal.*preflight/i);
+  assert.equal(document.querySelector('[data-action="confirm-proposal"]'),null);
 });
 
 test('a reference used by several C5 shots has one image preview on the card',async t=>{
@@ -186,7 +234,7 @@ test('incomplete reference card shows missing references rather than asking to a
   const pending={...media,proposal:{...media.proposal,pending_references:['White bodysuit layout']}};
   await render(t,MediaCard,{block:result('director_show_media',JSON.stringify(pending)),sessionId:'s'});
   assert.match(document.querySelector('.dsh-director-awaiting').textContent,/References pending/);
-  assert.match(document.querySelector('.dsh-director-confirm-note').textContent,/cannot be approved/);
+  assert.match(document.querySelector('.dsh-director-confirm-note').textContent,/cannot be submitted/);
   assert.ok(document.body.textContent.includes('White bodysuit layout'));
 });
 
@@ -600,7 +648,7 @@ test('review controls, reference warnings and confirmation instructions render i
   const proposal={...media,proposal:{version:'v3',shots:[{...media.proposal.shots[0],dialogue:undefined,reference_numbers:[]}]}};
   await render(t,MediaCard,{block:result('director_show_media',JSON.stringify(proposal)),sessionId:'s'});
   const text=document.body.textContent;
-  for(const label of ['Shot & reference review','1 clip / 1 shot','Awaiting confirmation','Dialogue','No dialogue','Incoming state','Ending state','Transition','No references are bound','Other media','Confirm v3 in chat','does not approve generation'])assert.ok(text.includes(label),label);
+  for(const label of ['Shot & reference review','1 clip / 1 shot','Awaiting confirmation','Dialogue','No dialogue','Incoming state','Ending state','Transition','No references are bound','Other media','Use the visible Confirm button','The button appears only after'])assert.ok(text.includes(label),label);
   assert.doesNotMatch(text,/\p{Script=Han}/u);
 });
 

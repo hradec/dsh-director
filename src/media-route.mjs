@@ -10,15 +10,29 @@ export function parseSingleRange(header,size){
   if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start>=size||end<start)throw new MediaError('Invalid range.',416);
   return {start,end:Math.min(end,size-1)};
 }
-export function createMediaHandler({store,requestRejection,controllers=new Set()}){
+async function readPresentationBody(req){
+  const chunks=[];let size=0;
+  for await(const chunk of req){size+=chunk.length;if(size>4096)throw new MediaError('Presentation acknowledgement is too large.',413);chunks.push(chunk);}
+  try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw new MediaError('Presentation acknowledgement is invalid JSON.',400);}
+}
+export function createMediaHandler({store,requestRejection,presentation,controllers=new Set()}){
   return async(req,res)=>{
     let media;const controller=new AbortController();controllers.add(controller);
     const abort=()=>controller.abort();res.once('close',abort);
     try{
       const rejection=requestRejection(req);
       if(rejection!==undefined){res.writeHead(rejection);res.end();return;}
-      if(!['GET','HEAD'].includes(req.method)){res.writeHead(405,{Allow:'GET, HEAD'});res.end();return;}
       const url=new URL(req.url,'http://localhost');
+      if(req.method==='POST'&&url.pathname==='/director-media/presented'){
+        if(url.search||String(req.headers['content-type']??'').split(';')[0].trim().toLowerCase()!=='application/json')throw new MediaError('Presentation acknowledgement is invalid.',400);
+        const body=await readPresentationBody(req);
+        if(!body||Array.isArray(body)||typeof body!=='object'||JSON.stringify(Object.keys(body).sort())!==JSON.stringify(['card_id','session_id']))throw new MediaError('Presentation acknowledgement is invalid.',400);
+        const presentedAt=presentation?.acknowledge(body.session_id,body.card_id);
+        if(!Number.isFinite(presentedAt)||presentedAt<=0)throw new MediaError('Card not found.',404);
+        const response=JSON.stringify({presented_at:presentedAt});
+        res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store','Content-Length':String(Buffer.byteLength(response))});res.end(response);return;
+      }
+      if(!['GET','HEAD'].includes(req.method)){res.writeHead(405,{Allow:'GET, HEAD'});res.end();return;}
       const id=/^\/director-media\/([A-Za-z0-9_-]{43})$/.exec(url.pathname)?.[1];
       const sessions=url.searchParams.getAll('session');
       if(!id||sessions.length!==1||[...url.searchParams.keys()].some(k=>k!=='session'))throw new MediaError('Media not found.',404);
@@ -39,8 +53,8 @@ export function createMediaHandler({store,requestRejection,controllers=new Set()
     }finally{res.removeListener('close',abort);controllers.delete(controller);await media?.handle.close().catch(()=>{});}
   };
 }
-export function registerMediaRoute(ctx,store){
+export function registerMediaRoute(ctx,store,presentation){
   const controllers=new Set();
-  const unregister=ctx.webServer.register({kind:'prefix',path:'/director-media',handler:createMediaHandler({store,controllers,requestRejection:req=>ctx.connection.requestRejection(req)})});
+  const unregister=ctx.webServer.register({kind:'prefix',path:'/director-media',handler:createMediaHandler({store,presentation,controllers,requestRejection:req=>ctx.connection.requestRejection(req)})});
   return ()=>{unregister();for(const controller of controllers)controller.abort();};
 }

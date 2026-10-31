@@ -14,7 +14,7 @@ export function apply(ctx){
       return ctx.slots.inject('settings.section',()=>ctx.slots.register({name:'settings.section',id:'director',order:25,label:()=>'Director',inject:()=>({form})},GpuUsageSettings));
     }),'director Settings section');
   });
-  const reviewInject=sessionId=>({sendConfirmation:async text=>{
+  const reviewInject=sessionId=>({sessionId,sendConfirmation:async text=>{
     if(ctx.connection.state.getSnapshot()!=='connected')throw Error('Reconnect before sending confirmation.');
     const status=await readLiveStatus();
     if(status.blocked||ctx.connection.state.getSnapshot()!=='connected')throw Error('Confirmation cannot be sent while the GPU handoff or connection is unavailable.');

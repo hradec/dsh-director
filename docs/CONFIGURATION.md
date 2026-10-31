@@ -103,6 +103,35 @@ terminal ComfyUI history is available; it does not pause native sends, call
 ComfyUI `/free`, show a VRAM release control, or wait for physical VRAM headroom.
 Do not use a fake llama-swap endpoint to bypass shared-GPU coordination.
 
+## Require named ComfyUI workflows
+
+In Harness **Settings → Director**, enter the exact saved workflow name returned by
+`director_workflows` with `action: "list"`. Keep the name (including `.json` and
+any relative subfolder) exactly as listed. Leave a field blank for ordinary
+workflow selection without a configured name requirement.
+
+| Task kind | Settings config key | Tool `workflow_kind` |
+| --- | --- | --- |
+| Text to image | `workflowTextToImage` | `text_to_image` |
+| Image edit | `workflowImageEdit` | `image_edit` |
+| Reference to Video | `workflowReferenceToVideo` | `reference_to_video` |
+| First and/or last frame to Video | `workflowFirstLastFrameToVideo` | `first_last_frame_to_video` |
+| Video Edit | `workflowVideoEdit` | `video_edit` |
+
+For a nonempty setting, the agent must inspect that exact saved name, adapt its UI
+canvas to an API graph when needed, and submit with the matching `workflow_kind`
+and `workflow_name`. The tool blocks a missing or mismatched selection and requires
+a successful same-session inspection before queueing. If the named workflow is
+missing or unsuitable, the agent must stop and ask rather than silently substitute.
+`workflow_kind: "other"` is reserved for unrelated non-generation tasks.
+
+ComfyUI saved names commonly identify UI-canvas workflows, while the submit tool
+accepts API-format graphs. The plugin enforces the agent-declared task kind/name and
+inspection record, but cannot infer user intent from an arbitrary graph, prove that
+an adapted API graph was derived from that canvas, or police direct ComfyUI requests
+outside the managed submit tool. A stronger graph-level binding would require a
+separate API-path or graph-hash settings design; these fields store saved UI names.
+
 ## Configure model and image input
 
 In Harness **Settings → Models**, add or edit your model provider:

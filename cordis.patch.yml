@@ -45,6 +45,9 @@
             name: '@deepseek-ai/dsh-tool-skill'
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
+            config:
+              mode: timed
+              timeout: 180
           - id: compaction
             name: cordis:group
             group: true

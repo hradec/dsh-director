@@ -70,6 +70,26 @@ test('socket abort and plugin disposal close active media handles',async t=>{
   for(let i=0;closed<2&&i<100;i++)await new Promise(r=>setTimeout(r,5));
   assert.equal(closed,2);assert.equal(unregistered,true);
 });
+test('presentation acknowledgement is same-origin, bounded to a registered session/card, and returns display time',async t=>{
+  const {createMediaHandler}=await import('../src/media-route.mjs');
+  const {createCardPresentationRegistry}=await import('../src/card-presentation.mjs');
+  const presentation=createCardPresentationRegistry({now:()=>123});presentation.register('s','card-1');
+  let mediaLookups=0;
+  const handler=createMediaHandler({presentation,requestRejection:req=>req.headers.origin==='http://evil.test'?403:undefined,store:{async openForPlayback(){mediaLookups++;throw Error('unexpected media lookup');}}});
+  const server=createServer(handler);await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();server.close();});
+  const url=`http://127.0.0.1:${server.address().port}/director-media/presented`;
+  const body=JSON.stringify({session_id:'s',card_id:'card-1'}),post=(payload=body,headers={'content-type':'application/json'})=>fetch(url,{method:'POST',headers,body:payload});
+  assert.equal((await post(body,{'content-type':'application/json',origin:'http://evil.test'})).status,403);
+  assert.equal(presentation.isPresented('s','card-1'),false);
+  const response=await post();assert.equal(response.status,200);assert.equal((await response.json()).presented_at,123);
+  assert.equal(presentation.isPresented('s','card-1'),true);
+  assert.equal((await post(JSON.stringify({session_id:'other',card_id:'card-1'}))).status,404);
+  assert.equal((await post(JSON.stringify({session_id:'s',card_id:'not-registered'}))).status,404);
+  assert.equal((await post(body,{'content-type':'text/plain'})).status,400);
+  assert.equal((await post('x'.repeat(4097))).status,413);
+  assert.equal(mediaLookups,0);
+});
+
 test('single range parser clamps end and rejects invalid or zero-sized ranges',async()=>{
   const {parseSingleRange}=await import('../src/media-route.mjs');
   assert.deepEqual(parseSingleRange('bytes=1-999',10),{start:1,end:9});

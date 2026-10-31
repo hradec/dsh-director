@@ -1,6 +1,8 @@
 import {validateProposal} from '../shot-proposal.mjs';
 const mimes={image:new Set(['image/png','image/jpeg','image/webp','image/gif']),video:new Set(['video/mp4','video/webm']),audio:new Set(['audio/flac','audio/mpeg','audio/wav'])};
 const failure=(code,message)=>({kind:'error',code,message});
+const reviewStatuses=new Set(['confirmed','auto_authorized','awaiting_display','awaiting_confirmation','superseded','invalid_references','references_pending','changes_requested','unverified']);
+const authorizationReasons=new Set(['active_goal','user_instruction']);
 export function parseMediaResult(block,sessionId){
   if(block?.kind!=='tool-result')return {kind:'running'};
   const text=(Array.isArray(block.content)?block.content:[]).filter(c=>c?.type==='text'&&typeof c.text==='string').map(c=>c.text).join('\n');
@@ -19,5 +21,9 @@ export function parseMediaResult(block,sessionId){
     catch{proposalWarning='The saved shot proposal is invalid and cannot be confirmed. Its media is still available; present a corrected proposal before generation.';}
   }
   const card_id=typeof value.card_id==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(value.card_id)?value.card_id:undefined;
-  return {kind:'ready',title:value.title??'Director media',items:value.items,...card_id?{card_id}:{},...proposal?{proposal}:{},...proposalWarning?{proposalWarning}:{}};
+  const review_status=reviewStatuses.has(value.review_status)?value.review_status:undefined;
+  const authorization_reason=review_status==='auto_authorized'&&authorizationReasons.has(value.authorization_reason)?value.authorization_reason:undefined;
+  const card_displayed=typeof value.card_displayed==='boolean'?value.card_displayed:undefined;
+  const presented_at=Number.isSafeInteger(value.presented_at)&&value.presented_at>0?value.presented_at:undefined;
+  return {kind:'ready',title:value.title??'Director media',items:value.items,...card_id?{card_id}:{},...proposal?{proposal}:{},...proposalWarning?{proposalWarning}:{},...review_status?{review_status}:{},...authorization_reason?{authorization_reason}:{},...card_displayed===undefined?{}:{card_displayed},...presented_at?{presented_at}:{}};
 }

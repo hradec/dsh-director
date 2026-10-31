@@ -383,3 +383,37 @@ test('legacy copied no-list inference is recomputed but declared missing assets 
   assert.deepEqual(proposalState(entries,'v2').pending,['Missing scene layout']);
   assert.throws(()=>assertProposalSubmission(entries,[{sha256:face},{sha256:layout}]),/pending/);
 });
+
+test("normal approval needs a rendered card before the user's confirmation timestamp",async()=>{
+  const {proposalState,assertProposalSubmission}=await api();
+  const card=proposal(1,'v1');card.value.session_id='s';card.value.card_id='card-1';
+  const reply=user(2,'Confirm v1');reply.time=99;
+  const authorization={requirePresentation:true,isPresented:(sessionId,cardId,time)=>sessionId==='s'&&cardId==='card-1'&&Number.isFinite(time)&&time>=100};
+  assert.equal(proposalState([card],'v1',undefined,authorization).status,'awaiting_display');
+  assert.equal(proposalState([card,reply],'v1',undefined,authorization).status,'awaiting_display','a pre-display reply cannot become approval later');
+  assert.throws(()=>assertProposalSubmission([card], [{sha256:face}],undefined,undefined,undefined,authorization),/not been acknowledged as rendered/i);
+  reply.time=101;
+  assert.equal(proposalState([card,reply],'v1',undefined,authorization).status,'confirmed');
+  assert.doesNotThrow(()=>assertProposalSubmission([card,reply],[{sha256:face}],undefined,undefined,undefined,authorization));
+});
+
+test('only an armed active goal or a clear current-task instruction authorizes unattended review',async()=>{
+  const {proposalState,assertProposalSubmission}=await api();
+  const card=proposal(2,'v1');card.value.session_id='s';card.value.card_id='card-1';
+  const noDisplay={requirePresentation:true,isPresented:()=>false};
+  const direct=[user(1,'Run this task unattended; no approval needed. Use your judgment.'),card];
+  const authorized=proposalState(direct,'v1',undefined,noDisplay);
+  assert.equal(authorized.status,'auto_authorized');assert.equal(authorized.authorization_reason,'user_instruction');
+  assert.equal(proposalState([card,user(3,'No approval needed; proceed.')],'v1',undefined,noDisplay).status,'auto_authorized','an explicit authorization after the card is not mistaken for a creative edit');
+  assert.doesNotThrow(()=>assertProposalSubmission(direct,[{sha256:face}],undefined,undefined,undefined,noDisplay));
+  const goal=proposalState([card],'v1',undefined,{...noDisplay,goal:{phase:'active',activation:'armed'}});
+  assert.equal(goal.status,'auto_authorized');assert.equal(goal.authorization_reason,'active_goal');
+  for(const staleGoal of [{phase:'paused',activation:'disarmed'},{phase:'active',activation:'disarmed'},{phase:'blocked',activation:'disarmed'}])assert.equal(proposalState([card],'v1',undefined,{...noDisplay,goal:staleGoal}).status,'awaiting_display');
+  assert.equal(proposalState([user(1,'The question timed out; no answer batch arrived.'),card],'v1',undefined,noDisplay).status,'awaiting_display');
+  assert.equal(proposalState([user(1,'Do not run unattended; ask me before approval.'),card],'v1',undefined,noDisplay).status,'awaiting_display');
+  const pending=proposal(2,'v2');pending.value.proposal.pending_references=['Missing costume image'];
+  const blocked=proposalState([user(1,'Run unattended; no approval needed.'),pending],'v2',undefined,noDisplay);
+  assert.equal(blocked.status,'references_pending');
+  assert.throws(()=>assertProposalSubmission([user(1,'Run unattended; no approval needed.'),pending],[{sha256:face}],undefined,undefined,undefined,noDisplay),/pending/);
+  assert.equal(proposalState([card,user(3,'No approval needed; change shot 1 to a close-up.')],'v1',undefined,noDisplay).status,'changes_requested');
+});

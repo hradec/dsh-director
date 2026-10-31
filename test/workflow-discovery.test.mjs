@@ -90,7 +90,7 @@ test('workflow tool lists ComfyUI UI workflows, inspects API graph, and fetches 
   const path=join(folder,'C3.json');
   await writeFile(path,JSON.stringify({prompt:videoGraph}));
   const seen=[];
-  const tool=createWorkflowTool({workspaceRoot:folder,fetchImpl:async url=>{
+  const tool=createWorkflowTool({workspaceRoot:folder,getWorkflowNames:()=>({text_to_image:'Qwen Image.json',image_edit:'Qwen Edit.json',reference_to_video:'',first_last_frame_to_video:'FLF.json',video_edit:''}),fetchImpl:async url=>{
     seen.push(url);
     if(url.endsWith('/userdata?dir=workflows&recurse=true'))return {ok:true,json:async()=>['H3 Context.json','Qwen Layout.json']};
     if(url.endsWith('/object_info/MiniMaxH3MotionContext'))return {ok:true,json:async()=>({MiniMaxH3MotionContext:{input:{required:{conditioning:['CONDITIONING']},optional:{context_latent:['LATENT'],context_frames:['IMAGE']}}}})};
@@ -98,8 +98,10 @@ test('workflow tool lists ComfyUI UI workflows, inspects API graph, and fetches 
   }});
   const listed=await tool.execute({action:'list'});
   assert.deepEqual(listed.workflows,['H3 Context.json','Qwen Layout.json']);
+  assert.deepEqual(listed.workflow_requirements,{text_to_image:'Qwen Image.json',image_edit:'Qwen Edit.json',first_last_frame_to_video:'FLF.json'});
   assert.deepEqual(listed.workspace_candidates,[{name:'C3.json',workflow_path:path,format:'api',node_count:7,continuity_mode:'video_frames'}]);
   assert.match(listed.next_step,/inspect.*workflow_path/i);
+  assert.match(listed.next_step,/nonempty.*mandatory/i);
   assert.match(listed.next_step,/shot3|clip3/i);
   assert.match(listed.next_step,/rg --files/i);
   const inspected=await tool.execute({action:'inspect',workflow_path:path});

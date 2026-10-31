@@ -6,10 +6,15 @@ import {createBundledProvider} from '../src/skills.mjs';
 import {apply as registerSubmit} from '../src/submit-comfy-video.mjs';
 import {proposalSchema} from '../src/shot-proposal.mjs';
 
-test('Director exposes both Motion Context routes without a single-frame continuation option',()=>{
+test('Director submit tools expose continuity routes and configured workflow selection',()=>{
   const tools=[];
   registerSubmit({jobs:{},effect:fn=>fn(),tools:{register:tool=>tools.push(tool)}});
-  for(const tool of tools)assert.deepEqual(tool.parameters.properties.continuity_requirement.enum,['sampler_latent','video_frames']);
+  for(const tool of tools){
+    assert.deepEqual(tool.parameters.properties.continuity_requirement.enum,['sampler_latent','video_frames']);
+    assert.deepEqual(tool.parameters.properties.workflow_kind.enum,['text_to_image','image_edit','reference_to_video','first_last_frame_to_video','video_edit','other']);
+    assert.equal(tool.parameters.properties.workflow_name.type,'string');
+  }
+  assert.match(String(tools.find(tool=>tool.name==='submit_comfy_job').description),/workflow_requirements/);
   assert.deepEqual(proposalSchema.properties.clip_workflows.items.properties.continuity_mode.enum,['none','video_frames','sampler_latent']);
 });
 
@@ -21,6 +26,12 @@ test('bundled and workspace guidance removes frame extraction fallback and keeps
     assert.match(text,/continuity_requirement[^\n]*sampler_latent/);
     assert.match(text,/video_frames/);
     assert.doesNotMatch(text,/not a supported Director continuation option|not offered as a production route|or use decoded frames as a continuation fallback/);
+    if(name==='SKILL.md'){
+      assert.match(text,/workflow_requirements/);assert.match(text,/exact saved `workflow_name`/);assert.match(text,/workflow_kind/);assert.match(text,/Do not substitute/);
+      assert.match(text,/When asked to show local image, video, or audio files, use `director_show_media`/);
+      assert.match(text,/Do not substitute a bare `<path>` link or `present` call for a media card/);
+      assert.match(text,/does not change DSH's generic file-link or sidebar behavior/);
+    }
     const workspace=resolve(base,'../../../../.agents/skills/director',name);
     if(await access(workspace).then(()=>true,()=>false))assert.equal(await readFile(workspace,'utf8'),text);
   }

@@ -7,11 +7,15 @@ import {mediaItemSchema,revisionSchema,prepareRevision} from './media-revision.m
 import {currentUploadEvidence} from './upload-evidence.mjs';
 import {nativeToolContents} from './native-tool-result.mjs';
 
-function reviewMetadata(value,entries){
+function reviewMetadata(value,entries,{presentation,getGoal,agent}={}){
   if(!value.proposal)return value;
-  const review=proposalState(entries,value.proposal.version,{card_id:value.card_id});
+  let goal;
+  try{goal=getGoal?.(agent);}catch{}
+  const authorization={goal,...presentation?{requirePresentation:true,isPresented:(sessionId,cardId,time)=>presentation.isPresented(sessionId,cardId,time)}:{}};
+  const review=proposalState(entries,value.proposal.version,{card_id:value.card_id},authorization);
   const {approval_seq:_oldApproval,...card}=value;
-  return {...card,review_status:review.status,approval_message:proposalConfirmationText(value),...review.approvedSeq===undefined?{}:{approval_seq:review.approvedSeq}};
+  const presentedAt=presentation?.presentedAt(value.session_id,value.card_id);
+  return {...card,review_status:review.status,approval_message:proposalConfirmationText(value),...presentation?{card_displayed:review.card_displayed,...presentedAt?{presented_at:presentedAt}:{}}:{},...review.authorization_reason?{authorization_reason:review.authorization_reason}:{},...review.approvedSeq===undefined?{}:{approval_seq:review.approvedSeq}};
 }
 
 export function inspectedExternalImage(session,path,since=0){
@@ -23,10 +27,10 @@ export function inspectedExternalImage(session,path,since=0){
     return !!actual&&resolve(actual)===resolve(path)&&contents.some(c=>c.type==='image'&&c.attachment?.attachmentId);
   }));
 }
-export function createMediaTool({store,fs,attachments}){
+export function createMediaTool({store,fs,attachments,getGoal,cardPresentation}){
   return {
     name:'director_show_media',
-    description:'Display local images/videos/audio (including FLAC/MP3/WAV) or create a complete shot/ref review card. To show an existing card again, pass only card_id; replay preserves approval and does not make an older card current. A proposal includes shots with actors/setting/framing/action, exact dialogue, continuity and duration. For final review set clip_dimensions:[{clip_id,width,height}] for every clip from the selected workflow canvas; never guess from the reference image. For dependent H3 clips set clip_workflows:[{clip_id,workflow_path,continuity_mode,continuity_source}] from the inspected graph; the path records the inspected template; submission checks the actual route and source and reports the execution-copy path. Missing dimensions are shown as unspecified and block reviewed H3 submission. For new cards set clip_references:[{clip_id,reference_numbers}] for every clip in actual Picture connection order, using displayed item numbers. Each shot reference_numbers is a relevance subset, not timed conditioning; all clip Pictures condition the whole clip. For small edits use director_edit_review. Actual local files only: current visible human uploads can be used directly; other external images need read_image first. This displays, never generates or approves. Show the card and request confirmation before writing detailed production prompts. Confirmation applies to the returned card_id; submission must identify its clip_id. An identical plan preserves the existing card and approval; changed content receives a fresh unique version.',
+    description:'Display local images/videos/audio (including FLAC/MP3/WAV) or create a complete shot/ref review card. To show an existing card again, pass only card_id; replay preserves approval and does not make an older card current. A proposal includes shots with actors/setting/framing/action, exact dialogue, continuity and duration. For final review set clip_dimensions:[{clip_id,width,height}] for every clip from the selected workflow canvas; never guess from the reference image. For dependent H3 clips set clip_workflows:[{clip_id,workflow_path,continuity_mode,continuity_source}] from the inspected graph; the path records the inspected template; submission checks the actual route and source and reports the execution-copy path. Missing dimensions are shown as unspecified and block reviewed H3 submission. For new cards set clip_references:[{clip_id,reference_numbers}] for every clip in actual Picture connection order, using displayed item numbers. Each shot reference_numbers is a relevance subset, not timed conditioning; all clip Pictures condition the whole clip. For small edits use director_edit_review. Actual local files only: current visible human uploads can be used directly; other external images need read_image first. This displays, never generates or approves. Show the review card and stop. Do not ask for approval in prose: the card Confirm button appears only after its client view acknowledges that it rendered. If review_status is awaiting_display, do not ask for approval or submit; report the display problem. A normal chat confirmation is accepted only after that acknowledgement. An active, armed /goal or a clear current-task no-interruption instruction can authorize continuation without confirmation; a timeout alone never authorizes it. Confirmation applies to the returned card_id; submission must identify its clip_id. An identical plan preserves the existing card and approval; changed content receives a fresh unique version.',
     // Keep the model-facing root flat: local constrained decoders can reduce
     // root oneOf/not branches to empty calls. Execute enforces the same modes.
     parameters:{type:'object',properties:{card_id:{type:'string',minLength:1,description:'Replay an existing card from this session without modifying approval; use latest to recover the current card and its current review_status/approval_seq. Use alone.'},title:{type:'string'},proposal:proposalSchema,items:{type:'array',minItems:1,maxItems:12,items:mediaItemSchema,description:'Required for new media or a new proposal; omit only when replaying with card_id.'}},additionalProperties:false},
@@ -39,7 +43,8 @@ export function createMediaTool({store,fs,attachments}){
         const entries=entriesFromEvents(session.snapshotEvents?.()??[]);
         const base=(args.card_id==='latest'?latestProposal(entries):entries.findLast(entry=>entry.kind==='proposal'&&!entry.value.replay&&entry.value.card_id===args.card_id))?.value;
         if(!base||base.session_id!==session.id)throw new MediaError('Card unavailable in this session. Use a card_id returned by director_show_media or present a full proposal.',404);
-        return reviewMetadata({...structuredClone(base),replay:true},entries);
+        if(base.proposal)cardPresentation?.register(session.id,base.card_id);
+        return reviewMetadata({...structuredClone(base),replay:true},entries,{presentation:cardPresentation,getGoal,agent:exec.agent});
       }
       let expectedHashes;const baseCardId=args?.revision?.base_card_id;
       if(args?.revision!==undefined){
@@ -65,17 +70,19 @@ export function createMediaTool({store,fs,attachments}){
       }
       if(proposal)try{proposal=validateProposal(proposal,records.length,records);}catch(error){throw new MediaError(error.message);}
       const value={kind:'director-media',version:1,card_id:randomUUID(),session_id:session.id,title:typeof args.title==='string'?args.title.slice(0,2000):'Director media',items:records,...proposal?{proposal}:{}};
+      if(proposal)cardPresentation?.register(session.id,value.card_id);
       if(proposal&&typeof session.snapshotEvents==='function'){
         const events=session.snapshotEvents(),entries=entriesFromEvents(events);
         const current=latestProposal(entries)?.value;
         if(baseCardId&&current?.card_id!==baseCardId)throw new MediaError('A newer card appeared during this revision; use the latest card_id.',409);
         if(current?.card_id&&sameProposalContents(current,value)){
           const paths=card=>JSON.stringify(card.proposal.clip_workflows?.map(clip=>[clip.clip_id,clip.workflow_path]));
-          if(paths(current)===paths(value))return reviewMetadata({...structuredClone(current),replay:true},entries);
+          if(paths(current)===paths(value)){cardPresentation?.register(session.id,current.card_id);return reviewMetadata({...structuredClone(current),replay:true},entries,{presentation:cardPresentation,getGoal,agent:exec.agent});}
           // Preserve the approved creative identity while retaining the latest
           // technical path metadata. A replay flag would discard this update.
           const updated={...value,card_id:current.card_id,proposal:{...proposal,version:current.proposal.version}};
-          return reviewMetadata(updated,[...entries,{seq:Math.max(0,...events.map(e=>e.seq))+1,kind:'proposal',value:updated}]);
+          cardPresentation?.register(session.id,updated.card_id);
+          return reviewMetadata(updated,[...entries,{seq:Math.max(0,...events.map(e=>e.seq))+1,kind:'proposal',value:updated}],{presentation:cardPresentation,getGoal,agent:exec.agent});
         }
         const used=new Set(entries.filter(entry=>entry.kind==='proposal').map(entry=>entry.value.proposal.version.trim().toLowerCase()));
         if(used.has(proposal.version.trim().toLowerCase())){
@@ -84,9 +91,9 @@ export function createMediaTool({store,fs,attachments}){
         }
         const state=proposalState([...entries,{seq:Math.max(0,...events.map(e=>e.seq))+1,kind:'proposal',value}],proposal.version);
         if(state.pending.length)value.proposal={...proposal,pending_references:state.pending.slice(0,12).map(t=>t.slice(0,2000))};
-        return reviewMetadata(value,[...entries,{seq:Math.max(0,...events.map(e=>e.seq))+1,kind:'proposal',value}]);
+        return reviewMetadata(value,[...entries,{seq:Math.max(0,...events.map(e=>e.seq))+1,kind:'proposal',value}],{presentation:cardPresentation,getGoal,agent:exec.agent});
       }
-      return proposal?reviewMetadata(value,[{seq:1,kind:'proposal',value}]):value;
+      return proposal?reviewMetadata(value,[{seq:1,kind:'proposal',value}],{presentation:cardPresentation,getGoal,agent:exec.agent}):value;
     },
     output:{schema:{type:'object'},render(_args,value){return [{type:'text',text:JSON.stringify(value)}];},presentationMeta(_args,value){return value;}}
   };
@@ -95,7 +102,7 @@ export function createMediaTool({store,fs,attachments}){
 export function createEditReviewTool(mediaTool){
   return {
     name:'director_edit_review',
-    description:'Edit the latest shot/ref card using its card_id. Omit version: a fresh label is automatic (reused labels are also replaced). Use the returned version for confirmation. add appends path + responsibility to shot_ids; replace swaps reference_number for path + responsibility; remove deletes reference_number; shots patches text/roles, complete clip_dimensions or clip_workflows lists. Use visible current uploads directly; otherwise read_image first. A costume change includes the new responsibility, reference_changes narrowing an old Actor + Costume role to Actor only, and shot_changes replacing conflicting wardrobe text while preserving action/dialogue/timing. All changes are saved in one card. The returned card is authoritative and still needs user confirmation; summarize its actual changes and stop.',
+    description:'Edit the latest shot/ref card using its card_id. Omit version: a fresh label is automatic (reused labels are also replaced). Use the returned version for confirmation. add appends path + responsibility to shot_ids; replace swaps reference_number for path + responsibility; remove deletes reference_number; shots patches text/roles, complete clip_dimensions or clip_workflows lists. Use visible current uploads directly; otherwise read_image first. A costume change includes the new responsibility, reference_changes narrowing an old Actor + Costume role to Actor only, and shot_changes replacing conflicting wardrobe text while preserving action/dialogue/timing. All changes are saved in one card. Show the returned card and stop; do not ask for approval in prose. Its Confirm button appears only after the client acknowledges rendering; if review_status is awaiting_display, report the display problem instead of requesting approval. If the card is auto_authorized, continue within the current request scope.',
     parameters:{type:'object',properties:{
       base_card_id:revisionSchema.properties.base_card_id,version:revisionSchema.properties.version,
       operation:{type:'string',enum:['add','replace','remove','shots']},

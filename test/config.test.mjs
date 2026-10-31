@@ -3,11 +3,21 @@ import assert from 'node:assert/strict';
 import {createSubmitComfyVideo} from '../src/submit-comfy-video.mjs';
 import {Config} from '../src/index.mjs';
 import {createServer} from 'node:http';
+import {readFile} from 'node:fs/promises';
 
-test('handoff mode is a live setting with the original shared-GPU default',()=>{
+test('handoff and five workflow names are live settings with safe defaults',()=>{
   const defaultConfig=Config({}),externalConfig=Config({llmHandoffMode:'comfy-only'});
   assert.equal(defaultConfig.llmHandoffMode.get(),'llama-swap');
   assert.equal(externalConfig.llmHandoffMode.get(),'comfy-only');
+  const workflowKeys=['workflowTextToImage','workflowImageEdit','workflowReferenceToVideo','workflowFirstLastFrameToVideo','workflowVideoEdit'];
+  for(const key of workflowKeys)assert.equal(defaultConfig[key].get(),'');
+  const configured=Config({workflowTextToImage:'t2i.json',workflowImageEdit:'edit.json',workflowReferenceToVideo:'ref-video.json',workflowFirstLastFrameToVideo:'flf.json',workflowVideoEdit:'video-edit.json'});
+  assert.deepEqual(workflowKeys.map(key=>configured[key].get()),['t2i.json','edit.json','ref-video.json','flf.json','video-edit.json']);
+});
+
+test('Director preset keeps questions answerable with a 180-second timed default',async()=>{
+  const preset=await readFile(new URL('../cordis.patch.yml',import.meta.url),'utf8');
+  assert.match(preset,/- id: tool-ask-user\n\s+name: '@deepseek-ai\/dsh-tool-ask-user'\n\s+config:\n\s+mode: timed\n\s+timeout: 180/);
 });
 
 test('configured Comfy and swap origins own every network request',async()=>{
