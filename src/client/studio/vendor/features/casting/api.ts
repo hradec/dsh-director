@@ -48,6 +48,7 @@ export interface ActorForm {
   include_footwear: boolean;
   seed: number | null;
   fixed_seed: boolean;
+  ref_labels?: Record<string, string>;
 }
 
 export interface ActorRecord {
@@ -58,6 +59,8 @@ export interface ActorRecord {
   description: string;
   /** Plugin: inputs of the generation job that produced this asset, for the edit picker. */
   form?: ActorForm | null;
+  /** Plugin: stored reference images of that job, refilled into the upload slots on edit. */
+  references?: Record<string, { url: string; filename: string; label: string }> | null;
   body_description?: string;
   hair_description?: string;
   has_actor_ref?: boolean;

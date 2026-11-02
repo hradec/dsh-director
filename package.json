@@ -1,6 +1,6 @@
 {
   "name": "dsh-director",
-  "version": "0.1.81",
+  "version": "0.1.84",
   "description": "Director tools, standalone Assets and Production sidebar tabs, optional H3 guidance, and conversation media previews for DeepSeek Harness Web",
   "license": "MIT",
   "repository": {

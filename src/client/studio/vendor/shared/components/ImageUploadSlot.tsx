@@ -7,6 +7,8 @@ export interface LocalImage {
 
 interface Props {
   label: string;
+  // Plugin: when set, the label becomes click-to-rename so the human can cite the reference by name.
+  onRename?: (name: string) => void;
   required?: boolean;
   hint?: string;
   value: LocalImage | null;
@@ -18,6 +20,7 @@ interface Props {
 
 export function ImageUploadSlot({
   label,
+  onRename,
   required,
   hint,
   value,
@@ -29,6 +32,8 @@ export function ImageUploadSlot({
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState("");
 
   const assignFile = useCallback(
     (file: File | null) => {
@@ -63,10 +68,38 @@ export function ImageUploadSlot({
   return (
     <div className={`upload-slot ${error ? "has-error" : ""} ${disabled ? "disabled" : ""}`}>
       <div className="upload-slot-header">
-        <label htmlFor={inputId}>
-          {label}
-          {required ? <span className="req"> *</span> : null}
-        </label>
+        {onRename && renaming ? (
+          <input
+            autoFocus
+            className="upload-slot-name"
+            aria-label="Reference name"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                const name = draft.trim();
+                if (name) onRename(name);
+                setRenaming(false);
+              } else if (e.key === "Escape") setRenaming(false);
+            }}
+            onBlur={() => {
+              const name = draft.trim();
+              if (name) onRename(name);
+              setRenaming(false);
+            }}
+          />
+        ) : onRename ? (
+          <button type="button" title="Click to rename this reference" onClick={() => { setDraft(label); setRenaming(true); }}>
+            {label}
+            {required ? <span className="req"> *</span> : null}
+          </button>
+        ) : (
+          <label htmlFor={inputId}>
+            {label}
+            {required ? <span className="req"> *</span> : null}
+          </label>
+        )}
         {value ? (
           <div className="upload-actions">
             <button type="button" className="btn ghost sm" disabled={disabled} onClick={() => inputRef.current?.click()}>

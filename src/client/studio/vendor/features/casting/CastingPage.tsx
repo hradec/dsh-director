@@ -48,6 +48,8 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
   const [libraryActors, setLibraryActors] = useState<ActorRecord[]>([]);
   const [editId, setEditId] = useState("");
   const [extraImgs, setExtraImgs] = useState<(LocalImage | null)[]>([]);
+  const [refLabels, setRefLabels] = useState<Record<string, string>>({});
+  const [wardrobeOpen, setWardrobeOpen] = useState(false);
   const [lightbox, setLightbox] = useState<{ slots: OutputSlot[]; index: number } | null>(null);
 
   useEffect(() => {
@@ -90,7 +92,33 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
       if (form.seed !== null && form.seed !== undefined) { setSeed(String(form.seed)); setFixedSeed(!!form.fixed_seed); }
       setIncludeHeadwear(!!form.include_headwear);
       setIncludeFootwear(!!form.include_footwear);
+      setRefLabels({ ...(form.ref_labels ?? {}) });
     }
+    void fillReferences(picked);
+  }
+
+  // Plugin: fetch the stored reference images back into the upload slots so a regeneration keeps them.
+  // An asset with no stored job references falls back to its own master render as the Actor reference.
+  async function fillReferences(picked: ActorRecord) {
+    const references = picked.references ?? null;
+    setActorImg(null);
+    setWardrobeImg(null);
+    setWardrobeOpen(false);
+    setExtraImgs([]);
+    const toLocal = async (ref: { url: string; filename: string }) => {
+      const blob = await fetch(ref.url).then((r) => r.blob());
+      return { file: new File([blob], ref.filename, { type: blob.type }), previewUrl: URL.createObjectURL(blob) };
+    };
+    const primary = references?.actor_image ?? (picked.urls?.master ? { url: picked.urls.master, filename: picked.files?.master || "master.png" } : null);
+    if (primary) setActorImg(await toLocal(primary));
+    if (!references) return;
+    if (references.wardrobe_image) {
+      setWardrobeOpen(true);
+      setWardrobeImg(await toLocal(references.wardrobe_image));
+    }
+    const extras: (LocalImage | null)[] = [];
+    for (const key of Object.keys(references)) if (/^reference_image_\d+$/.test(key)) extras.push(await toLocal(references[key]));
+    setExtraImgs(extras);
   }
 
   useEffect(() => {
@@ -112,6 +140,8 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
     setActorImg(null);
     setWardrobeImg(null);
     setExtraImgs([]);
+    setRefLabels({});
+    setWardrobeOpen(false);
     setIncludeHeadwear(false);
     setIncludeFootwear(false);
     setFieldErrors({});
@@ -188,6 +218,13 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
       extraImgs.forEach((img, index) => {
         if (img) fd.set(`reference_image_${index + 1}`, img.file, img.file.name);
       });
+      const labels: Record<string, string> = {};
+      if (actorImg) labels.actor_image = refLabels.actor_image || "Actor";
+      if (wardrobeImg) labels.wardrobe_image = refLabels.wardrobe_image || "Wardrobe";
+      extraImgs.forEach((img, index) => {
+        if (img) labels[`reference_image_${index + 1}`] = refLabels[`reference_image_${index + 1}`] || `Reference ${index + 3}`;
+      });
+      fd.set("reference_labels", JSON.stringify(labels));
       setJob(await generateActor(fd));
     } catch (e) {
       setFormError(e instanceof Error ? e.message : String(e));
@@ -233,6 +270,8 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
     setActorImg(null);
     setWardrobeImg(null);
     setExtraImgs([]);
+    setRefLabels({});
+    setWardrobeOpen(false);
     setIncludeHeadwear(false);
     setIncludeFootwear(false);
     setFixedSeed(false);
@@ -322,16 +361,35 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
 
           <div className="block">
             <div className="block-title">References</div>
+            <label className="check" style={{ marginBottom: "0.5rem" }}>
+              <input
+                type="checkbox"
+                checked={wardrobeOpen}
+                disabled={isRunning}
+                onChange={(e) => {
+                  setWardrobeOpen(e.target.checked);
+                  if (!e.target.checked) {
+                    setWardrobeImg(null);
+                    setIncludeHeadwear(false);
+                    setIncludeFootwear(false);
+                  }
+                }}
+              />
+              <span>Actor has wardrobe</span>
+            </label>
             <div className="upload-row two">
               <ImageUploadSlot
-                label="Actor"
+                label={refLabels.actor_image || "Actor"}
+                onRename={(name) => setRefLabels((l) => ({ ...l, actor_image: name }))}
                 value={actorImg}
                 onChange={setActorImg}
                 disabled={isRunning}
                 error={fieldErrors.actor}
               />
+              {wardrobeOpen ? (
               <ImageUploadSlot
-                label="Wardrobe"
+                label={refLabels.wardrobe_image || "Wardrobe"}
+                onRename={(name) => setRefLabels((l) => ({ ...l, wardrobe_image: name }))}
                 value={wardrobeImg}
                 onChange={(value) => {
                   setWardrobeImg(value);
@@ -343,20 +401,34 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
                 disabled={isRunning}
                 error={fieldErrors.wardrobe}
               />
+              ) : null}
             </div>
-            {extraImgs.map((img, index) => (
-              <div className="upload-row two" key={`extra-${index}`} style={{ marginTop: "0.5rem" }}>
-                <ImageUploadSlot
-                  label={`Reference ${index + 3}`}
-                  value={img}
-                  onChange={(value) => setExtraImgs((list) => list.map((entry, position) => (position === index ? value : entry)))}
-                  disabled={isRunning}
-                />
-                <button type="button" className="btn secondary sm" disabled={isRunning} onClick={() => setExtraImgs((list) => list.filter((_, position) => position !== index))}>
-                  Remove reference
-                </button>
+            {extraImgs.length ? (
+              <div className="upload-row two" style={{ marginTop: "0.65rem" }}>
+                {extraImgs.map((img, index) => (
+                  <div key={`extra-${index}`} style={{ position: "relative" }}>
+                    <ImageUploadSlot
+                      label={refLabels[`reference_image_${index + 1}`] || `Reference ${index + 3}`}
+                      onRename={(name) => setRefLabels((l) => ({ ...l, [`reference_image_${index + 1}`]: name }))}
+                      value={img}
+                      onChange={(value) => setExtraImgs((list) => list.map((entry, position) => (position === index ? value : entry)))}
+                      disabled={isRunning}
+                    />
+                    <button
+                      type="button"
+                      className="btn ghost sm"
+                      title="Remove reference"
+                      aria-label="Remove reference"
+                      disabled={isRunning}
+                      style={{ position: "absolute", top: "-0.5rem", right: "-0.4rem", width: "1.5rem", height: "1.5rem", padding: 0, borderRadius: "999px", border: "1px solid currentColor", lineHeight: 1 }}
+                      onClick={() => setExtraImgs((list) => list.filter((_, position) => position !== index))}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
               </div>
-            ))}
+            ) : null}
             <button type="button" className="btn secondary sm" style={{ marginTop: "0.5rem" }} disabled={isRunning || extraImgs.length >= 6} onClick={() => setExtraImgs((list) => [...list, null])}>
               + Add reference
             </button>

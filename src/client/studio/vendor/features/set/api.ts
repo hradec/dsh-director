@@ -40,7 +40,9 @@ export interface SceneRecord {
   urls: Record<string, string>;
   meta?: Record<string, unknown>;
   /** Plugin: inputs of the generation job that produced this scene, for the edit picker. */
-  form?: { angle_prompts: string; prepend_text: string; append_text: string; negative_prompt: string; seed: number | null; fixed_seed: boolean } | null;
+  form?: { angle_prompts: string; prepend_text: string; append_text: string; negative_prompt: string; seed: number | null; fixed_seed: boolean; ref_labels?: Record<string, string> } | null;
+  /** Plugin: stored reference images of that job, refilled into the upload slots on edit. */
+  references?: Record<string, { url: string; filename: string; label: string }> | null;
   project_id?: string | null;
 }
 

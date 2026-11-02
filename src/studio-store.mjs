@@ -85,13 +85,16 @@ function mediaType(filename,bytes){
   return type;
 }
 
+// Slot labels typed on the studio page ("Face look", "Armor pose") so the human can cite a reference by name in chat.
+function safeLabels(value){const out={};if(value&&typeof value==='object')for(const [key,label] of Object.entries(value)){if(/^[A-Za-z0-9_-]{1,64}$/.test(key)&&typeof label==='string'&&label.trim())out[key]=safeText(label.trim(),80);}return out;}
+
 // ponytail: one serialized JSON document keeps this first standalone port simple; per-project files can replace it if library size becomes a bottleneck.
 function presentGenerationJob(job,s){
   const asset=s.assets.find(item=>item.kind===job.kind&&item.job_id===job.id&&Object.keys(item.files??{}).length);
   const outputs=asset?Object.entries(asset.files).map(([key,path])=>({key,filename:s.files.find(file=>file.path===path)?.filename??null,path})):null;
   const refAsset=job.ref_asset_id?s.assets.find(item=>item.id===job.ref_asset_id):null;
   const inputs=refAsset?Object.entries(refAsset.files??{}).map(([key,path])=>{const file=s.files.find(value=>value.path===path);return file?{key,filename:file.filename,path}:null;}).filter(Boolean):[];
-  return {...job,status:asset&&(job.status==='queued'||job.status==='running')?'succeeded':job.status,asset_id:asset?asset.id:job.asset_id||null,ref_names:refAsset?.file_names??{},outputs,inputs};
+  return {...job,status:asset&&(job.status==='queued'||job.status==='running')?'succeeded':job.status,asset_id:asset?asset.id:job.asset_id||null,ref_names:refAsset?.file_names??{},ref_labels:job.ref_labels??{},outputs,inputs};
 }
 export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}={}){
   if(!root||typeof root!=='string')throw new TypeError('A persistent Studio data root is required.');
@@ -165,7 +168,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
         files.push({...await putMedia({filename:ref.filename,bytes:ref.bytes,kind}),key});references.push(key);
       }
       return change(s=>{
-        const job={id:id(),kind,status:'queued',error:null,name:safeText(input.name,200),notes:safeText(input.notes,10000),description:safeText(input.description,20000),body_description:safeText(input.body_description,20000),hair_description:safeText(input.hair_description,20000),angle_prompts:safeText(input.angle_prompts,20000),prepend_text:safeText(input.prepend_text,20000),append_text:safeText(input.append_text,20000),negative_prompt:safeText(input.negative_prompt,20000),include_headwear:!!input.include_headwear,include_footwear:!!input.include_footwear,seed:Number.isSafeInteger(input.seed)?input.seed:null,fixed_seed:!!input.fixed_seed,project_id:input.project_id||null,asset_id:input.asset_id||null,ref_asset_id:null,created_at:stamp(),updated_at:stamp()};
+        const job={id:id(),kind,status:'queued',error:null,name:safeText(input.name,200),notes:safeText(input.notes,10000),description:safeText(input.description,20000),body_description:safeText(input.body_description,20000),hair_description:safeText(input.hair_description,20000),angle_prompts:safeText(input.angle_prompts,20000),prepend_text:safeText(input.prepend_text,20000),append_text:safeText(input.append_text,20000),negative_prompt:safeText(input.negative_prompt,20000),include_headwear:!!input.include_headwear,include_footwear:!!input.include_footwear,seed:Number.isSafeInteger(input.seed)?input.seed:null,fixed_seed:!!input.fixed_seed,project_id:input.project_id||null,asset_id:input.asset_id||null,ref_labels:safeLabels(input.ref_labels),ref_asset_id:null,created_at:stamp(),updated_at:stamp()};
         if(files.length){
           const refAsset={id:id(),kind:'layouts',name:`[job ${job.id}] request references`,notes:'Temporary reference inputs for an Assets tab generation request; safe to delete once the request completes.',pipeline_id:'',job_id:job.id,seed:null,created_at:stamp(),files:Object.fromEntries(files.map(file=>[file.key,file.path])),file_names:Object.fromEntries(files.map(file=>[file.key,file.filename])),meta:{temporary_job_refs:true},urls:{},project_id:job.project_id};
           s.assets.push(refAsset);s.files.push(...files);job.ref_asset_id=refAsset.id;

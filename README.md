@@ -6,7 +6,7 @@ images, videos and generated audio inside the conversation. It also provides sta
 **Assets** and **Production** tabs in DSH's right sidebar; there is no Director Studio
 server or install dependency.
 
-Version 0.1.81. Original implementation and local skill wrappers use MIT. Official MiniMax prompt
+Version 0.1.84. Original implementation and local skill wrappers use MIT. Official MiniMax prompt
 guides are not included; users can obtain pinned copies separately under upstream
 terms after native human confirmation. See [LICENSE](LICENSE),
 [third-party notices](THIRD_PARTY_NOTICES.md), and the
@@ -77,7 +77,11 @@ settings. Changing one does not change the others.
   **Edit** button on a Library actor, scene or prop) regenerates that asset in
   place — its stored description, prompts, seed and options refill the form, and
   Production references keep pointing at it. Every page also takes up to six
-  **+ Add reference** images besides the standard slots.
+  **+ Add reference** images besides the standard slots; stored references refill
+  their slots on edit (assets without stored job references fall back to their own
+  master render), each slot's name is click-to-edit so a later message can
+  cite it (e.g. "use the Armor pose again"), and the Casting page hides its
+  wardrobe slot behind an **Actor has wardrobe** toggle.
   The Assets tab's **Ask DSH to create** form sends a
   project-scoped request to the active DSH conversation; the agent must inspect a
   compatible local ComfyUI workflow, generate the asset, and use `director_studio`

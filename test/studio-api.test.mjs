@@ -75,9 +75,10 @@ test('Production edits work but the UI cannot bypass Director review to queue ge
 
 test('Actors studio page queues a DSH job whose refs persist and which completes when the agent imports with the job token',async t=>{
   const {base,store,project}=await setup(t);
-  const form=new FormData();form.set('name','Mira');form.set('description','Professional actor casting reference');form.set('fixed_seed','false');form.set('project_id',project.id);form.set('actor_image',new Blob([png],{type:'image/png'}),'face.png');form.set('reference_image_1',new Blob([png],{type:'image/png'}),'pose.png');
+  const form=new FormData();form.set('name','Mira');form.set('description','Professional actor casting reference');form.set('fixed_seed','false');form.set('project_id',project.id);form.set('actor_image',new Blob([png],{type:'image/png'}),'face.png');form.set('reference_image_1',new Blob([png],{type:'image/png'}),'pose.png');form.set('reference_labels',JSON.stringify({actor_image:'Face look',reference_image_1:'Armor pose'}));
   const queued=await fetch(base+'/api/actors/generate',{method:'POST',headers:{'x-director-session':'session-a'},body:form});assert.equal(queued.status,200);
   const job=await queued.json();assert.equal(job.status,'queued');assert.equal(job.name,'Mira');assert.deepEqual(Object.keys(job.input_previews).sort(),['actor_image','reference_image_1']);
+  assert.equal(job.input_labels.reference_image_1,'Armor pose');assert.equal(job.input_files.actor_image,'face.png');
   const posePreview=await fetch(new URL(job.input_previews.reference_image_1,base));assert.equal(posePreview.status,200);
   const preview=await fetch(new URL(job.input_previews.actor_image,base));assert.equal(preview.status,200);assert.deepEqual(Buffer.from(await preview.arrayBuffer()),png);
   assert.equal((await (await json(base,'/api/actors/jobs?limit=5')).json())[0].id,job.id);
@@ -88,6 +89,9 @@ test('Actors studio page queues a DSH job whose refs persist and which completes
   const saved=await (await json(base,`/api/actors/jobs/${job.id}/save`,{method:'POST',body:JSON.stringify({name:'Mira V2'})})).json();assert.equal(saved.id,imported.id);assert.equal(saved.name,'Mira V2');
   const listed=await (await json(base,'/api/actors')).json();assert.deepEqual(listed.items.map(item=>item.id),[imported.id]);
   assert.equal(listed.items[0].form.description,'Professional actor casting reference');assert.equal(listed.items[0].form.fixed_seed,false);
+  assert.equal(listed.items[0].form.ref_labels.actor_image,'Face look');
+  assert.equal(listed.items[0].references.actor_image.filename,'face.png');assert.equal(listed.items[0].references.actor_image.label,'Face look');
+  assert.match(listed.items[0].references.reference_image_1.url,/\/api\/files\/library\/layouts\/[A-Za-z0-9-]+\/reference_image_1\?session=session-a$/);
   const second=new FormData();second.set('name','Spare');second.set('project_id',project.id);
   const queuedAgain=await (await fetch(base+'/api/props/generate',{method:'POST',headers:{'x-director-session':'session-a'},body:second})).json();
   const cancelled=await (await json(base,`/api/props/jobs/${queuedAgain.id}/cancel`,{method:'POST',body:'{}'})).json();assert.equal(cancelled.status,'cancelled');

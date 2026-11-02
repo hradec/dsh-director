@@ -57,6 +57,7 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
   const [libraryScenes, setLibraryScenes] = useState<SceneRecord[]>([]);
   const [editId, setEditId] = useState("");
   const [extraImgs, setExtraImgs] = useState<(LocalImage | null)[]>([]);
+  const [refLabels, setRefLabels] = useState<Record<string, string>>({});
   const [lightbox, setLightbox] = useState<{ slots: OutputSlot[]; index: number } | null>(null);
 
   // Plugin: the edit picker regenerates one existing library scene instead of creating a new one.
@@ -88,7 +89,26 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
       setPrepend(form.prepend_text || "");
       setAppend(form.append_text || "");
       if (form.seed !== null && form.seed !== undefined) { setSeed(String(form.seed)); setFixedSeed(!!form.fixed_seed); }
+      setRefLabels({ ...(form.ref_labels ?? {}) });
     }
+    void fillReferences(picked);
+  }
+
+  // Plugin: fetch the stored reference images back into the upload slots; fall back to the asset's own master render.
+  async function fillReferences(picked: SceneRecord) {
+    const references = picked.references ?? null;
+    setSceneImg(null);
+    setExtraImgs([]);
+    const toLocal = async (ref: { url: string; filename: string }) => {
+      const blob = await fetch(ref.url).then((r) => r.blob());
+      return { file: new File([blob], ref.filename, { type: blob.type }), previewUrl: URL.createObjectURL(blob) };
+    };
+    const primary = references?.scene_image ?? (picked.urls?.master ? { url: picked.urls.master, filename: picked.files?.master || "master.png" } : null);
+    if (primary) setSceneImg(await toLocal(primary));
+    if (!references) return;
+    const extras: (LocalImage | null)[] = [];
+    for (const key of Object.keys(references)) if (/^reference_image_\d+$/.test(key)) extras.push(await toLocal(references[key]));
+    setExtraImgs(extras);
   }
 
   useEffect(() => {
@@ -119,6 +139,7 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
     setAppend(defaults?.default_append || "");
     setSceneImg(null);
     setExtraImgs([]);
+    setRefLabels({});
     setAdvancedOpen(false);
     setFixedSeed(false);
     setSeed("");
@@ -210,6 +231,12 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
       extraImgs.forEach((img, index) => {
         if (img) fd.set(`reference_image_${index + 1}`, img.file, img.file.name);
       });
+      const labels: Record<string, string> = {};
+      if (sceneImg) labels.scene_image = refLabels.scene_image || "Scene image";
+      extraImgs.forEach((img, index) => {
+        if (img) labels[`reference_image_${index + 1}`] = refLabels[`reference_image_${index + 1}`] || `Reference ${index + 2}`;
+      });
+      fd.set("reference_labels", JSON.stringify(labels));
       setJob(await generateScene(fd));
     } catch (e) {
       setFormError(e instanceof Error ? e.message : String(e));
@@ -349,7 +376,8 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
           <div className="block">
             <div className="block-title">2. Scene reference</div>
             <ImageUploadSlot
-              label="Scene image"
+              label={refLabels.scene_image || "Scene image"}
+              onRename={(name) => setRefLabels((l) => ({ ...l, scene_image: name }))}
               required
               hint="Single set / environment still. Multi-angle LoRA keeps layout while changing camera."
               value={sceneImg}
@@ -357,19 +385,32 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
               disabled={isRunning}
               error={fieldErrors.scene}
             />
-            {extraImgs.map((img, index) => (
-              <div className="upload-row two" key={`extra-${index}`} style={{ marginTop: "0.5rem" }}>
-                <ImageUploadSlot
-                  label={`Reference ${index + 2}`}
-                  value={img}
-                  onChange={(value) => setExtraImgs((list) => list.map((entry, position) => (position === index ? value : entry)))}
-                  disabled={isRunning}
-                />
-                <button type="button" className="btn secondary sm" disabled={isRunning} onClick={() => setExtraImgs((list) => list.filter((_, position) => position !== index))}>
-                  Remove reference
-                </button>
+            {extraImgs.length ? (
+              <div className="upload-row two" style={{ marginTop: "0.65rem" }}>
+                {extraImgs.map((img, index) => (
+                  <div key={`extra-${index}`} style={{ position: "relative" }}>
+                    <ImageUploadSlot
+                      label={refLabels[`reference_image_${index + 1}`] || `Reference ${index + 2}`}
+                      onRename={(name) => setRefLabels((l) => ({ ...l, [`reference_image_${index + 1}`]: name }))}
+                      value={img}
+                      onChange={(value) => setExtraImgs((list) => list.map((entry, position) => (position === index ? value : entry)))}
+                      disabled={isRunning}
+                    />
+                    <button
+                      type="button"
+                      className="btn ghost sm"
+                      title="Remove reference"
+                      aria-label="Remove reference"
+                      disabled={isRunning}
+                      style={{ position: "absolute", top: "-0.5rem", right: "-0.4rem", width: "1.5rem", height: "1.5rem", padding: 0, borderRadius: "999px", border: "1px solid currentColor", lineHeight: 1 }}
+                      onClick={() => setExtraImgs((list) => list.filter((_, position) => position !== index))}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
               </div>
-            ))}
+            ) : null}
             <button type="button" className="btn secondary sm" style={{ marginTop: "0.5rem" }} disabled={isRunning || extraImgs.length >= 6} onClick={() => setExtraImgs((list) => [...list, null])}>
               + Add reference
             </button>

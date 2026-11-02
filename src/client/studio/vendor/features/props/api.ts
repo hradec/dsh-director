@@ -32,7 +32,9 @@ export interface PropRecord {
   urls: Record<string, string>;
   meta?: Record<string, unknown>;
   /** Plugin: inputs of the generation job that produced this prop, for the edit picker. */
-  form?: { seed: number | null; fixed_seed: boolean; negative_prompt: string } | null;
+  form?: { seed: number | null; fixed_seed: boolean; negative_prompt: string; ref_labels?: Record<string, string> } | null;
+  /** Plugin: stored reference images of that job, refilled into the upload slots on edit. */
+  references?: Record<string, { url: string; filename: string; label: string }> | null;
   project_id?: string | null;
 }
 
