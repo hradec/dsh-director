@@ -1,0 +1,807 @@
+// @vitest-environment jsdom
+
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProjectDetail, PromptSections, Shot } from "../../shared/api/types";
+import { ProductionPage } from "./ProductionPage";
+import { deleteLayout, getH3Job, getProject, patchShot, submitShot } from "./api";
+import { listLibraryAssets } from "../library/api";
+
+const replaceShotMaterialsMock = vi.hoisted(() => vi.fn());
+const getH3ProviderStatusMock = vi.hoisted(() => vi.fn());
+const getLocalH3ResolutionsMock = vi.hoisted(() => vi.fn());
+const getManagedRunMock = vi.hoisted(() => vi.fn());
+const fetchH3ProfilesMock = vi.hoisted(() => vi.fn());
+const getVideoContextStatusMock = vi.hoisted(() => vi.fn());
+vi.mock("../../shared/api/client", () => ({ fetchH3Profiles: fetchH3ProfilesMock }));
+
+let currentProjectId = "prj_test";
+
+vi.mock("../../shared/project/ProjectContext", () => ({
+  useProject: () => ({ projectId: currentProjectId }),
+}));
+
+vi.mock("./api", () => ({
+  getProject: vi.fn(),
+  cancelH3Job: vi.fn(),
+  deleteLayout: vi.fn(),
+  getH3Job: vi.fn(),
+  getH3ProviderStatus: getH3ProviderStatusMock,
+  getLocalH3Resolutions: getLocalH3ResolutionsMock,
+  getManagedRun: getManagedRunMock,
+  planManagedRun: vi.fn(),
+  startManagedRun: vi.fn(),
+  stopManagedRun: vi.fn(),
+  insertLayoutRefFrame: vi.fn(),
+  patchShot: vi.fn(),
+  skipLayout: vi.fn(),
+  submitShot: vi.fn(),
+}));
+
+vi.mock("../library/api", () => ({
+  listLibraryAssets: vi.fn(),
+}));
+
+vi.mock("../director/api", () => ({
+  replaceShotMaterials: replaceShotMaterialsMock,
+  getVideoContextStatus: getVideoContextStatusMock,
+}));
+
+const emptyPrompt: PromptSections = {
+  subject_definitions: "",
+  summary: "",
+  retention_analysis: "",
+  detailed_description: "",
+  overall_soundscape: "",
+  non_diegetic_music: "",
+};
+
+const generatedPrompt: PromptSections = {
+  subject_definitions: "The actor in the approved wardrobe.",
+  summary: "The actor enters the casting hallway.",
+  retention_analysis: "Forward motion creates the visual hook.",
+  detailed_description: "A locked wide shot with natural corridor lighting.",
+  overall_soundscape: "Soft footsteps and room tone.",
+  non_diegetic_music: "Minimal restrained pulse.",
+};
+
+function shot(prompt_sections: PromptSections): Shot {
+  return {
+    id: "sht_1",
+    project_id: "prj_test",
+    scene_id: "sc01",
+    title: "Corridor walk-in",
+    script_beat: "The actor enters.",
+    duration_s: 6,
+    status: "needs_review",
+    refs: [],
+    voice_refs: [],
+    prompt_sections,
+    dialogue: [],
+    layout_asset_id: null,
+    layout_review_status: "approved",
+    ref_frame_job_id: null,
+    layout_refs: [],
+    h3_job_id: null,
+    source_audio_path: null,
+    feedback: "",
+    blocked_reasons: [],
+    meta: {},
+  };
+}
+
+function detail(currentShot: Shot): ProjectDetail {
+  return {
+    project: {
+      id: "prj_test",
+      name: "Test project",
+      script_text: "INT. HALLWAY - DAY",
+      mode: "director",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      shot_ids: [currentShot.id],
+    },
+    shots: [currentShot],
+  };
+}
+
+describe("ProductionPage prompt refresh", () => {
+  afterEach(cleanup);
+
+  beforeEach(() => {
+    fetchH3ProfilesMock.mockResolvedValue({ active: { display_name: "My H3 Quality Profile", source: "custom", warning: null }, profiles: [] });
+    vi.clearAllMocks();
+    currentProjectId = "prj_test";
+    vi.mocked(listLibraryAssets).mockResolvedValue([]);
+    getH3ProviderStatusMock.mockResolvedValue({
+      default_provider: "local",
+      minimax_configured: true,
+      minimax_resolution: "768P",
+    });
+    getLocalH3ResolutionsMock.mockResolvedValue({ presets: [
+      { id: "landscape-480", label: "Landscape 480 tier · 864×480", width: 864, height: 480 },
+      { id: "landscape-720", label: "Landscape 720 tier · 1280×704", width: 1280, height: 704 },
+      { id: "landscape-768", label: "Landscape 768 tier · 1376×768", width: 1376, height: 768 },
+      { id: "landscape-1080", label: "Landscape 1080 tier · 1920×1088", width: 1920, height: 1088 },
+      { id: "portrait-480", label: "Portrait 480 tier · 480×864", width: 480, height: 864 },
+      { id: "portrait-720", label: "Portrait 720 tier · 704×1280", width: 704, height: 1280 },
+      { id: "portrait-768", label: "Portrait 768 tier · 768×1376", width: 768, height: 1376 },
+      { id: "portrait-1080", label: "Portrait 1080 tier · 1088×1920", width: 1088, height: 1920 },
+    ] });
+    getManagedRunMock.mockResolvedValue(null);
+    getVideoContextStatusMock.mockResolvedValue({ mode: "previous_shot", source_job_id: "job_prev", context_frames: 22,
+      carry_audio: false, blocked_reasons: [], resolution: { width: 480, height: 864 } });
+  });
+
+  it("does not keep reloading every shot after an H3 job has completed", async () => {
+    const completed = { ...shot(generatedPrompt), status: "succeeded", h3_job_id: "job_done" } as Shot;
+    vi.mocked(getProject).mockResolvedValue(detail(completed));
+
+    render(<ProductionPage active />);
+    await screen.findByText("Corridor walk-in");
+    const initialCalls = vi.mocked(getProject).mock.calls.length;
+
+    await new Promise((resolve) => window.setTimeout(resolve, 3100));
+    expect(getProject).toHaveBeenCalledTimes(initialCalls);
+  });
+
+  it("does not keep polling the selected H3 job after it has completed", async () => {
+    const completed = { ...shot(generatedPrompt), status: "succeeded", h3_job_id: "job_done" } as Shot;
+    vi.mocked(getProject).mockResolvedValue(detail(completed));
+    vi.mocked(getH3Job).mockResolvedValue({
+      id: "job_done", status: "succeeded", name: "done", notes: "", prompt: "", dialogue: [],
+      frames: 90, error: null, comfy_prompt_id: null, external_task_id: null,
+      created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z",
+      outputs: {}, input_previews: {}, pipeline_id: "h3_ref2va",
+    });
+
+    render(<ProductionPage active mobile />);
+    await waitFor(() => expect(getH3Job).toHaveBeenCalledWith("job_done"));
+    await new Promise((resolve) => window.setTimeout(resolve, 1600));
+    expect(getH3Job).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a loading state instead of zero shots before mobile project data arrives", async () => {
+    let resolveProject!: (value: ProjectDetail) => void;
+    vi.mocked(getProject).mockReturnValueOnce(new Promise((resolve) => {
+      resolveProject = resolve;
+    }));
+
+    render(<ProductionPage active mobile />);
+
+    expect(screen.getByText("Loading…")).toBeTruthy();
+    expect(screen.getByText("Loading shots…")).toBeTruthy();
+    expect(screen.queryByText("0 shots")).toBeNull();
+    expect(screen.queryByText("No shots yet. Plan them with Director first.")).toBeNull();
+
+    await act(async () => resolveProject(detail(shot(emptyPrompt))));
+    expect(await screen.findByText("1 shots")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Shot 01 · Corridor walk-in" })).toBeTruthy();
+  });
+
+  it("shows the resolved custom workflow in Production", async () => {
+    vi.mocked(getProject).mockResolvedValue(detail(shot(emptyPrompt)));
+    render(<ProductionPage active />);
+    expect(await screen.findByText("Local · ComfyUI — My H3 Quality Profile")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Production" })).toBeTruthy();
+    expect(screen.queryByText(/Shot list → layout/)).toBeNull();
+    expect(screen.queryByText("Workflow: My H3 Quality Profile")).toBeNull();
+  });
+
+  it("saves Production edits and asks DSH to prepare the selected H3 shot", async () => {
+    const ready = { ...shot(generatedPrompt), refs: [{ role: "actor" as const, asset_id: "act_1", picture_index: 1 }] };
+    vi.mocked(getProject).mockResolvedValue(detail(ready));
+    vi.mocked(patchShot).mockResolvedValue(ready);
+    const requestProduction = vi.fn().mockResolvedValue(undefined);
+    render(<ProductionPage active requestProduction={requestProduction} />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+    fireEvent.click(screen.getByRole("tab", { name: "Run H3" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ask DSH to prepare H3" }));
+    await waitFor(() => expect(requestProduction).toHaveBeenCalledTimes(1));
+    expect(patchShot).toHaveBeenCalledWith("sht_1", expect.objectContaining({
+      prompt_sections: generatedPrompt,
+      dialogue: [],
+      duration_s: 6,
+    }));
+    expect(requestProduction.mock.calls[0][0]).toContain("sht_1");
+    expect(requestProduction.mock.calls[0][0]).toContain("submit_comfy_job");
+    expect(screen.getByRole("button", { name: "Request sent to DSH" })).toBeTruthy();
+    expect(submitShot).not.toHaveBeenCalled();
+  });
+
+  it("discloses fallback without blocking the Production workspace", async () => {
+    fetchH3ProfilesMock.mockResolvedValue({ active: { display_name: "Built-in Official H3", source: "builtin", warning: { code: "custom_profile_unavailable", message: "Custom workflow hash changed" } }, profiles: [] });
+    vi.mocked(getProject).mockResolvedValue(detail(shot(emptyPrompt)));
+    render(<ProductionPage active />);
+    expect(await screen.findByText("Using Built-in Official H3")).toBeTruthy();
+    expect(screen.getByText("Custom workflow hash changed")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Production" })).toBeTruthy();
+  });
+
+  it("refreshes profile status on terminal completion without replacing the selected job", async () => {
+    const current = { ...shot(generatedPrompt), h3_job_id: "job-existing", status: "running" as const };
+    vi.mocked(getProject).mockResolvedValue(detail(current));
+    const job = { id: "job-existing", status: "running" as const, name: "Existing", notes: "", prompt: "",
+      dialogue: [], frames: 56, error: null, comfy_prompt_id: "prompt-1", external_task_id: null,
+      created_at: "now", updated_at: "now", outputs: {}, input_previews: {}, pipeline_id: "h3_ref2va",
+      h3_provider: "local" as const, h3_profile_id: "custom-captured", h3_profile_sha256: "captured-hash" };
+    vi.mocked(getH3Job).mockResolvedValue(job);
+    render(<ProductionPage active />);
+    await screen.findByText("Local · ComfyUI — My H3 Quality Profile");
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+    await waitFor(() => expect(getH3Job).toHaveBeenCalledWith("job-existing"));
+    fetchH3ProfilesMock.mockResolvedValue({ active: { display_name: "Built-in Official H3", source: "builtin",
+      warning: { code: "profile_changed", message: "Profile damaged during run" } }, profiles: [] });
+    vi.mocked(getH3Job).mockResolvedValue({ ...job, status: "failed", error: "Output failed" });
+    await screen.findByText("Profile damaged during run", {}, { timeout: 3500 });
+    expect(screen.queryByText(/Submitted workflow:/)).toBeNull();
+    expect(submitShot).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Production action disabled without a DSH conversation sender", async () => {
+    const ready = { ...shot(generatedPrompt), refs: [{ role: "actor" as const, asset_id: "act_mia", picture_index: 1 }] };
+    vi.mocked(getProject).mockResolvedValue(detail(ready));
+    render(<ProductionPage active />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+    fireEvent.click(screen.getByRole("tab", { name: "Run H3" }));
+    expect(screen.getByRole("button", { name: "Ask DSH to prepare H3" }).hasAttribute("disabled")).toBe(true);
+    expect(submitShot).not.toHaveBeenCalled();
+  });
+
+  it("ignores a late not-found response from the previously selected project", async () => {
+    let rejectStale!: (reason: Error) => void;
+    const staleRequest = new Promise<ProjectDetail>((_resolve, reject) => {
+      rejectStale = reject;
+    });
+    vi.mocked(getProject).mockImplementation((projectId) =>
+      projectId === "prj_stale"
+        ? staleRequest
+        : Promise.resolve(detail(shot(generatedPrompt))),
+    );
+
+    currentProjectId = "prj_stale";
+    const { rerender } = render(<ProductionPage active />);
+    currentProjectId = "prj_test";
+    rerender(<ProductionPage active />);
+
+    await screen.findByText("Corridor walk-in");
+    await act(async () => rejectStale(new Error("Project not found")));
+
+    expect(screen.queryByText("Project not found")).toBeNull();
+  });
+
+  it("renders H3 submission in the Production action surface", async () => {
+    vi.mocked(getProject).mockResolvedValue(detail(shot(generatedPrompt)));
+
+    const { container } = render(<ProductionPage active />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+    fireEvent.click(screen.getByRole("tab", { name: "Run H3" }));
+
+    expect(container.querySelector(".production-submit-actions")).toBeTruthy();
+  });
+
+  it("shows the mobile Shot design details on desktop Production", async () => {
+    const planned = {
+      ...shot(emptyPrompt),
+      shot_type: "medium close-up",
+      camera_angle: "eye-level",
+      camera_motion: "tracking push toward Mia",
+      composition: "Mia holds the left third of the frame.",
+      dialogue: ["Open the hatch."],
+    };
+    vi.mocked(getProject).mockResolvedValue(detail(planned));
+
+    render(<ProductionPage active />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+
+    const design = await screen.findByRole("region", { name: "Shot design" });
+    expect(design.textContent).toContain("6s");
+    expect(design.textContent).toContain("medium close-up");
+    expect(design.textContent).toContain("eye-level");
+    expect(design.textContent).toContain("tracking push toward Mia");
+    expect(design.textContent).toContain("Mia holds the left third of the frame.");
+    expect(design.textContent).toContain("Open the hatch.");
+  });
+
+  it("renders a read-only mobile Shot review with the final result first", async () => {
+    const completed = {
+      ...shot(generatedPrompt),
+      status: "succeeded" as const,
+      h3_job_id: "job_h3",
+      layout_asset_id: "lay_1",
+      shot_type: "medium close-up",
+      camera_angle: "eye-level",
+      camera_motion: "locked-off",
+      composition: "Mia holds the Agent's eyeline across the table.",
+      dialogue: ["You want the job?"],
+      refs: [
+        { role: "actor" as const, asset_id: "act_mia", picture_index: 1, file_key: "master" },
+        { role: "layout_ref_frame" as const, asset_id: "lay_1", picture_index: 2, file_key: "layout" },
+      ],
+    };
+    vi.mocked(getProject).mockResolvedValue(detail(completed));
+    vi.mocked(getH3Job).mockResolvedValue({
+      id: "job_h3",
+      status: "succeeded",
+      name: "h3:Corridor walk-in",
+      notes: "The actor enters.",
+      prompt: "production prompt",
+      dialogue: ["You want the job?"],
+      frames: 90,
+      error: null,
+      comfy_prompt_id: "prompt_1",
+      external_task_id: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:01:00Z",
+      outputs: {
+        video: {
+          key: "video",
+          label: "Enhanced video",
+          path: "C:/outputs/video.mp4",
+          filename: "video.mp4",
+          url: "/api/files/jobs/job_h3/outputs/video.mp4",
+        },
+      },
+      input_previews: {},
+      pipeline_id: "h3_ref2va",
+    });
+
+    const { container } = render(<ProductionPage active mobile />);
+
+    expect(await screen.findByRole("button", { name: "Shot 01 · Corridor walk-in" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Final result" })).toBeTruthy();
+    await waitFor(() => {
+      expect(container.querySelector('video[src="/api/files/jobs/job_h3/outputs/video.mp4"]')).toBeTruthy();
+    });
+    expect(screen.getByRole("heading", { name: "Shot design" })).toBeTruthy();
+    expect(screen.getByText("medium close-up")).toBeTruthy();
+    expect(screen.getByText("Mia holds the Agent's eyeline across the table.")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "References" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "H3 prompt" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Submit H3" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save prompt" })).toBeNull();
+  });
+
+  it("hides continuation settings on an ordinary mobile Shot", async () => {
+    vi.mocked(getProject).mockResolvedValue(detail(shot(generatedPrompt)));
+    render(<ProductionPage active mobile />);
+    await screen.findByText("Corridor walk-in");
+    expect(screen.queryByRole("region", { name: "Video continuation" })).toBeNull();
+    expect(screen.queryByText("Continuation settings")).toBeNull();
+  });
+
+  it("opens the selected Shot's material editor from mobile Production references", async () => {
+    const withReferences = {
+      ...shot(generatedPrompt),
+      refs: [
+        { role: "actor" as const, asset_id: "act_mia", picture_index: 1, file_key: "master" },
+      ],
+    };
+    vi.mocked(getProject).mockResolvedValue(detail(withReferences));
+
+    render(<ProductionPage active mobile />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit materials" }));
+    expect(await screen.findByRole("dialog", { name: "Edit Shot 01 materials" })).toBeTruthy();
+  });
+
+  it("refreshes mobile Production references after saving material changes", async () => {
+    const onReviewMaterials = vi.fn();
+    const withReference = {
+      ...shot(generatedPrompt),
+      refs: [
+        { role: "actor" as const, asset_id: "act_mia", picture_index: 1, file_key: "master" },
+      ],
+    };
+    vi.mocked(getProject).mockResolvedValue(detail(withReference));
+    const updated = { ...withReference, refs: [] };
+    replaceShotMaterialsMock.mockResolvedValueOnce(updated);
+    render(<ProductionPage active mobile onReviewMaterials={onReviewMaterials} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit materials" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Picture 1 · act_mia" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    fireEvent.change(screen.getByLabelText("Message to Agent (optional)"), {
+      target: { value: "Keep the corridor geography unchanged." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save & send to Agent" }));
+
+    expect(await screen.findByText("No references attached.")).toBeTruthy();
+    expect(onReviewMaterials).toHaveBeenCalledWith(
+      updated,
+      1,
+      "Keep the corridor geography unchanged.",
+    );
+  });
+
+  it("saves mobile Production material changes without notifying the Agent", async () => {
+    const onReviewMaterials = vi.fn();
+    const withReference = {
+      ...shot(generatedPrompt),
+      refs: [
+        { role: "actor" as const, asset_id: "act_mia", picture_index: 1, file_key: "master" },
+      ],
+    };
+    vi.mocked(getProject).mockResolvedValue(detail(withReference));
+    const updated = { ...withReference, refs: [] };
+    replaceShotMaterialsMock.mockResolvedValueOnce(updated);
+    render(<ProductionPage active mobile onReviewMaterials={onReviewMaterials} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit materials" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Picture 1 · act_mia" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("No references attached.")).toBeTruthy();
+    expect(onReviewMaterials).not.toHaveBeenCalled();
+  });
+
+  it("routes selected-shot batch planning through the DSH session", async () => {
+    vi.mocked(getProject).mockResolvedValue(detail(shot(generatedPrompt)));
+    const requestProduction = vi.fn().mockResolvedValue(undefined);
+    render(<ProductionPage active mobile requestProduction={requestProduction} />);
+
+    const trigger = await screen.findByRole("button", { name: "Ask DSH to plan selected shots" });
+    fireEvent.click(trigger);
+    expect((screen.getByRole("checkbox", { name: /Corridor walk-in/ }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getAllByRole("button", { name: "Ask DSH to plan selected shots" })[1]);
+    await waitFor(() => expect(requestProduction).toHaveBeenCalledTimes(1));
+    expect(requestProduction.mock.calls[0][0]).toContain("sht_1");
+    expect(requestProduction.mock.calls[0][0]).toContain("native Director shot/reference card");
+    expect(requestProduction.mock.calls[0][0]).toContain("never queue through Studio managed-run/start/run or /submit");
+    expect(getManagedRunMock).not.toHaveBeenCalled();
+  });
+
+  it("sends the selected mobile resolution as a DSH production preference", async () => {
+    const ready = { ...shot(generatedPrompt), refs: [{ role: "actor" as const, asset_id: "act_mia", picture_index: 1 }] };
+    vi.mocked(getProject).mockResolvedValue(detail(ready));
+    vi.mocked(patchShot).mockResolvedValue(ready);
+    const requestProduction = vi.fn().mockResolvedValue(undefined);
+    render(<ProductionPage active mobile requestProduction={requestProduction} />);
+    const runButton = await screen.findByRole("button", { name: "Ask DSH to prepare H3" });
+    expect(runButton.hasAttribute("disabled")).toBe(false);
+    fireEvent.change(screen.getByLabelText("Resolution"), { target: { value: "portrait-1080" } });
+    fireEvent.click(runButton);
+    await waitFor(() => expect(requestProduction).toHaveBeenCalledTimes(1));
+    expect(requestProduction.mock.calls[0][0]).toContain("1088×1920");
+    expect(submitShot).not.toHaveBeenCalled();
+  });
+
+  it("does not show the legacy layout approval column or state", async () => {
+    vi.mocked(getProject).mockResolvedValue(detail(shot(generatedPrompt)));
+
+    render(<ProductionPage active />);
+    await screen.findByText("Corridor walk-in");
+
+    expect(screen.queryByRole("columnheader", { name: "Layout" })).toBeNull();
+    expect(screen.queryByText("approved")).toBeNull();
+  });
+
+  it("does not offer manual insert or skip actions when no Layout exists", async () => {
+    vi.mocked(getProject).mockResolvedValue(detail(shot(generatedPrompt)));
+
+    render(<ProductionPage active />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+
+    expect(screen.queryByText("Insert image…")).toBeNull();
+    expect(screen.queryByText("Skip layout")).toBeNull();
+  });
+
+  it("deletes an unwanted generated Layout from the selected Shot", async () => {
+    const withLayout = {
+      ...shot(generatedPrompt),
+      layout_asset_id: "lay_delete",
+      layout_review_status: "pending_review",
+      layout_refs: [
+        {
+          id: "lref_delete",
+          asset_id: "lay_delete",
+          job_id: "job_layout",
+          job_status: "succeeded" as const,
+          purpose: "unwanted composition",
+          state_description: "Wrong blocking.",
+          time_hint: "opening",
+          source_refs: [],
+          review_status: "pending_review" as const,
+          review_feedback: "",
+          selected_for_h3: false,
+          created_at: "2026-08-29T00:00:00Z",
+        },
+      ],
+    };
+    const withoutLayout = {
+      ...withLayout,
+      layout_asset_id: null,
+      layout_review_status: null,
+      layout_refs: [],
+    };
+    vi.mocked(getProject).mockResolvedValue(detail(withLayout));
+    vi.mocked(deleteLayout).mockResolvedValue(withoutLayout);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<ProductionPage active />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete Layout" }));
+
+    await waitFor(() =>
+      expect(deleteLayout).toHaveBeenCalledWith("sht_1", "lref_delete"),
+    );
+  });
+
+  it("shows workflow-oriented Production status instead of the stale shot status", async () => {
+    const awaitingQc = {
+      ...shot(emptyPrompt),
+      id: "sht_qc",
+      title: "Awaiting reference QC",
+      status: "needs_review" as const,
+      layout_asset_id: "lay_pending",
+      layout_review_status: "pending_review",
+    };
+    const ready = {
+      ...shot(generatedPrompt),
+      id: "sht_ready",
+      title: "Ready shot",
+      status: "needs_review" as const,
+      refs: [
+        { role: "actor" as const, asset_id: "act_1", picture_index: 1 },
+      ],
+      layout_asset_id: "lay_selected",
+      layout_review_status: "usable",
+      layout_refs: [
+        {
+          id: "lr_selected",
+          asset_id: "lay_selected",
+          job_id: "job_selected",
+          job_status: "succeeded" as const,
+          purpose: "selected blocking",
+          state_description: "The approved spatial relationship.",
+          time_hint: "opening",
+          source_refs: [],
+          review_status: "usable" as const,
+          review_feedback: "",
+          selected_for_h3: true,
+          created_at: "2026-08-26T10:00:00Z",
+        },
+        {
+          id: "lr_pending_extra",
+          asset_id: "lay_pending_extra",
+          job_id: "job_pending_extra",
+          job_status: "succeeded" as const,
+          purpose: "optional alternate",
+          state_description: "An alternate that is not selected for H3.",
+          time_hint: "later",
+          source_refs: [],
+          review_status: "pending_review" as const,
+          review_feedback: "",
+          selected_for_h3: false,
+          created_at: "2026-08-26T10:01:00Z",
+        },
+      ],
+    };
+    vi.mocked(getProject).mockResolvedValue({
+      ...detail(awaitingQc),
+      project: {
+        ...detail(awaitingQc).project,
+        shot_ids: [awaitingQc.id, ready.id],
+      },
+      shots: [awaitingQc, ready],
+    });
+
+    render(<ProductionPage active />);
+
+    expect((await screen.findAllByText("Needs prompt")).length).toBeGreaterThan(0);
+    expect(screen.getByText("Ready for H3")).toBeTruthy();
+    expect(screen.queryByText("Reference QC")).toBeNull();
+    expect(screen.queryByText("reference frame review")).toBeNull();
+  });
+
+  it("loads a generated prompt when the Production tab becomes active", async () => {
+    vi.mocked(getProject)
+      .mockResolvedValueOnce(detail(shot(emptyPrompt)))
+      .mockResolvedValueOnce(detail(shot(generatedPrompt)));
+
+    const { rerender } = render(<ProductionPage active={false} />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+    fireEvent.click(screen.getByRole("tab", { name: "Prompt" }));
+    expect(
+      (screen.getByLabelText("Summary") as HTMLTextAreaElement).value,
+    ).toBe("");
+
+    rerender(<ProductionPage active />);
+
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText("Summary") as HTMLTextAreaElement).value,
+      ).toBe("The actor enters the casting hallway."),
+    );
+  });
+
+  it("preserves unsaved prompt edits during an activation refresh", async () => {
+    const remoteRewrite = {
+      ...generatedPrompt,
+      summary: "A newer server-side summary.",
+    };
+    const refreshedShot = {
+      ...shot(remoteRewrite),
+      title: "Updated corridor",
+    };
+    vi.mocked(getProject)
+      .mockResolvedValueOnce(detail(shot(generatedPrompt)))
+      .mockResolvedValueOnce(detail(refreshedShot));
+
+    const { rerender } = render(<ProductionPage active={false} />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+    fireEvent.click(screen.getByRole("tab", { name: "Prompt" }));
+    const summary = screen.getByLabelText("Summary") as HTMLTextAreaElement;
+    fireEvent.change(summary, { target: { value: "My unsaved manual edit." } });
+
+    rerender(<ProductionPage active />);
+    await screen.findAllByText("Updated corridor");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect((screen.getByLabelText("Summary") as HTMLTextAreaElement).value).toBe(
+      "My unsaved manual edit.",
+    );
+  });
+
+  it("shows ordered playable Voice references in the Refs tab", async () => {
+    const current = {
+      ...shot(generatedPrompt),
+      voice_refs: [
+        {
+          asset_id: "voi_mia",
+          audio_index: 1,
+          file_key: "reference",
+          speaker: "Mia",
+          notes: "name match",
+        },
+      ],
+    };
+    vi.mocked(getProject).mockResolvedValue(detail(current));
+    vi.mocked(listLibraryAssets).mockResolvedValue([
+      {
+        id: "voi_mia",
+        kind: "voices",
+        name: "Mia",
+        notes: "Warm neutral English",
+        pipeline_id: "external",
+        job_id: "",
+        seed: null,
+        created_at: "2026-08-25T00:00:00Z",
+        files: { reference: "reference.wav" },
+        meta: { duration_s: 4, h3_ready: true },
+        urls: { reference: "/voice/mia.wav" },
+        project_id: "prj_test",
+      },
+    ]);
+
+    const { container } = render(<ProductionPage active />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+    fireEvent.click(screen.getByRole("tab", { name: "Refs" }));
+
+    expect(await screen.findByText("Audio 1")).toBeTruthy();
+    expect(screen.getByDisplayValue("Mia")).toBeTruthy();
+    expect(screen.getByText("Warm neutral English")).toBeTruthy();
+    expect(screen.getByText("Prompt will refresh before H3 submission.")).toBeTruthy();
+    expect(container.querySelector('audio[src="/voice/mia.wav"]')).toBeTruthy();
+  });
+
+  it("saves a manual Voice selection with contiguous Audio order", async () => {
+    const current = shot(generatedPrompt);
+    current.dialogue = ["Hello."];
+    current.dialogue_lines = [{ line_id: "l1", speaker_id: "person-1", speaker_name: "Mia",
+      text: "Hello.", language: "English", source: { kind: "shot_revision",
+        source_hash: "revision-1", scene_id: current.scene_id, quote: "Mia: Hello.", occurrence: 0 } }];
+    const mia = {
+      id: "voi_mia",
+      kind: "voices",
+      name: "Mia",
+      notes: "Warm neutral English",
+      pipeline_id: "external",
+      job_id: "",
+      seed: null,
+      created_at: "2026-08-25T00:00:00Z",
+      files: { reference: "reference.wav" },
+      meta: { duration_s: 4, h3_ready: true },
+      urls: { reference: "/voice/mia.wav" },
+      project_id: "prj_test",
+    };
+    vi.mocked(getProject).mockResolvedValue(detail(current));
+    vi.mocked(listLibraryAssets).mockResolvedValue([mia]);
+    vi.mocked(patchShot).mockResolvedValue({
+      ...current,
+      voice_refs: [
+        { asset_id: "voi_mia", audio_index: 1, file_key: "reference", speaker: "Mia" },
+      ],
+    });
+
+    render(<ProductionPage active />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+    fireEvent.click(screen.getByRole("tab", { name: "Refs" }));
+    fireEvent.change(await screen.findByLabelText("Add Voice reference"), {
+      target: { value: "voi_mia" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add Voice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save Voice refs" }));
+
+    await waitFor(() =>
+      expect(patchShot).toHaveBeenCalledWith("sht_1", {
+        voice_refs: [
+          {
+            asset_id: "voi_mia",
+            audio_index: 1,
+            file_key: "reference",
+            speaker: "Mia",
+            notes: "",
+          },
+        ],
+      }),
+    );
+  });
+
+  it("disables Voice overrides when exact source audio controls the run", async () => {
+    vi.mocked(getProject).mockResolvedValue(
+      detail({ ...shot(generatedPrompt), source_audio_path: "C:/audio/exact.wav" }),
+    );
+
+    render(<ProductionPage active />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+    fireEvent.click(screen.getByRole("tab", { name: "Refs" }));
+
+    expect(await screen.findByText("Exact source audio controls this run")).toBeTruthy();
+    expect(
+      (screen.getByLabelText("Add Voice reference") as HTMLSelectElement).disabled,
+    ).toBe(true);
+  });
+
+  it.each([false, true])("locks resolution to the previous video in mobile=%s", async (mobile) => {
+    const ready = { ...shot(generatedPrompt), video_context: {
+      mode: "previous_shot" as const, source_shot_id: "sht_prev", context_frames: 22 as const,
+    }, refs: [{ role: "actor" as const, asset_id: "act_1", picture_index: 1 }] };
+    vi.mocked(getProject).mockResolvedValue(detail(ready));
+    vi.mocked(patchShot).mockResolvedValue(ready);
+    const requestProduction = vi.fn().mockResolvedValue(undefined);
+    render(<ProductionPage active mobile={mobile} requestProduction={requestProduction} />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+    if (!mobile) fireEvent.click(screen.getByRole("tab", { name: "Run H3" }));
+    const picker = screen.getByLabelText("Resolution") as HTMLSelectElement;
+    expect(picker.disabled).toBe(true);
+    expect(picker.options).toHaveLength(1);
+    expect(picker.options[0].textContent).toContain("Match previous shot");
+    fireEvent.click(screen.getByRole("button", { name: "Ask DSH to prepare H3" }));
+    await waitFor(() => expect(requestProduction).toHaveBeenCalledTimes(1));
+    expect(requestProduction.mock.calls[0][0]).toContain("match previous shot");
+    expect(submitShot).not.toHaveBeenCalled();
+  });
+
+  it("sends the selected desktop resolution as a DSH preference", async () => {
+    const ready = { ...shot(generatedPrompt), refs: [{ role: "actor" as const, asset_id: "act_1", picture_index: 1 }] };
+    vi.mocked(getProject).mockResolvedValue(detail(ready));
+    vi.mocked(patchShot).mockResolvedValue(ready);
+    const requestProduction = vi.fn().mockResolvedValue(undefined);
+    render(<ProductionPage active requestProduction={requestProduction} />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+    fireEvent.click(screen.getByRole("tab", { name: "Run H3" }));
+    fireEvent.change(screen.getByLabelText("Resolution"), { target: { value: "landscape-768" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ask DSH to prepare H3" }));
+    await waitFor(() => expect(requestProduction).toHaveBeenCalledTimes(1));
+    expect(requestProduction.mock.calls[0][0]).toContain("1376×768");
+    expect(submitShot).not.toHaveBeenCalled();
+  });
+
+  it("does not present local dimensions as MiniMax API resolution", async () => {
+    vi.mocked(getProject).mockResolvedValue(detail(shot(generatedPrompt)));
+
+    render(<ProductionPage active />);
+    fireEvent.click(await screen.findByText("Corridor walk-in"));
+    fireEvent.click(screen.getByRole("tab", { name: "Run H3" }));
+    fireEvent.change(screen.getByLabelText("H3 provider"), {
+      target: { value: "minimax" },
+    });
+
+    expect(screen.queryByLabelText("Resolution")).toBeNull();
+    expect(screen.getByText("Official API · 768P")).toBeTruthy();
+  });
+});

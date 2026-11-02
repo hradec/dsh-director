@@ -2,9 +2,11 @@
 
 An unofficial Director plugin for DeepSeek Harness Web. Turn a rough idea into a
 reviewed shot plan, bind visual references, submit local ComfyUI jobs, and review
-images, videos and generated audio inside the conversation. **No Director Studio dependency.**
+images, videos and generated audio inside the conversation. It also provides standalone
+**Assets** and **Production** tabs in DSH's right sidebar; there is no Director Studio
+server or install dependency.
 
-Version 0.1.76. Original implementation and local skill wrappers use MIT. Official MiniMax prompt
+Version 0.1.81. Original implementation and local skill wrappers use MIT. Official MiniMax prompt
 guides are not included; users can obtain pinned copies separately under upstream
 terms after native human confirmation. See [LICENSE](LICENSE),
 [third-party notices](THIRD_PARTY_NOTICES.md), and the
@@ -61,6 +63,36 @@ settings. Changing one does not change the others.
 - **Web integration:** dedicated Director media/review views alongside Harness's
   native coding tool views, connection status and draft-preserving send protection
   during known GPU generation or handoff.
+- **Standalone Studio tabs:** vendored Assets and Production views appear next to
+  Files and Terminal. The DSH session workspace folder **is** the project: its
+  actors, costumes, scenes, props, layouts and voice audio live in a hidden
+  `.director-studio/` folder inside that workspace, so the library travels with
+  the session's files; edits do not require a separate Studio backend. The Assets
+  tab hosts the full **Actors (Casting), Scenes (Set Design) and Props** studio
+  pages: filling one in and pressing Generate queues a project job, uploaded
+  reference images stay in the workspace library, and the complete form spec is
+  handed to the session agent, which inspects a local ComfyUI workflow, generates
+  the media and imports every image under the same job token — the page then
+  shows the outputs in its slots. Each page's **Edit existing** picker (and the
+  **Edit** button on a Library actor, scene or prop) regenerates that asset in
+  place — its stored description, prompts, seed and options refill the form, and
+  Production references keep pointing at it. Every page also takes up to six
+  **+ Add reference** images besides the standard slots.
+  The Assets tab's **Ask DSH to create** form sends a
+  project-scoped request to the active DSH conversation; the agent must inspect a
+  compatible local ComfyUI workflow, generate the asset, and use `director_studio`
+  to import the exact completed `output_artifacts.view_url` into the library. The
+  session tool also edits the workspace project and shots, imports files from the active
+  session workspace, and returns saved source paths for DSH to inspect and stage as
+  Production references. The Production **Ask DSH to prepare H3** action saves its
+  current prompt/dialogue/duration changes, then asks the active session agent to
+  inspect the shot and assets and prepare the native review card. The session tool
+  can edit scene/camera/composition fields, attach a project layout image, and link a
+  completed video from the layouts library for Production preview, and configure
+  previous-shot or uploaded-video context with supported frame windows. H3 generation
+  still requires the normal Director review and confirmation path. Production's
+  selected-shot planner also sends work through the DSH session rather than the
+  upstream app's direct managed-run submit endpoints.
 
 **No workflow, model weights, custom nodes, user assets, generated clips or session
 exports are bundled.** Harness's native coding tools discover/adapt the user's

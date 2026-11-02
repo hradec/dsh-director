@@ -1,5 +1,17 @@
 # Third-party sources and distribution boundary
 
+## Director Studio Assets and Production UI
+
+The selected Assets and Production frontend modules were copied and adapted from
+[Director Studio](https://github.com/ai2764/Director-Studio), source revision
+`79de2ab277418fa06c2962d67db4408e3f3be24c`, under
+the user's explicit confirmation that they own or control the source and authorize
+this copy. The source repository has no published license declaration; this notice
+does not characterize the copied source as MIT-licensed. The plugin's MIT license
+covers only its own original material and does not relabel the copied UI. The selected
+vendor source is retained under `src/client/studio/vendor/` for review and attribution.
+No separate Director Studio backend or application is bundled or required.
+
 ## Optional MiniMax H3 prompt documents
 
 The current source tree and npm package do **not** contain the official

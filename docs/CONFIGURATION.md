@@ -189,3 +189,29 @@ If chat works but Director cannot stage references or submit, check
 `llamaSwapBaseUrl` and the actual llama-swap service. If images upload but the model cannot see them,
 check both Harness's **Image** input option and the server/model's vision support.
 No ComfyUI workflow, node or model weight is supplied by the plugin.
+
+## Standalone Assets and Production tabs
+
+The **Assets** and **Production** pages are plugin-contributed DSH right-sidebar
+tabs. They use authenticated routes served by `dsh-director` and do not require the
+separate Director Studio web application or backend. The existing Director media
+and human-confirmed H3 workflow remain available alongside them.
+
+The DSH session workspace folder IS the project. Each session's single project
+database and media live in a hidden `.director-studio/` folder inside that
+workspace (`<workspace>/.director-studio/studio.json` and its `media/`
+subfolder), so the Assets/Production library travels with the session's files.
+Opening a session in another folder starts another project automatically;
+there is no project picker and no separate `studioDataRoot` setting. Keep these
+folders private and back them up with the rest of your work. Uploaded media is
+validated by extension and signature; the current limit is 64 MiB per file.
+
+Use the **Assets** tab to edit and import image/audio files. To create a new voice
+or visual asset, have the DSH session use a compatible local ComfyUI workflow, then
+register its exact output. After `submit_comfy_job` completes, the `director_studio`
+tool accepts its `output_artifacts.view_url` only when it is a `/view?type=output`
+URL from the configured ComfyUI origin, then verifies and stores the bytes directly.
+A `media_path` inside the active DSH session workspace is also accepted. This tool
+imports media but does not generate it. H3 shot submission is intentionally not
+exposed as an unreviewed Production API action: use Director's shot/reference review
+card and confirmation flow before `submit_comfy_job`.

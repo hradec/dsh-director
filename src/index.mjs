@@ -11,6 +11,9 @@ import {createStageImagesTool} from './image-staging.mjs';
 import {createGpuStatus,registerGpuStatusRoute,registerGpuReleaseRoute} from './gpu-status.mjs';
 import {createAssetTool} from './asset-catalog.mjs';
 import {createWorkflowTool} from './workflow-discovery.mjs';
+import {createStudioRegistry,StudioStoreError} from './studio-store.mjs';
+import {registerStudioApi} from './studio-api.mjs';
+import {createStudioTools} from './studio-tools.mjs';
 
 export const name='dsh-director';
 export const inject=['tools','jobs','skills','fs','connection','webServer','attachments'];
@@ -75,4 +78,15 @@ export async function apply(ctx,config={}){
   ctx.effect(()=>ctx.tools.register(mediaTool),'director media tool');
   ctx.effect(()=>ctx.tools.register(createEditReviewTool(mediaTool)),'director review edits');
   ctx.effect(()=>registerMediaRoute(ctx,store,cardPresentation),'director media route');
+  const studioRegistry=createStudioRegistry();
+  let sessionPersistence;
+  if(typeof ctx.inject==='function')ctx.inject(['sessionPersistence'],scoped=>{sessionPersistence=scoped.sessionPersistence;});
+  async function resolveStudioSession(sessionId){
+    if(!sessionPersistence)throw new StudioStoreError('The DSH session lookup service is unavailable.',503);
+    const snapshot=await sessionPersistence.stat(sessionId);
+    if(!snapshot)throw new StudioStoreError('Unknown DSH session.',404);
+    return studioRegistry(snapshot.header.cwd);
+  }
+  ctx.effect(()=>registerStudioApi(ctx,{resolveSession:resolveStudioSession,comfyBaseUrl:config.comfyBaseUrl}),'director Studio API');
+  ctx.effect(()=>ctx.tools.register(createStudioTools({registry:studioRegistry,fs:ctx.fs,comfyBaseUrl:config.comfyBaseUrl})),'director Studio project and production tools');
 }

@@ -1,7 +1,7 @@
 {
   "name": "dsh-director",
-  "version": "0.1.76",
-  "description": "Director tools and skills, optional official H3 guide downloads, and conversation media previews for DeepSeek Harness Web",
+  "version": "0.1.81",
+  "description": "Director tools, standalone Assets and Production sidebar tabs, optional H3 guidance, and conversation media previews for DeepSeek Harness Web",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -51,7 +51,8 @@
         "@deepseek-ai/dsh-client-ui-tool",
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-conversation",
-        "@deepseek-ai/dsh-client-ui-settings"
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
       ]
     }
   },
