@@ -1,4 +1,5 @@
 import {StudioStoreError,isStudioAssetKind,studioStoreConstants} from './studio-store.mjs';
+import {storyStoreFor} from './story-store.mjs';
 
 const jsonHeaders={'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
 function sendJson(res,status,value){const body=JSON.stringify(value);res.writeHead(status,{...jsonHeaders,'Content-Length':String(Buffer.byteLength(body))});res.end(body);}
@@ -75,6 +76,24 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         if(req.method==='GET'){sendJson(res,200,await store.getAppSettings());return;}
         const input=await readJson(req,controller.signal);sendJson(res,200,await store.setAppSettings(input));return;
       }
+      // Story wall (Phase 2): identical store methods to the director_studio tool — one rulebook, both hands.
+      if(path==='/api/story'&&req.method==='GET'){sendJson(res,200,await storyStoreFor(store).story());return;}
+      if(path==='/api/story/decision'&&req.method==='POST'){sendJson(res,201,await storyStoreFor(store).logDecision(await readJson(req,controller.signal)));return;}
+      match=/^\/api\/story\/decision\/([A-Za-z0-9_-]{1,128})$/.exec(path);
+      if(match&&req.method==='PATCH'){sendJson(res,200,await storyStoreFor(store).updateDecision(match[1],await readJson(req,controller.signal)));return;}
+      if(match&&req.method==='DELETE'){sendJson(res,200,await storyStoreFor(store).deleteDecision(match[1]));return;}
+      if(path==='/api/story/entity'&&req.method==='POST'){sendJson(res,201,await storyStoreFor(store).saveEntity(await readJson(req,controller.signal)));return;}
+      match=/^\/api\/story\/entity\/([A-Za-z0-9_-]{1,128})$/.exec(path);
+      if(match&&req.method==='PATCH'){sendJson(res,200,await storyStoreFor(store).saveEntity({entity_id:match[1],...await readJson(req,controller.signal)}));return;}
+      if(match&&req.method==='DELETE'){sendJson(res,200,await storyStoreFor(store).deleteEntity(match[1]));return;}
+      if(path==='/api/story/beat'&&req.method==='POST'){sendJson(res,201,await storyStoreFor(store).saveBeat(await readJson(req,controller.signal)));return;}
+      match=/^\/api\/story\/beat\/([A-Za-z0-9_-]{1,128})$/.exec(path);
+      if(match&&req.method==='PATCH'){sendJson(res,200,await storyStoreFor(store).saveBeat({beat_id:match[1],...await readJson(req,controller.signal)}));return;}
+      if(match&&req.method==='DELETE'){sendJson(res,200,await storyStoreFor(store).deleteBeat(match[1]));return;}
+      if(path==='/api/story/episode'&&req.method==='POST'){sendJson(res,201,await storyStoreFor(store).saveEpisode(await readJson(req,controller.signal)));return;}
+      match=/^\/api\/story\/episode\/([A-Za-z0-9_-]{1,128})$/.exec(path);
+      if(match&&req.method==='PATCH'){sendJson(res,200,await storyStoreFor(store).saveEpisode({episode_id:match[1],...await readJson(req,controller.signal)}));return;}
+      if(match&&req.method==='DELETE'){sendJson(res,200,await storyStoreFor(store).deleteEpisode(match[1]));return;}
       match=/^\/api\/(actors|scenes|props)(?:\/(generate|jobs)(?:\/([A-Za-z0-9_-]{1,128})(?:\/(cancel|save))?)?)?$/.exec(path);
       if(match){
         const [,kind,section,jobId,action]=match;
