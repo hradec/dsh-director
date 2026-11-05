@@ -19,6 +19,25 @@ async function setup(t,{reject}={}){
 }
 const json=(base,path,init={})=>fetch(base+path,{...init,headers:{'content-type':'application/json','x-director-session':'session-a',...init.headers}});
 
+test('story wall routes round-trip decisions, drag rules and chronology lint',async t=>{
+  const {base}=await setup(t);
+  const logged=await (await json(base,'/api/story/decision',{method:'POST',body:JSON.stringify({handle:'Catten dies in act 1',kind:'decided',arc:'Act 1',body:'ngokang kills him'})})).json();
+  assert.equal(logged.kind,'decided');
+  const canon=await (await json(base,'/api/story/decision',{method:'POST',body:JSON.stringify({handle:'Founded Y31',kind:'canon'})})).json();
+  const refuse=await json(base,`/api/story/decision/${canon.id}`,{method:'PATCH',body:JSON.stringify({kind:'decided'})});
+  assert.equal(refuse.status,400);assert.match((await refuse.json()).detail,/immutable/);
+  const dragged=await (await json(base,`/api/story/decision/${logged.id}`,{method:'PATCH',body:JSON.stringify({kind:'open'})})).json();
+  assert.equal(dragged.kind,'open');
+  await json(base,'/api/story/entity',{method:'POST',body:JSON.stringify({name:'Catten Craftsilver',legends_id:'690',birth_year:14,death_year:45})});
+  const snap=await (await json(base,'/api/story')).json();
+  assert.equal(snap.decisions.length,2);assert.equal(snap.entities.length,1);
+  const beat=await (await json(base,'/api/story/beat',{method:'POST',body:JSON.stringify({handle:'Late feast',story_year:50,entity_ids:[snap.entities[0].id]})})).json();
+  const lint=await (await json(base,'/api/story')).json();
+  assert.match(lint.issues[0].detail,/died in Y45/);
+  await json(base,`/api/story/beat/${beat.id}`,{method:'DELETE'});
+  assert.equal((await (await json(base,'/api/story')).json()).beats.length,0);
+});
+
 test('the session workspace auto-creates one project and extra projects are refused',async t=>{
   const {base,project,root}=await setup(t);
   assert.equal(project.name,basename(root));

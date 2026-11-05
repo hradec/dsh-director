@@ -1,6 +1,7 @@
 import {useEffect,useState} from 'react';
 import {AssetWorkspace} from './vendor/features/assets/AssetWorkspace.tsx';
 import {ProductionPage} from './vendor/features/production/ProductionPage.tsx';
+import {StoryWall} from './StoryWall.jsx';
 import {ProjectProvider,useProject} from './vendor/shared/project/ProjectContext.tsx';
 import {fetch as apiFetch} from './fetch-inject.mjs';
 import css from './vendor/shared/styles.css';
@@ -122,7 +123,7 @@ function StudioContent({area,sendDshRequest}){
     <button className="btn ghost" title="Studio settings" aria-label="Studio settings" onClick={()=>setSettingsOpen(true)} style={{position:'absolute',top:'.55rem',right:'.7rem',zIndex:40,width:'2.3rem',height:'2.3rem',fontSize:'1.2rem',padding:0,borderRadius:'999px',border:'1px solid currentColor',lineHeight:1}}>⚙</button>
     {settingsOpen?<AppSettingsPanel onClose={()=>setSettingsOpen(false)}/>:null}
     <WorkspaceHeader/>
-    {area==='assets'?<AssetWorkspace sendAssetRequest={sendDshRequest}/>:<ProductionPage requestProduction={sendDshRequest}/>}
+    {area==='story'?<StoryWall/>:area==='assets'?<AssetWorkspace sendAssetRequest={sendDshRequest}/>:<ProductionPage requestProduction={sendDshRequest}/>}
   </div>;
 }
 

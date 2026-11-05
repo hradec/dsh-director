@@ -2,7 +2,7 @@ import {MediaCard} from './MediaCard.jsx';
 import {GpuUsageSettings} from './GpuUsageSettings.jsx';
 import {PresetAwareGpuStatus} from './GpuStatus.jsx';
 import {watchSessionWake} from './session-recovery.mjs';
-import {AssetsTab,ProductionTab} from './studio/StudioSidebar.jsx';
+import {AssetsTab,ProductionTab,StoryTab} from './studio/StudioSidebar.jsx';
 import css from './media.css';
 export const name='dsh-director-ui';
 export const inject=['slots','conversation','connection','sessions','sidebarRightTabs'];
@@ -31,11 +31,12 @@ export function apply(ctx){
     return {sessionId,sessionList:ctx.sessions?.list,shell:scope?ctx.conversation.input.for(scope):ctx.conversation.input.shell?.(sessionId),connection:ctx.connection};
   }},PresetAwareGpuStatus));
    const studioTabs=[
-     {id:'dsh-director-studio-assets',kind:'director-studio-assets',title:()=>'Assets',guide:[{id:'assets',order:30,title:()=>'Assets',description:()=>'Actors, scenes, props, voices, and reusable media.'}]},
-     {id:'dsh-director-studio-production',kind:'director-studio-production',title:()=>'Production',guide:[{id:'production',order:40,title:()=>'Production',description:()=>'Project shots, references, dialogue, and generation review.'}]},
+     {id:'dsh-director-studio-assets',kind:'director-studio-assets',title:()=>'Assets',Body:AssetsTab,guide:[{id:'assets',order:30,title:()=>'Assets',description:()=>'Actors, scenes, props, voices, and reusable media.'}]},
+     {id:'dsh-director-studio-production',kind:'director-studio-production',title:()=>'Production',Body:ProductionTab,guide:[{id:'production',order:40,title:()=>'Production',description:()=>'Project shots, references, dialogue, and generation review.'}]},
+     {id:'dsh-director-studio-story',kind:'director-studio-story',title:()=>'Story',Body:StoryTab,guide:[{id:'story',order:50,title:()=>'Story',description:()=>'Decision cards, canon floor, story beats on two clocks — the wall that remembers what you decided.'}]},
    ];
-   if(ctx.sidebarRightTabs?.register)for(const [index,definition] of studioTabs.entries()){
-     const Body=index===0?AssetsTab:ProductionTab;
+   if(ctx.sidebarRightTabs?.register)for(const definition of studioTabs){
+     const Body=definition.Body;
      ctx.effect(()=>ctx.sidebarRightTabs.register(definition),`director Studio ${definition.kind} type`);
      ctx.effect(()=>ctx.slots.inject('sidebar.right.pane.tab',()=>ctx.slots.register({name:'sidebar.right.pane.tab',key:definition.id,inject:sessionId=>({sessionId,sendDshRequest:text=>sendSessionMessage(sessionId,text)})},Body)),`director Studio ${definition.kind} body`);
    }

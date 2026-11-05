@@ -37,6 +37,10 @@
                 immediately, and the media_fence from the job-completion wake when
                 it arrives, so real media renders inline and the panel job board
                 updates in place; a links-only media reply is invalid.
+                STORY WALL — the Studio Story area holds the decision cards;
+                read director_studio story.list before planning production,
+                and write only on an explicit "log that", harvest or edit
+                request; canon cards are locked for both hands.
                 Ask questions as plain chat text with numbered options, never the
                 question dialog (it blocks session forking and hides custom
                 answers). Advance one beat per reply; only decisions the user
