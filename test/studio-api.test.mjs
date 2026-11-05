@@ -97,6 +97,36 @@ test('Actors studio page queues a DSH job whose refs persist and which completes
   const cancelled=await (await json(base,`/api/props/jobs/${queuedAgain.id}/cancel`,{method:'POST',body:'{}'})).json();assert.equal(cancelled.status,'cancelled');
 });
 
+test('studio settings panel values feed meta defaults, job instructions, and literal newlines normalize',async t=>{
+  const {base,project}=await setup(t);
+  const saved=await (await json(base,'/api/library/app-settings',{method:'PUT',body:JSON.stringify({instructions:{scenes:'use turbo'},scene_defaults:{angle_prompts:'top\nbottom'},actor_defaults:{description:'sheet'},crew:{director:'no handheld cams',continuity:'track the bucket'},comfy:{urls:'http://a:8188\nhttp://b:8188'},workflows:{reference_to_video:'h3_ref2av.json'}})})).json();assert.equal(saved.instructions.scenes,'use turbo');assert.equal(saved.scene_defaults.angle_prompts,'top\nbottom');assert.equal(saved.crew.director,'no handheld cams');assert.equal(saved.crew.continuity,'track the bucket');assert.match(saved.crew.producer,/Producer of an AI film production/);assert.equal(saved.comfy.urls,'http://a:8188\nhttp://b:8188');assert.equal(saved.workflows.reference_to_video,'h3_ref2av.json');assert.equal(saved.workflows.video_edit,'');assert.equal((await (await json(base,'/api/library/app-settings')).json()).crew.cinematographer.startsWith('You are the Cinematographer'),true);
+  const meta=await (await json(base,'/api/meta/scene-defaults')).json();assert.equal(meta.default_angles,'top\nbottom');
+  const actor=await (await json(base,'/api/meta/actor-defaults')).json();assert.equal(actor.default_description,'sheet');
+  const fd=new FormData();fd.set('name','S');fd.set('project_id',project.id);
+  const queued=await (await fetch(base+'/api/scenes/generate',{method:'POST',headers:{'x-director-session':'session-a'},body:fd})).json();assert.equal(queued.generation_instructions,'use turbo');
+  const fd2=new FormData();fd2.set('name','N');fd2.set('project_id',project.id);fd2.set('angle_prompts','front view\\nwide view');
+  const queued2=await (await fetch(base+'/api/scenes/generate',{method:'POST',headers:{'x-director-session':'session-a'},body:fd2})).json();assert.equal(queued2.angle_prompts,'front view\nwide view');
+});
+
+test('gear panel generation settings persist and snapshot into queued jobs',async t=>{
+  const {base,project}=await setup(t);
+  const before=await (await json(base,'/api/library/generation-settings')).json();assert.match(before.scenes,/qwen image turbo 2\.1/);assert.match(before.actors,/Multiple-Angles-LoRA/);
+  const saved=await (await json(base,'/api/library/generation-settings',{method:'PUT',body:JSON.stringify({kind:'scenes',instructions:'Use the Qwen-Edit Multiple-angles LoRA with the WWAA camera builder'})})).json();assert.equal(saved.scenes,'Use the Qwen-Edit Multiple-angles LoRA with the WWAA camera builder');
+  const fd=new FormData();fd.set('name','Gears');fd.set('project_id',project.id);
+  const queued=await (await fetch(base+'/api/scenes/generate',{method:'POST',headers:{'x-director-session':'session-a'},body:fd})).json();
+  assert.equal(queued.generation_instructions,'Use the Qwen-Edit Multiple-angles LoRA with the WWAA camera builder');
+  const listed=await (await json(base,'/api/library/generation-settings')).json();assert.equal(listed.scenes,'Use the Qwen-Edit Multiple-angles LoRA with the WWAA camera builder');
+});
+
+test('a stored asset file key can be deleted without removing the asset',async t=>{  const {base,store,project}=await setup(t);
+  const asset=await store.saveAsset({kind:'scenes',name:'Del',project_id:project.id,filename:'master.png',bytes:png,file_key:'master'});
+  await store.saveAsset({kind:'scenes',project_id:project.id,asset_id:asset.id,filename:'wide.png',bytes:png,file_key:'angle_01'});
+  const removed=await json(base,`/api/library/scenes/${asset.id}/files/angle_01`,{method:'DELETE',body:'{}'});assert.equal(removed.status,200);
+  const listed=await (await json(base,'/api/scenes')).json();assert.deepEqual(Object.keys(listed.items[0].files),['master']);
+  const gone=await fetch(new URL(`/api/files/library/scenes/${asset.id}/angle_01?session=session-a`,base));assert.equal(gone.status,404);
+  const again=await json(base,`/api/library/scenes/${asset.id}/files/angle_01`,{method:'DELETE',body:'{}'});assert.equal(again.status,404);
+});
+
 test('authenticated request rejection runs before data access',async t=>{
   const {base}=await setup(t,{reject:403});const response=await json(base,'/api/projects');assert.equal(response.status,403);
 });

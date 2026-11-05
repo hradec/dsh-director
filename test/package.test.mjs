@@ -16,7 +16,7 @@ test('bundled skills expose directory resources and stripped frontmatter', async
   const cacheRoot=await mkdtemp(join(tmpdir(),'director-empty-guides-'));
   const provider=await createBundledProvider(undefined,{guideStore:createH3GuideStore({cacheRoot})});
   const {candidates}=await provider.list({});
-  assert.deepEqual(candidates.map(c=>c.name).sort(),['director','h3-prompt-writing']);
+  assert.deepEqual(candidates.map(c=>c.name).sort(),['crew','director','h3-prompt-writing']);
   const h3=await provider.get(candidates.find(c=>c.name==='h3-prompt-writing'));
   assert.ok(!h3.content.startsWith('---'));
   assert.equal(h3.source,'bundled');

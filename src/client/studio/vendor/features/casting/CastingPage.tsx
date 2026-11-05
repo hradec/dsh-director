@@ -81,6 +81,24 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
   // Plugin: select-to-edit refills the form with the stored inputs of that asset.
   function applyPicked(id: string) {
     setEditId(id);
+    if (!id) {
+      // Back to "New actor": drop everything the previous selection populated.
+      setName("");
+      setNotes("");
+      setDescription(defaults?.default_description || "");
+      setNegative(defaults?.default_negative || "");
+      setFixedSeed(false);
+      setSeed("");
+      setActorImg(null);
+      setWardrobeImg(null);
+      setWardrobeOpen(false);
+      setExtraImgs([]);
+      setRefLabels({});
+      setIncludeHeadwear(false);
+      setIncludeFootwear(false);
+      setJob(null);
+      return;
+    }
     const picked = libraryActors.find((item) => item.id === id);
     if (!picked) return;
     setName(picked.name);
@@ -95,6 +113,10 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
       setRefLabels({ ...(form.ref_labels ?? {}) });
     }
     void fillReferences(picked);
+    // Plugin: also restore the stored Output-panel renders of this asset.
+    void listActorJobs(projectId, 15)
+      .then((jobs) => { const last = jobs.find((j) => j.actor_id === id); if (last) setJob(last); })
+      .catch(() => undefined);
   }
 
   // Plugin: fetch the stored reference images back into the upload slots so a regeneration keeps them.
@@ -109,14 +131,26 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
       const blob = await fetch(ref.url).then((r) => r.blob());
       return { file: new File([blob], ref.filename, { type: blob.type }), previewUrl: URL.createObjectURL(blob) };
     };
+    const extras: (LocalImage | null)[] = [];
     const primary = references?.actor_image ?? (picked.urls?.master ? { url: picked.urls.master, filename: picked.files?.master || "master.png" } : null);
     if (primary) setActorImg(await toLocal(primary));
-    if (!references) return;
+    // Plugin: images imported into the asset later (any non-master key) are references too — show and re-send them, even when the asset has no job inputs.
+    for (const key of Object.keys(picked.urls ?? {})) {
+      if (key === "master" || key === "wardrobe_ref") continue;
+      extras.push(await toLocal({ url: picked.urls[key], filename: picked.files?.[key] || `${key}.png` }));
+    }
+    if (!references?.wardrobe_image && picked.urls?.wardrobe_ref) {
+      setWardrobeOpen(true);
+      setWardrobeImg(await toLocal({ url: picked.urls.wardrobe_ref, filename: picked.files?.wardrobe_ref || "wardrobe.png" }));
+    }
+    if (!references) {
+      setExtraImgs(extras);
+      return;
+    }
     if (references.wardrobe_image) {
       setWardrobeOpen(true);
       setWardrobeImg(await toLocal(references.wardrobe_image));
     }
-    const extras: (LocalImage | null)[] = [];
     for (const key of Object.keys(references)) if (/^reference_image_\d+$/.test(key)) extras.push(await toLocal(references[key]));
     setExtraImgs(extras);
   }
@@ -377,7 +411,8 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
               />
               <span>Actor has wardrobe</span>
             </label>
-            <div className="upload-row two">
+            {/* Plugin: inline grid so two columns survive the narrow sidebar (vendored CSS collapses .upload-row.two below 720px). */}
+            <div className="upload-row two" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.85rem" }}>
               <ImageUploadSlot
                 label={refLabels.actor_image || "Actor"}
                 onRename={(name) => setRefLabels((l) => ({ ...l, actor_image: name }))}
@@ -404,7 +439,7 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
               ) : null}
             </div>
             {extraImgs.length ? (
-              <div className="upload-row two" style={{ marginTop: "0.65rem" }}>
+              <div className="upload-row two" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.85rem", marginTop: "0.65rem" }}>
                 {extraImgs.map((img, index) => (
                   <div key={`extra-${index}`} style={{ position: "relative" }}>
                     <ImageUploadSlot

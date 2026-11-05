@@ -64,6 +64,18 @@ export function PropsPage({ onOpenLibrary, initialEditId }: Props) {
   // Plugin: select-to-edit refills the form with the stored inputs of that prop.
   function applyPicked(id: string) {
     setEditId(id);
+    if (!id) {
+      // Back to "New prop": drop everything the previous selection populated.
+      setName("");
+      setNotes("");
+      setFixedSeed(false);
+      setSeed("");
+      setPropImg(null);
+      setExtraImgs([]);
+      setRefLabels({});
+      setJob(null);
+      return;
+    }
     const picked = libraryProps.find((item) => item.id === id);
     if (!picked) return;
     setName(picked.name);
@@ -72,6 +84,10 @@ export function PropsPage({ onOpenLibrary, initialEditId }: Props) {
     if (form && form.seed !== null && form.seed !== undefined) { setSeed(String(form.seed)); setFixedSeed(!!form.fixed_seed); }
     if (form) setRefLabels({ ...(form.ref_labels ?? {}) });
     void fillReferences(picked);
+    // Plugin: also restore the stored Output-panel render of this asset.
+    void listPropJobs(projectId, 15)
+      .then((jobs) => { const last = jobs.find((j) => j.prop_id === id); if (last) setJob(last); })
+      .catch(() => undefined);
   }
 
   // Plugin: fetch the stored reference images back into the upload slots; fall back to the asset's own master render.
@@ -85,8 +101,16 @@ export function PropsPage({ onOpenLibrary, initialEditId }: Props) {
     };
     const primary = references?.prop_image ?? (picked.urls?.master ? { url: picked.urls.master, filename: picked.files?.master || "master.png" } : null);
     if (primary) setPropImg(await toLocal(primary));
-    if (!references) return;
     const extras: (LocalImage | null)[] = [];
+    // Plugin: images imported into the asset later (any non-master key) are references too — show and re-send them, even without job inputs.
+    for (const key of Object.keys(picked.urls ?? {})) {
+      if (key === "master" || key === "wardrobe_ref") continue;
+      extras.push(await toLocal({ url: picked.urls[key], filename: picked.files?.[key] || `${key}.png` }));
+    }
+    if (!references) {
+      setExtraImgs(extras);
+      return;
+    }
     for (const key of Object.keys(references)) if (/^reference_image_\d+$/.test(key)) extras.push(await toLocal(references[key]));
     setExtraImgs(extras);
   }
@@ -315,7 +339,7 @@ export function PropsPage({ onOpenLibrary, initialEditId }: Props) {
               error={fieldErrors.prop}
             />
             {extraImgs.length ? (
-              <div className="upload-row two" style={{ marginTop: "0.65rem" }}>
+              <div className="upload-row two" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.85rem", marginTop: "0.65rem" }}>
                 {extraImgs.map((img, index) => (
                   <div key={`extra-${index}`} style={{ position: "relative" }}>
                     <ImageUploadSlot

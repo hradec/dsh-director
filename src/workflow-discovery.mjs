@@ -145,7 +145,9 @@ function workflowDocument(parsed){
 }
 
 export function createWorkflowTool({comfyBaseUrl='http://127.0.0.1:8188',fetchImpl=globalThis.fetch,readFileImpl=readFile,readdirImpl=readdir,workspaceRoot=process.cwd(),getWorkflowNames=()=>({})}={}){
-  const base=new URL(comfyBaseUrl).origin;
+  // Plugin: comfyBaseUrl may be an async resolver choosing the first reachable ComfyUI endpoint per call.
+  let base=typeof comfyBaseUrl==='function'?'http://127.0.0.1:8188':new URL(comfyBaseUrl).origin;
+  async function resolveBase(cwd){if(typeof comfyBaseUrl==='function')try{base=new URL(await comfyBaseUrl(cwd)).origin}catch{base='http://127.0.0.1:8188'}return base}
   async function get(url){
     const response=await fetchImpl(url,{redirect:'error'});
     if(!response.ok)throw new Error(`ComfyUI workflow lookup failed: HTTP ${response.status}`);
@@ -157,6 +159,7 @@ export function createWorkflowTool({comfyBaseUrl='http://127.0.0.1:8188',fetchIm
     parameters:{type:'object',properties:{action:{type:'string',enum:['list','inspect','schema']},workflow_path:{type:'string',description:'Local ComfyUI API or UI JSON path for inspect.'},workflow_name:{type:'string',description:'Name returned by list, for a saved ComfyUI UI workflow.'},node_type:{type:'string',description:'Installed ComfyUI class name for targeted schema lookup.'}},required:['action']},
     output:{schema:{type:'object'},render(_args,value){return [{type:'text',text:JSON.stringify(value)}]}},
     async execute(args,exec){
+      await resolveBase(exec?.agent?.session?.header?.cwd);
       if(args.action==='list'){
         let workflows=[],comfy_error;
         try{
@@ -189,8 +192,9 @@ export function createWorkflowTool({comfyBaseUrl='http://127.0.0.1:8188',fetchIm
           if(typeof path==='string'&&path.trim()&&!recent_inspections.includes(path))recent_inspections.push(path);
           if(recent_inspections.length===5)break;
         }
-        const workflow_requirements=Object.fromEntries(Object.entries(getWorkflowNames()??{}).filter(([,name])=>typeof name==='string'&&name.trim()).map(([kind,name])=>[kind,name.trim()]));
-        return {workflows:workflows.filter(name=>typeof name==='string'&&name.toLowerCase().endsWith('.json')),recent_workflows,recent_inspections,workspace_candidates,workflow_requirements,...(comfy_error?{comfy_error}:{}),next_step:'Inspect a relevant path from recent_inspections, recent_workflows or workspace_candidates with action=inspect and workflow_path before searching deeper. For a saved UI workflow, inspect with workflow_name. If ComfyUI is unavailable, continue with local paths and Harness native coding tools. If no candidate points to the named project, use Harness native rg --files scoped to that project; search clip aliases such as C3, clip3, shot3 and character-name variants before opening files. Do not enter unrelated project directories. Query schema only for node types whose sockets still need verification. Any nonempty workflow_requirements entry is mandatory for that task kind: inspect its exact name, adapt it, then pass matching workflow_kind and workflow_name to submission; stop and ask rather than substituting if unavailable or unsuitable.'};
+        const configuredEntries=Object.entries(await getWorkflowNames(exec?.agent?.session?.header?.cwd)??{}).filter(([,name])=>typeof name==='string'&&name.trim());
+        const workflow_requirements=Object.fromEntries(configuredEntries.map(([kind,name])=>[kind,name.trim().startsWith('{')?`inline:${kind}`:name.trim()])); // ponytail: inline:<kind> label marks a pasted API graph; inspect with that label to receive it.
+        return {workflows:workflows.filter(name=>typeof name==='string'&&name.toLowerCase().endsWith('.json')),recent_workflows,recent_inspections,workspace_candidates,workflow_requirements,...(comfy_error?{comfy_error}:{}),next_step:'Inspect a relevant path from recent_inspections, recent_workflows or workspace_candidates with action=inspect and workflow_path before searching deeper. For a saved UI workflow, inspect with workflow_name. If ComfyUI is unavailable, continue with local paths and Harness native coding tools. If no candidate points to the named project, use Harness native rg --files scoped to that project; search clip aliases such as C3, clip3, shot3 and character-name variants before opening files. Do not enter unrelated project directories. Query schema only for node types whose sockets still need verification. Any nonempty workflow_requirements entry is mandatory for that task kind: inspect its exact name (an inline:<kind> value means the setting is a pasted API graph — inspect with that inline label, then submit the adapted graph via the inline workflow argument), then pass matching workflow_kind and workflow_name to submission; stop and ask rather than substituting if unavailable or unsuitable.'};
       }
       if(args.action==='schema'){
         if(typeof args.node_type!=='string'||!/^[\w.-]+$/.test(args.node_type))throw new Error('schema requires one installed node_type.');
@@ -219,6 +223,15 @@ export function createWorkflowTool({comfyBaseUrl='http://127.0.0.1:8188',fetchIm
         if(byPath){
           source=isAbsolute(args.workflow_path)?args.workflow_path:resolve(process.cwd(),args.workflow_path);
           parsed=JSON.parse(await readFileImpl(source,'utf8'));
+        }else if(byName&&args.workflow_name.trim().startsWith('inline:')){
+          // Inline requirement: the session/project setting itself holds the API node map; no ComfyUI store access.
+          const inlineKind=args.workflow_name.trim().slice('inline:'.length);
+          const inlineName=String((await getWorkflowNames(exec?.agent?.session?.header?.cwd)??{})[inlineKind]??'').trim();
+          if(!inlineName.startsWith('{'))throw new Error(`no pasted inline API workflow is configured for kind ${inlineKind}; check the Director gear panel Workflows tab.`);
+          source=args.workflow_name.trim();
+          parsed=JSON.parse(inlineName);
+          const inspectedInline=workflowDocument(parsed);
+          return {source,inline:true,...inspectedInline,next_step:'Edit input values only; submit with submit_comfy_job using the inline "workflow" argument, matching workflow_kind and this exact workflow_name; every configured node id and class_type must remain.'};
         }else{
           const workflows=await get(`${base}/userdata?dir=workflows&recurse=true`);
           if(!Array.isArray(workflows)||!workflows.includes(args.workflow_name))throw new Error('workflow_name must match a saved ComfyUI workflow from list.');

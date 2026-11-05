@@ -1,7 +1,10 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { useEffect } from "react";
 import { useProject } from "../../shared/project/ProjectContext";
 import type { LibraryKind } from "../library/api";
+import { GenerationSettings } from "../../shared/components/GenerationSettings";
+import { getGenerationSettings, saveGenerationSettings } from "../casting/api";
 import { LibraryOverview } from "./LibraryOverview";
 import { AssetImportDialog } from "../library/AssetImportDialog";
 import { CastingPage } from "../casting/CastingPage";
@@ -66,6 +69,11 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
   const [busy, setBusy] = useState(false);
   // Library "Edit" jumps to the kind's studio page with this asset pre-selected.
   const [editTarget, setEditTarget] = useState<{ kind: "actors" | "scenes" | "props"; id: string } | null>(null);
+  // Plugin: per-kind DSH generation instructions, gear at the left of each studio toolbar.
+  const [genSettings, setGenSettings] = useState<Record<string, string> | null>(null);
+  useEffect(() => {
+    getGenerationSettings().then(setGenSettings).catch(() => setGenSettings({}));
+  }, []);
   const visibleCategory = category;
 
   const openRequest = (kind: PreparedAssetCategory = "actors") => {
@@ -137,6 +145,14 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
                 hidden={visibleCategory !== workflowCategory}
               >
                 <div className="asset-workflow-toolbar">
+                  {workflowCategory === "actors" || workflowCategory === "scenes" || workflowCategory === "props" ? (
+                    genSettings ? (
+                      <GenerationSettings
+                        initial={genSettings[workflowCategory] ?? ""}
+                        onSave={(t) => saveGenerationSettings(workflowCategory, t).then(() => setGenSettings({ ...genSettings, [workflowCategory]: t }))}
+                      />
+                    ) : null
+                  ) : null}
                   <span>{workflowCategory === "voices" ? "Create with DSH or import an audio sample." : "Create with DSH or import an existing reference."}</span>
                   <button
                     type="button"

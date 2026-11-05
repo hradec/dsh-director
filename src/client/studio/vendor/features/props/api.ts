@@ -6,6 +6,7 @@ export type { JobStatus, OutputSlot };
 export interface PropJobRecord {
   id: string;
   status: JobStatus;
+  generation_instructions?: string;
   name: string;
   notes: string;
   seed: number | null;
@@ -52,6 +53,18 @@ export async function getPropJob(jobId: string): Promise<PropJobRecord> {
   const res = await fetch(`/api/props/jobs/${jobId}`);
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
+}
+
+// Plugin: per-kind instructions the DSH agent follows when generating (gear panel).
+export async function getGenerationSettings(): Promise<Record<string, string>> {
+  const res = await fetch("/api/library/generation-settings");
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function saveGenerationSettings(kind: string, instructions: string): Promise<void> {
+  const res = await fetch("/api/library/generation-settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind, instructions }) });
+  if (!res.ok) throw new Error(await parseError(res));
 }
 
 export async function cancelPropJob(jobId: string): Promise<PropJobRecord> {

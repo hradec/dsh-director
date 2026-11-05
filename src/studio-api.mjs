@@ -27,7 +27,7 @@ function presentGenerationRecord(job,session){
   if(job.outputs&&job.asset_id)for(const output of job.outputs){outputs[output.key]={key:output.key,label:null,filename:output.filename,url:fileUrl(job.kind,job.asset_id,output.key,session)};output_order.push(output.key);}
   const input_previews={},input_files={};for(const input of job.inputs??[]){input_previews[input.key]=fileUrl('layouts',job.ref_asset_id,input.key,session);input_files[input.key]=input.filename;}
   const has=key=>(job.inputs??[]).some(input=>input.key===key);
-  return {id:job.id,status:job.status,mode:has('wardrobe_image')?'wardrobe':has('actor_image')?'reference':'text',name:job.name,notes:job.notes,description:job.description??'',body_description:job.body_description??'',hair_description:job.hair_description??'',angle_prompts:job.angle_prompts??'',prepend_text:job.prepend_text??'',append_text:job.append_text??'',negative_prompt:job.negative_prompt??'',has_actor_ref:has('actor_image'),has_wardrobe_ref:has('wardrobe_image'),include_headwear:!!job.include_headwear,include_footwear:!!job.include_footwear,seed:job.seed??null,fixed_seed:!!job.fixed_seed,error:job.error??null,comfy_prompt_id:null,created_at:job.created_at,updated_at:job.updated_at,outputs,output_order,input_previews,input_files,input_labels:job.ref_labels??{},actor_id:job.kind==='actors'?job.asset_id??null:null,scene_id:job.kind==='scenes'?job.asset_id??null:null,prop_id:job.kind==='props'?job.asset_id??null:null,pipeline_id:'dsh-agent'};
+  return {id:job.id,status:job.status,mode:has('wardrobe_image')?'wardrobe':has('actor_image')?'reference':'text',name:job.name,notes:job.notes,description:job.description??'',body_description:job.body_description??'',hair_description:job.hair_description??'',angle_prompts:job.angle_prompts??'',prepend_text:job.prepend_text??'',append_text:job.append_text??'',negative_prompt:job.negative_prompt??'',has_actor_ref:has('actor_image'),has_wardrobe_ref:has('wardrobe_image'),include_headwear:!!job.include_headwear,include_footwear:!!job.include_footwear,seed:job.seed??null,fixed_seed:!!job.fixed_seed,error:job.error??null,comfy_prompt_id:null,created_at:job.created_at,updated_at:job.updated_at,outputs,output_order,input_previews,input_files,input_labels:job.ref_labels??{},generation_instructions:job.generation_instructions??'',actor_id:job.kind==='actors'?job.asset_id??null:null,scene_id:job.kind==='scenes'?job.asset_id??null:null,prop_id:job.kind==='props'?job.asset_id??null:null,pipeline_id:'dsh-agent'};
 }
 // The form block lets the studio pages re-fill an existing asset's inputs for a regeneration; the latest job that produced the asset is authoritative.
 function generationForm(job){return {description:job.description??'',body_description:job.body_description??'',hair_description:job.hair_description??'',angle_prompts:job.angle_prompts??'',prepend_text:job.prepend_text??'',append_text:job.append_text??'',negative_prompt:job.negative_prompt??'',include_headwear:!!job.include_headwear,include_footwear:!!job.include_footwear,seed:job.seed??null,fixed_seed:!!job.fixed_seed,ref_labels:job.ref_labels??{}};}
@@ -44,7 +44,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       const path=url.pathname.slice('/director-studio'.length)||'/';if(!path.startsWith('/api/')){sendJson(res,404,{detail:'Not found.'});return;}
       if(req.method==='OPTIONS'){res.writeHead(204,{Allow:'GET, HEAD, POST, PATCH, DELETE, OPTIONS'});res.end();return;}
       if(req.method==='GET'&&path==='/api/health'){
-        let reachable=false,comfyError=null;try{const response=await fetchImpl(`${comfyBaseUrl}/system_stats`,{signal:controller.signal,redirect:'error'});reachable=response.ok;if(!response.ok)comfyError=`HTTP ${response.status}`;}catch(error){comfyError=error.message;}
+        let reachable=false,comfyError=null;try{const base=typeof comfyBaseUrl==='function'?await comfyBaseUrl():comfyBaseUrl;const response=await fetchImpl(`${base}/system_stats`,{signal:controller.signal,redirect:'error'});reachable=response.ok;if(!response.ok)comfyError=`HTTP ${response.status}`;}catch(error){comfyError=error.message;}
         sendJson(res,200,{ok:true,comfy_reachable:reachable,comfy_error:comfyError});return;
       }
       // The DSH sidebar identifies its session by header; media URLs use ?session= because <img>/<video> tags cannot send headers.
@@ -69,8 +69,12 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
        match=/^\/api\/projects\/([A-Za-z0-9_-]{1,128})\/managed-run$/.exec(path);
        if(match&&req.method==='GET'){sendJson(res,200,null);return;}
       if(req.method==='GET'&&path==='/api/pipelines'){sendJson(res,200,[]);return;}
-      if(req.method==='GET'&&path==='/api/meta/actor-defaults'){sendJson(res,200,{default_description:'A neutral full-body character reference sheet with front, side, and back views.',default_negative:''});return;}
-      if(req.method==='GET'&&path==='/api/meta/scene-defaults'){sendJson(res,200,{default_angles:'front view, eye level\\nwide view, eye level\\nreverse view, eye level',default_prepend:'',default_append:''});return;}
+      if(req.method==='GET'&&path==='/api/meta/actor-defaults'){const a=(await store.getAppSettings()).actor_defaults;sendJson(res,200,{default_description:a.description,default_negative:a.negative_prompt});return;}
+      if(req.method==='GET'&&path==='/api/meta/scene-defaults'){const d=(await store.getAppSettings()).scene_defaults;sendJson(res,200,{default_angles:d.angle_prompts,default_prepend:d.prepend_text,default_append:d.append_text});return;}
+      if(path==='/api/library/app-settings'&&(req.method==='GET'||req.method==='PUT')){
+        if(req.method==='GET'){sendJson(res,200,await store.getAppSettings());return;}
+        const input=await readJson(req,controller.signal);sendJson(res,200,await store.setAppSettings(input));return;
+      }
       match=/^\/api\/(actors|scenes|props)(?:\/(generate|jobs)(?:\/([A-Za-z0-9_-]{1,128})(?:\/(cancel|save))?)?)?$/.exec(path);
       if(match){
         const [,kind,section,jobId,action]=match;
@@ -109,9 +113,13 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         if(!isStudioAssetKind(fields.kind))throw new StudioStoreError('Unsupported asset kind.');
         const item=await store.saveAsset({kind:fields.kind,name:fields.name||file.filename.replace(/\.[^.]+$/,''),notes:fields.notes,project_id:project.id,filename:file.filename,bytes:file.bytes});sendJson(res,201,presentAsset(item,sessionId));return;
       }
+      if(path==='/api/library/generation-settings'&&req.method==='GET'){sendJson(res,200,await store.getGenerationSettings());return;}
+      if(path==='/api/library/generation-settings'&&req.method==='PUT'){const input=await readJson(req,controller.signal);sendJson(res,200,await store.setGenerationSettings(input.kind,input.instructions));return;}
       match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})$/.exec(path);
       if(match&&req.method==='PATCH'){const item=await store.updateAsset(match[1],match[2],await readJson(req,controller.signal));sendJson(res,200,presentAsset(item,sessionId));return;}
       if(match&&req.method==='DELETE'){sendJson(res,200,await store.deleteAsset(match[1],match[2]));return;}
+      match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})\/files\/([A-Za-z0-9_-]{1,64})$/.exec(path);
+      if(match&&req.method==='DELETE'){sendJson(res,200,await store.deleteAssetFile(match[1],match[2],match[3]));return;}
       match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})\/project$/.exec(path);
       if(match&&req.method==='PATCH'){await readJson(req,controller.signal);sendJson(res,200,presentAsset(await store.assignAsset(match[1],match[2],project.id),sessionId));return;}
       if(path==='/api/library/assign-project'&&req.method==='POST'){

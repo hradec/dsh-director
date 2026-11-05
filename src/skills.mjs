@@ -129,7 +129,7 @@ export function createH3GuideTool({guideStore,userQuestions}={}){
 
 export async function createBundledProvider(root=resolve(dirname(fileURLToPath(import.meta.url)),'../skills'),{guideStore=createH3GuideStore()}={}) {
   const definitions=new Map();
-  for (const name of ['director','h3-prompt-writing']) {
+  for (const name of ['director','crew','h3-prompt-writing']) { // ponytail: keep in sync with package.json files allowlist when adding a skill folder.
     const path=resolve(root,name,'SKILL.md');
     const text=await readFile(path,'utf8');
     const parsed=/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(text);

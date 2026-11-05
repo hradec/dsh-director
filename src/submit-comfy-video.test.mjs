@@ -195,6 +195,11 @@ test('registers an owned background job that completes with Comfy output paths',
   assert.match(JSON.parse(outcome.output).review_instruction,/visual.*review.*user.*unless explicitly requested/i)
   assert.match(JSON.parse(outcome.output).review_instruction,/continue.*authorized chain.*technical checks/i)
   assert.match(outcome.output, /http:\/\/127\.0\.0\.1:8188\/view\?filename=shot-01\.mp4&subfolder=directed&type=output/)
+  assert.match(result.media_panel, /^```dsh-ui/)
+  const completedFence = JSON.parse(outcome.output).media_fence
+  const board = JSON.parse(completedFence.replace(/^```dsh-ui\n/, '').replace(/\n```$/, ''))
+  assert.equal(board.panel, true)
+  assert.ok(JSON.stringify(board.items).includes('"type":"video"'))
 })
 
 test('rejects an H3-intent raw graph whose prompt has no reference connections', async () => {
@@ -423,4 +428,26 @@ test('registers a generic Comfy job tool while preserving the legacy video tool'
   assert.match(registered[0].description, /Invoke-WebRequest.*never use web_fetch/i)
   assert.match(registered[0].description, /object_info.*recursive filesystem/i)
   assert.match(registered[0].description, /pretrim.*delivered_frames/i)
+})
+
+test('async comfyBaseUrl resolver routes the whole submission to the selected endpoint', async () => {
+  const urls = []
+  const fetchImpl = async (url) => {
+    urls.push(String(url))
+    if (String(url).endsWith('/prompt')) return jsonResponse(200, { prompt_id: 'fallback' })
+    if (String(url).includes('/history/fallback')) return jsonResponse(200, { fallback: { status: { status_str: 'success', completed: true }, outputs: {} } })
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const submit = createSubmitComfyVideo({ fetchImpl, sleep: async () => {}, llmHandoffMode: 'comfy-only', comfyBaseUrl: async () => 'http://10.0.0.9:8188' })
+  const result = await submit({ workflow: { a: { class_type: 'Node', inputs: {} } } }, { concludeTurn: () => {} })
+  assert.ok(urls.some((url) => url.startsWith('http://10.0.0.9:8188/prompt')), 'the chosen endpoint must receive /prompt')
+  assert.ok(!urls.some((url) => url.startsWith('http://127.0.0.1:8188')), 'the configured placeholder must not be contacted')
+  assert.equal(result.terminal, true)
+})
+
+test('failing comfyBaseUrl resolver blocks submission with the fallback guidance', async () => {
+  const submit = createSubmitComfyVideo({ fetchImpl: async () => { throw new Error('network should not be used') }, sleep: async () => {}, llmHandoffMode: 'comfy-only', comfyBaseUrl: async () => { throw new Error('tried http://a:8188, http://b:8188') } })
+  const result = await submit({ workflow: { a: { class_type: 'Node', inputs: {} } } }, { concludeTurn: () => {} })
+  assert.equal(result.status, 'blocked')
+  assert.match(JSON.stringify(result), /comfyTryUrls/)
 })

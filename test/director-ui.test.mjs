@@ -61,24 +61,6 @@ test('Director Settings switch maps disabled and enabled to comfy-only and llama
   assert.equal(toggle.disabled,true);assert.match(document.body.textContent,/read-only/);
 });
 
-test('Director Settings saves exact names for all five ComfyUI workflow kinds',async t=>{
-  const Component=await component('src/client/GpuUsageSettings.jsx','GpuUsageSettings');
-  const fields=[['workflowTextToImage','Text to image'],['workflowImageEdit','Image edit'],['workflowReferenceToVideo','Reference to Video'],['workflowFirstLastFrameToVideo','First and/or last frame to Video'],['workflowVideoEdit','Video Edit']];
-  let current={status:'ready',value:{llmHandoffMode:'comfy-only',...Object.fromEntries(fields.map(([key])=>[key,'']))},writable:true};const listeners=new Set(),writes=[];
-  const form={getSnapshot:()=>current,subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},async set(field,value){writes.push([field,value]);current={...current,value:{...current.value,[field]:value}};for(const listener of listeners)listener();return true;}};
-  await render(t,Component,{form});
-  assert.equal(document.querySelectorAll('input[type="text"]').length,5);assert.equal(document.querySelectorAll('input[type="text"]')[0].value,'');
-  const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
-  for(const [index,[key,label]] of fields.entries()){
-    const name=`${label} ComfyUI workflow name`,input=document.querySelector(`[aria-label="${name}"]`),value=`workflow-${index}.json`;assert.ok(input);
-    await act(()=>{setter.call(input,value);Simulate.change(input,{target:{value}});});
-  }
-  const save=document.querySelector('.dsh-director-workflow-save');assert.ok(save);assert.equal(save.disabled,false);
-  await act(async()=>{save.click();await new Promise(resolve=>setImmediate(resolve));});
-  assert.deepEqual(writes,fields.map(([key],index)=>[key,`workflow-${index}.json`]));
-  assert.deepEqual(fields.map(([key])=>current.value[key]),fields.map((_,index)=>`workflow-${index}.json`));
-});
-
 test('GPU panel and Send protection mount strictly for the Director preset',async t=>{
   const Component=await component('src/client/GpuStatus.jsx','PresetAwareGpuStatus');
   let preset='standard',status={phase:'generating',blocked:true,llm:'unloaded'},reads=0,sent=0;

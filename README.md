@@ -6,7 +6,7 @@ images, videos and generated audio inside the conversation. It also provides sta
 **Assets** and **Production** tabs in DSH's right sidebar; there is no Director Studio
 server or install dependency.
 
-Version 0.1.84. Original implementation and local skill wrappers use MIT. Official MiniMax prompt
+Version 0.1.91. Original implementation and local skill wrappers use MIT. Official MiniMax prompt
 guides are not included; users can obtain pinned copies separately under upstream
 terms after native human confirmation. See [LICENSE](LICENSE),
 [third-party notices](THIRD_PARTY_NOTICES.md), and the
@@ -79,7 +79,20 @@ settings. Changing one does not change the others.
   Production references keep pointing at it. Every page also takes up to six
   **+ Add reference** images besides the standard slots; stored references refill
   their slots on edit (assets without stored job references fall back to their own
-  master render), each slot's name is click-to-edit so a later message can
+  master render), restores the asset's stored Output-panel renders when selected
+  for edit, clicking an angle chip with stored renders filters the Output panel
+  to that angle (renders key per line: angle_00, angle_01, …) and a
+  **Re-run Angle NN only** button re-queues just that view; a ✕ on each output
+  tile deletes that stored render (needs a service restart to enable the
+  delete API); a ⚙ gear beside each asset page's Target picker stores
+  free-form generation instructions (template, model, LoRAs…) that every
+  queued job snapshots and hands to the DSH agent; a ⚙ at the top-right of
+  every studio page opens the Studio settings panel (instructions per kind,
+  scenes default angles/prepend/append, actors default description) which
+  also feeds the pages' prefill defaults; angle prompts auto-split literal
+  “\n” text into real rows; images DSH imports later under ref_*/sheet keys
+  refill the edit page's extra reference slots;
+  each slot's name is click-to-edit so a later message can
   cite it (e.g. "use the Armor pose again"), and the Casting page hides its
   wardrobe slot behind an **Actor has wardrobe** toggle.
   The Assets tab's **Ask DSH to create** form sends a

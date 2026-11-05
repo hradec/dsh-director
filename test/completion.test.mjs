@@ -15,6 +15,6 @@ test('configured background completion supplies real output URLs and presentatio
   const output=JSON.parse(result.output);
   assert.equal(output.comfy_release.verified,true);
   assert.equal(output.output_artifacts[0].view_url,'http://comfy.example:8000/view?filename=clip.mp4&subfolder=test&type=output');
-  assert.match(output.review_instruction,/director_show_media/);
+  assert.match(output.review_instruction,/media_fence/);assert.match(output.review_instruction,/asset\.create/);
   assert.ok(urls.every(u=>u.startsWith('http://comfy.example:8000/')||u.startsWith('http://swap.example:9000/')));
 });

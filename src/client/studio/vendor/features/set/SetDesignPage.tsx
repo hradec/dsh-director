@@ -6,6 +6,7 @@ import type { OutputSlot } from "../../shared/api/types";
 import { useProject } from "../../shared/project/ProjectContext";
 import {
   cancelSceneJob,
+  deleteSceneFile,
   fetchSceneDefaults,
   generateScene,
   getSceneJob,
@@ -52,6 +53,8 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [job, setJob] = useState<SceneJobRecord | null>(null);
+  // Plugin: which generated angle is being viewed (filters the Output panel and targets Re-run).
+  const [viewAngle, setViewAngle] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState<SceneRecord | null>(null);
   const [libraryScenes, setLibraryScenes] = useState<SceneRecord[]>([]);
@@ -79,19 +82,41 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
   // Plugin: select-to-edit refills the form with the stored inputs of that scene.
   function applyPicked(id: string) {
     setEditId(id);
+    if (!id) {
+      // Back to "New scene": drop everything the previous selection populated.
+      setName("");
+      setNotes("");
+      setAngles(defaults?.default_angles || "");
+      setDisabledAngleIndexes(new Set());
+      setPrepend(defaults?.default_prepend || "");
+      setAppend(defaults?.default_append || "");
+      setFixedSeed(false);
+      setSeed("");
+      setSceneImg(null);
+      setExtraImgs([]);
+      setRefLabels({});
+      setJob(null);
+      setViewAngle(null);
+      return;
+    }
     const picked = libraryScenes.find((item) => item.id === id);
     if (!picked) return;
     setName(picked.name);
     setNotes(picked.notes || "");
     const form = picked.form;
     if (form) {
-      if (form.angle_prompts) setAngles(form.angle_prompts);
+      if (form.angle_prompts) setAngles(form.angle_prompts.replaceAll("\\n", "\n"));
       setPrepend(form.prepend_text || "");
       setAppend(form.append_text || "");
       if (form.seed !== null && form.seed !== undefined) { setSeed(String(form.seed)); setFixedSeed(!!form.fixed_seed); }
       setRefLabels({ ...(form.ref_labels ?? {}) });
     }
     void fillReferences(picked);
+    setViewAngle(null);
+    // Plugin: also restore the stored Output-panel render of this asset.
+    void listSceneJobs(projectId, 15)
+      .then((jobs) => { const last = jobs.find((j) => j.scene_id === id); if (last) setJob(last); })
+      .catch(() => undefined);
   }
 
   // Plugin: fetch the stored reference images back into the upload slots; fall back to the asset's own master render.
@@ -179,7 +204,8 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
   const isRunning = job ? ACTIVE.includes(job.status) : false;
 
   const angleLines = useMemo(
-    () => angles.split("\n").map((line) => line.trim()).filter(Boolean),
+    // Plugin: also split LITERAL backslash-n text so a single-line field entry becomes real angle rows.
+    () => angles.split("\n").flatMap((line) => line.split("\\n")).map((line) => line.trim()).filter(Boolean),
     [angles],
   );
   const selectedAngleLines = useMemo(
@@ -207,7 +233,7 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
     return Object.keys(err).length === 0;
   };
 
-  const onGenerate = async () => {
+  const onGenerate = async (onlyAngle: number | null = null) => {
     setFormError(null);
     setSaved(null);
     if (!projectId) {
@@ -220,7 +246,7 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
       const fd = new FormData();
       fd.set("name", name.trim());
       fd.set("notes", notes);
-      fd.set("angle_prompts", selectedAngleLines.join("\n"));
+      fd.set("angle_prompts", onlyAngle === null ? selectedAngleLines.join("\n") : angleLines[onlyAngle] || "");
       fd.set("prepend_text", prepend);
       fd.set("append_text", append);
       fd.set("fixed_seed", fixedSeed ? "true" : "false");
@@ -307,7 +333,7 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
     return map[status] || status;
   }, [status, angleCount]);
 
-  const mainKeys = job?.output_order?.length
+  const allOutputKeys = job?.output_order?.length
     ? job.output_order
     : job?.output_stems?.length
       ? job.output_stems
@@ -315,6 +341,15 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
   const placeholderKeys = Array.from(
     { length: angleCount },
     (_, index) => `angle_${String(index).padStart(2, "0")}`,
+  );
+  // Plugin: per-angle view — a stored render keyed angle_NN belongs to angle line N.
+  const hasOutputs = !!job && job.status === "succeeded" && allOutputKeys.length > 0;
+  const angleKeyFor = (index: number) => `angle_${String(index).padStart(2, "0")}`;
+  const mainKeys = hasOutputs && viewAngle !== null && allOutputKeys.includes(angleKeyFor(viewAngle))
+    ? allOutputKeys.filter((key) => key === "master" || key === angleKeyFor(viewAngle))
+    : allOutputKeys;
+  const angleLabels = Object.fromEntries(
+    angleLines.map((line, index) => [angleKeyFor(index), `${String(index + 1).padStart(2, "0")} · ${angleLabel(line)}`]),
   );
 
   const outputMap = job?.outputs || null;
@@ -386,7 +421,7 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
               error={fieldErrors.scene}
             />
             {extraImgs.length ? (
-              <div className="upload-row two" style={{ marginTop: "0.65rem" }}>
+              <div className="upload-row two" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.85rem", marginTop: "0.65rem" }}>
                 {extraImgs.map((img, index) => (
                   <div key={`extra-${index}`} style={{ position: "relative" }}>
                     <ImageUploadSlot
@@ -431,9 +466,14 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
                     className={`angle-toggle ${selected ? "selected" : ""}`}
                     aria-label={label}
                     aria-pressed={selected}
-                    title={angle}
+                    title={hasOutputs ? `View and re-run this angle (${angleKeyFor(index)})` : angle}
                     disabled={isRunning}
-                    onClick={() => toggleAngle(index)}
+                    onClick={() => {
+                      // Plugin: with stored renders a click filters the Output panel; otherwise it toggles generation.
+                      if (hasOutputs) setViewAngle((v) => (v === index ? null : index));
+                      else toggleAngle(index);
+                    }}
+                    style={viewAngle === index ? { outline: "1px solid currentColor", outlineOffset: 2 } : undefined}
                   >
                     <span className="angle-toggle-index">{String(index + 1).padStart(2, "0")}</span>
                     <span>{label}</span>
@@ -441,6 +481,18 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
                 );
               })}
             </div>
+            {hasOutputs && viewAngle !== null ? (
+              // Plugin: queue only this angle again; the agent imports it back under angle_NN.
+              <button
+                type="button"
+                className="btn secondary sm"
+                style={{ marginTop: "0.4rem" }}
+                disabled={isRunning || busy || !editId}
+                onClick={() => onGenerate(viewAngle)}
+              >
+                Re-run Angle {String(viewAngle + 1).padStart(2, "0")} only
+              </button>
+            ) : null}
             <label className="field">
               <span>
                 Angle prompts <span className="req">*</span>
@@ -509,7 +561,7 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
 
           <div className="actions">
             {!isRunning ? (
-              <button type="button" className="btn primary" disabled={busy} onClick={onGenerate}>
+              <button type="button" className="btn primary" disabled={busy} onClick={() => onGenerate()}>
                 {busy ? "Submitting…" : `Generate ${angleCount || ""} Angles`}
               </button>
             ) : (
@@ -561,7 +613,21 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
             status={status}
             outputs={outputMap}
             mainKeys={mainKeys.length ? mainKeys : placeholderKeys}
+            labels={angleLabels}
             showSecondary={false}
+            onRemove={
+              hasOutputs && (job?.scene_id || editId)
+                ? (key) => {
+                    // Plugin: delete this stored render from the scene, then refresh the panel from the job record.
+                    const assetId = job?.scene_id || editId;
+                    if (!assetId || !job) return;
+                    void deleteSceneFile(assetId, key)
+                      .then(() => getSceneJob(job.id))
+                      .then(setJob)
+                      .catch((e) => setFormError(e instanceof Error ? e.message : String(e)));
+                  }
+                : null
+            }
             onOpen={(slot, all) => {
               const idx = all.findIndex((s) => s.key === slot.key);
               setLightbox({ slots: all, index: Math.max(0, idx) });
@@ -577,7 +643,7 @@ export function SetDesignPage({ onOpenLibrary, initialEditId }: Props) {
             >
               {job?.scene_id ? "Saved" : "Save to Library"}
             </button>
-            <button type="button" className="btn secondary" disabled={!job || isRunning || busy} onClick={onGenerate}>
+            <button type="button" className="btn secondary" disabled={!job || isRunning || busy} onClick={() => onGenerate()}>
               Regenerate
             </button>
           </div>

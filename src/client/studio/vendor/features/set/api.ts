@@ -6,6 +6,7 @@ export type { JobStatus, OutputSlot };
 export interface SceneJobRecord {
   id: string;
   status: JobStatus;
+  generation_instructions?: string;
   name: string;
   notes: string;
   angle_prompts: string;
@@ -75,6 +76,24 @@ export async function getSceneJob(jobId: string): Promise<SceneJobRecord> {
   const res = await fetch(`/api/scenes/jobs/${jobId}`);
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
+}
+
+// Plugin: remove one stored render (file key) from a saved scene without deleting the scene.
+export async function deleteSceneFile(assetId: string, key: string): Promise<void> {
+  const res = await fetch(`/api/library/scenes/${assetId}/files/${key}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await parseError(res));
+}
+
+// Plugin: per-kind instructions the DSH agent follows when generating (gear panel).
+export async function getGenerationSettings(): Promise<Record<string, string>> {
+  const res = await fetch("/api/library/generation-settings");
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function saveGenerationSettings(kind: string, instructions: string): Promise<void> {
+  const res = await fetch("/api/library/generation-settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind, instructions }) });
+  if (!res.ok) throw new Error(await parseError(res));
 }
 
 export async function cancelSceneJob(jobId: string): Promise<SceneJobRecord> {

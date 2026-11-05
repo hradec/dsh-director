@@ -298,6 +298,33 @@ async function unloadLlamaSwap(fetchImpl, signal, sleep, timeoutMs, pollInterval
   throw new Error(`llama-swap unload timed out; still running: ${lastRunning.join(', ') || 'unknown'}`)
 }
 
+// ponytail: in-memory job board per host process (max 8, lost on restart); fences are paste-verbatim so the agent never has to author UI.
+const liveJobs = new Map()
+function liveJob(promptId, patch) {
+  const job = liveJobs.get(promptId) ?? { label: `prompt ${String(promptId).slice(0, 8)}`, phase: 'queued', artifacts: [] }
+  liveJobs.set(promptId, { ...job, ...patch })
+  while (liveJobs.size > 8) liveJobs.delete(liveJobs.keys().next().value)
+}
+function mediaNode(artifact) {
+  const name = artifact.relative_path ?? 'output'
+  if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(name)) return { type: 'image', src: artifact.view_url, alt: name }
+  if (/\.(mp4|webm|mov|mkv)$/i.test(name)) return { type: 'video', src: artifact.view_url, alt: name }
+  if (/\.(mp3|wav|flac|ogg|aac)$/i.test(name)) return { type: 'audio', src: artifact.view_url, alt: name }
+  return { type: 'badge', label: name, tone: 'accent' }
+}
+function mediaFence() {
+  const items = [...liveJobs.values()].map((job) => ({
+    type: 'card',
+    title: `${job.label} — ${job.phase}`,
+    items: job.phase === 'completed' && job.artifacts.length
+      ? [{ type: 'grid', cols: 2, items: job.artifacts.slice(0, 8).map(mediaNode) }]
+      : job.phase === 'failed'
+        ? [{ type: 'callout', tone: 'error', content: 'Generation failed. Inspect the job error and fix the cause before any resubmit.' }]
+        : [{ type: 'row', items: [{ type: 'icon', name: 'Sparkles', tone: 'info', tile: true, label: 'generating' }, { type: 'col', gap: 2, items: [{ type: 'text', size: 'muted', content: 'Generating on ComfyUI — this tile updates in the panel when the job completes.' }, { type: 'progress', label: 'queued', value: 8 }] }] }],
+  }))
+  return '```dsh-ui\n' + JSON.stringify({ title: 'Comfy generations', panel: true, items }) + '\n```'
+}
+
 function comfyOutputArtifacts(outputs, comfyBaseUrl = 'http://127.0.0.1:8188') {
   const artifacts = []
   for (const nodeOutput of Object.values(outputs ?? {})) {
@@ -420,9 +447,11 @@ async function monitorComfyPrompt(promptId, options) {
       const artifacts = comfyOutputArtifacts(entry.outputs, comfyBaseUrl)
       const files = artifacts.map((artifact) => artifact.relative_path)
       const detail = failed ? comfyFailureDetail(entry) : files.length > 0 ? `${files.length} output file(s)` : 'completed without reported output files'
+      liveJob(promptId, { phase: failed ? 'failed' : 'completed', artifacts })
       const output = {prompt_id: promptId, execution_status: failed ? 'failed' : 'completed', execution_detail: detail,
         output_files: files, output_artifacts: artifacts,
-        review_instruction: 'Download the exact recorded output_artifacts view_url files into this session workspace. Verify the files and required saved latent slots, then call director_show_media with the local file paths to show images, videos or audio in the conversation. Visual and creative review belongs to the user unless explicitly requested; continue an already-authorized chain after technical checks. Do not create unrequested rerenders. Display does not establish acceptance.'}
+        media_fence: mediaFence(),
+        review_instruction: 'Paste the media_fence value verbatim (as a dsh-ui fence): images, videos and audio render inline from the view_url immediately and the panel job board updates in place; a links-only reply is invalid. Download the exact recorded output_artifacts view_url files into this session workspace. Verify the files and required saved latent slots, then register each delivered output with director_studio asset.create (comfy_view_url plus the completed job_id). Visual and creative review belongs to the user unless explicitly requested; continue an already-authorized chain after technical checks. Do not create unrequested rerenders. Display does not establish acceptance.'}
       if(llmHandoffMode==='comfy-only'){
         const final={...output,phase:'ready_for_review',comfy_release:{skipped:true,reason:'external_llm'}}
         publish(final)
@@ -533,9 +562,11 @@ export function createSubmitComfyVideo({
   const initialMode=readHandoffMode()
   if(!['llama-swap','comfy-only'].includes(initialMode))throw new Error(`Unknown LLM handoff mode: ${initialMode}`)
   // One transport boundary covers preflight/monitor/cancel and optional unload.
-  const origins = new Map([['http://127.0.0.1:8188', new URL(comfyBaseUrl).origin]])
+  // Plugin: comfyBaseUrl may be an async resolver picking the first reachable endpoint (comfyTryUrls fallbacks).
+  const readComfyBase=typeof comfyBaseUrl==='function'?comfyBaseUrl:null
+  const origins = new Map([['http://127.0.0.1:8188', readComfyBase?null:new URL(comfyBaseUrl).origin]])
   if(initialMode==='llama-swap')origins.set('http://127.0.0.1:11435',new URL(llamaSwapBaseUrl).origin)
-  comfyBaseUrl = origins.get('http://127.0.0.1:8188')
+  comfyBaseUrl = origins.get('http://127.0.0.1:8188')??'http://127.0.0.1:8188'
   const fetchImpl = (input, init) => {
     const url = new URL(input)
     const origin = origins.get(url.origin)
@@ -546,6 +577,10 @@ export function createSubmitComfyVideo({
     if(!['llama-swap','comfy-only'].includes(llmHandoffMode))throw new Error(`Unknown LLM handoff mode: ${llmHandoffMode}`)
     const usesLlamaSwap=llmHandoffMode==='llama-swap'
     if(usesLlamaSwap)origins.set('http://127.0.0.1:11435',new URL(llamaSwapBaseUrl).origin)
+    if(readComfyBase){
+      try{const base=new URL(await readComfyBase(exec?.agent?.session?.header?.cwd)).origin;origins.set('http://127.0.0.1:8188',base);comfyBaseUrl=base}
+      catch(error){return blockedSubmission([`No configured ComfyUI endpoint is reachable: ${error?.message??error}. Check the comfyTryUrls plugin setting (one HTTP origin per line); ssh to a listed host to install missing models/LoRAs.`])}
+    }
     // A submission and its monitor retain the mode selected when this call began.
     const onGpuState=value=>{try{observeGpuState?.({...value,llm_handoff_mode:value?.llm_handoff_mode??llmHandoffMode})}catch{}}
     const loaded = preparedWorkflow ?? await loadWorkflow(args, {
@@ -664,8 +699,11 @@ export function createSubmitComfyVideo({
       try { exec.concludeTurn() } finally { resolveHandoff() }
     }
 
+    liveJob(queued.prompt_id, { label: [args.clip_id, args.workflow_kind, args.workflow_name].filter(Boolean).join(' ') || `prompt ${String(queued.prompt_id).slice(0, 8)}`, phase: 'generating' })
     return {
       prompt_id: queued.prompt_id,
+      media_panel: mediaFence(),
+      next_step: 'Paste the media_panel value verbatim into your reply now (it is a dsh-ui fence; it renders a placeholder tile in the panel job board). When the completion wake arrives, paste its media_fence the same way — the tile updates in place with real media. A links-only media reply is invalid.',
       ...(jobId !== undefined ? { job_id: jobId } : {}),
       ...(queued.number !== undefined ? { number: queued.number } : {}),
       llm_handoff_mode: llmHandoffMode,
@@ -706,16 +744,29 @@ function inspectedSavedWorkflow(exec,name){
   });
 }
 
-function assertConfiguredWorkflow(args,exec,getWorkflowNames){
-  const names=getWorkflowNames?.()??{};
+async function assertConfiguredWorkflow(args,exec,getWorkflowNames){
+  const names=await (getWorkflowNames?.(exec?.agent?.session?.header?.cwd)??Promise.resolve({}))??{};
   const configured=Object.entries(names).filter(([,name])=>typeof name==='string'&&name.trim());
   if(!configured.length)return;
   if(!WORKFLOW_KIND_VALUES.includes(args.workflow_kind))throw Error('submit_comfy_job: workflow_kind is required while a workflow name is configured. Choose the matching task kind; use "other" only for unrelated non-generation jobs.');
   if(args.workflow_kind==='other')return;
   const expected=names[WORKFLOW_KIND_SETTINGS[args.workflow_kind]];
   if(typeof expected!=='string'||!expected.trim())return;
-  if(args.workflow_name!==expected.trim())throw Error(`submit_comfy_job: configured workflow for ${args.workflow_kind} is "${expected.trim()}". Pass the exact matching workflow_name; do not substitute.`);
-  if(!inspectedSavedWorkflow(exec,expected.trim()))throw Error(`submit_comfy_job: configured workflow "${expected.trim()}" was not successfully inspected in this session. Call director_workflows with action "inspect" and that exact workflow_name before adapting and submitting its API graph.`);
+  const trimmed=expected.trim();
+  if(trimmed.startsWith('{')){
+    // Inline requirement: the setting itself is a ComfyUI API node map; the saved-store is never consulted.
+    const label=`inline:${args.workflow_kind}`;
+    let need;try{need=JSON.parse(trimmed)}catch{throw Error(`submit_comfy_job: the configured ${args.workflow_kind} workflow looks like JSON but does not parse; fix the Director gear panel workflows setting.`)}
+    if(!need||typeof need!=='object'||Array.isArray(need)||!Object.keys(need).length||!Object.values(need).every(node=>node&&typeof node==='object'&&typeof node.class_type==='string'))throw Error(`submit_comfy_job: the configured inline ${args.workflow_kind} workflow must be an API node map {"<id>":{"class_type":"...","inputs":{...}}}.`);
+    if(args.workflow_name!==label)throw Error(`submit_comfy_job: the configured workflow for ${args.workflow_kind} is a pasted inline API graph. Pass workflow_name "${label}" and submit the adapted graph in the inline "workflow" argument; do not substitute.`);
+    if(!inspectedSavedWorkflow(exec,label))throw Error(`submit_comfy_job: the configured inline workflow was not inspected in this session. Call director_workflows with action "inspect" and workflow_name "${label}"; it returns the configured graph.`);
+    if(!args.workflow||typeof args.workflow!=='object')throw Error(`submit_comfy_job: the inline requirement for ${args.workflow_kind} must be submitted via the "workflow" argument with the adapted API graph.`);
+    const missing=Object.keys(need).filter(id=>!args.workflow[id]||args.workflow[id]?.class_type!==need[id].class_type).slice(0,12);
+    if(missing.length)throw Error(`submit_comfy_job: the inline workflow for ${args.workflow_kind} must keep every configured node id and class_type (input values may change; nodes may not be removed, renamed or reclassed). Missing/mismatched: ${missing.join(', ')}.`);
+    return;
+  }
+  if(args.workflow_name!==trimmed)throw Error(`submit_comfy_job: configured workflow for ${args.workflow_kind} is "${trimmed}". Pass the exact matching workflow_name; do not substitute.`);
+  if(!inspectedSavedWorkflow(exec,trimmed))throw Error(`submit_comfy_job: configured workflow "${trimmed}" was not successfully inspected in this session. Call director_workflows with action "inspect" and that exact workflow_name before adapting and submitting its API graph.`);
 }
 
 function proposalAuthorization(options,exec){
@@ -732,7 +783,7 @@ function managedSubmissionExecutor(options) {
   const submit=createSubmitComfyVideo(options)
   return async(args,exec)=>{
     try{
-      assertConfiguredWorkflow(args,exec,options.getWorkflowNames);
+      await assertConfiguredWorkflow(args,exec,options.getWorkflowNames);
       const loaded=await loadWorkflow(args,{readFileImpl:options.readFileImpl??readFile})
       const isH3=args.intent==='h3_ref2av'||Object.values(loaded.prompt).some(node=>node?.class_type==='MiniMaxH3ReferenceToVideo')
       if(isH3){
@@ -766,7 +817,7 @@ function toolDefinition({ startJob, toolName = 'submit_comfy_job', ...options } 
       'Managed Director productions use this for completion monitoring, configured LLM handoff and turn conclusion. llama-swap mode unloads a shared-GPU LLM and verifies VRAM release; comfy-only mode treats the LLM as external, skips llama-swap and ComfyUI cleanup handoff, and settles on terminal ComfyUI history. Standalone workflow debugging and ordinary coding retain native Harness tools.',
       'Planning comes first: use director_workflows inspect for capability, dimensions and timing; show a shot/ref card before writing its final H3 prompt. For normal approval, wait for render acknowledgement and use the visible Confirm button; never ask for chat approval while review_status is awaiting_display. An active/armed /goal or clear current-task no-interruption instruction may authorize continuation without card confirmation; a question timeout alone never authorizes it. H3 validation/submission still requires card_id and clip_id from that card and all technical preflight checks. Do not manufacture a final prompt just to plan or obtain approval.',
       'Reuse a previously verified workflow for the same task unless the user requests a change or its capabilities no longer fit. Check only relevant installed nodes/models when needed; do not print full object_info responses or perform recursive filesystem model searches when a targeted query answers the check.',
-      'For image/video generation and editing, read director_workflows list.workflow_requirements. If the task kind has a nonempty configured name, workflow_kind and the exact workflow_name are mandatory; first successfully inspect that saved name in this session, then adapt its UI workflow to the API graph. Submission blocks missing or mismatched selections. Use workflow_kind="other" only for unrelated non-generation work. A blank setting leaves the workflow choice unrestricted.',
+      'For image/video generation and editing, read director_workflows list.workflow_requirements. If the task kind has a nonempty configured name, workflow_kind and the exact workflow_name are mandatory; first successfully inspect that saved name in this session, then adapt its UI workflow to the API graph. Submission blocks missing or mismatched selections. A configured setting may itself be a pasted ComfyUI API node map (JSON starting with "{"): then inspect it with director_workflows action=inspect workflow_name="inline:<kind>" (returns the configured graph), adapt input values only, and submit it in the inline workflow argument with workflow_name exactly "inline:<kind>" and every configured node id/class_type preserved. Use workflow_kind="other" only for unrelated non-generation work. A blank setting leaves the workflow choice unrestricted.',
       `For fresh-H3 timing-only planning, run node ${H3_TIMING_SHELL_PATH} --shots 5.5,3 (repeat --shots per clip). This offline helper computes 24-fps shot boundaries and 17k+5 clip lengths; no workflow/creative-guide lookup is needed for that calculation. Review its actual durations before approval. It does not rewrite workflows or handle latent-context overlap.`,
       'H3 graph length is pretrim: MotionContextTrim removes pinned context frames after H3 frame alignment. Use director_workflows generation_timing and validate_only h3_generation_timing.delivered_frames to compare the actual final duration with the approved card; never copy the desired delivered frame count into the raw length input.',
       'Stage selected local references with director_stage_images; reuse its returned image bindings and original source_path. Do not implement multipart uploads or enumerate the full LoadImage library in model-visible shell output.',
@@ -776,7 +827,7 @@ function toolDefinition({ startJob, toolName = 'submit_comfy_job', ...options } 
       'For an existing H3 graph use workflow_path plus h3_prompt_path or h3_prompt to replace only its six-section prompt. Flat ref_images.ref_image_0...N sockets bind staged Pictures; see h3-prompt-writing.',
       'When diagnosing an H3 job, compare h3_effective_prompt or ComfyUI history for the prompt ID. An h3_prompt override changes the submitted copy, never the source workflow file.',
       'A failed background job is terminal for that submission. Never retry an identical failed workflow automatically; inspect the error and change the workflow before submitting again.',
-      'After completion, use job output_artifacts and its ComfyUI view_url to retrieve outputs for review. For a loopback view_url, download it to the workspace with a shell HTTP client such as PowerShell Invoke-WebRequest or curl, then inspect that exact file; never use web_fetch for localhost and do not search entire drives.',
+      'After completion, use job output_artifacts and its ComfyUI view_url to retrieve outputs for review. The accepted submission carries media_panel and the completion wake carries media_fence — paste each verbatim into the reply so real media renders inline and the panel job board updates in place; links-only media replies are invalid. For a loopback view_url, download it to the workspace with a shell HTTP client such as PowerShell Invoke-WebRequest or curl, then inspect that exact file; never use web_fetch for localhost and do not search entire drives.',
       'This tool concludes the turn after an accepted submission.',
       'llama-swap monitoring waits for verified GPU release before waking the Agent. In comfy-only mode terminal ComfyUI history is sufficient and no waiting_for_vram cleanup state is emitted. When waiting_for_vram does occur, it means handoff, not new generation: inspect job_output, never resubmit a completed/failed prompt.',
       'Use validate_only=true before submission. Check submission_ready and issues/submission_blockers; validation never queues, unloads or ends the turn. status=blocked is an actionable prerequisite, not a failed generation. retry_identical=false means repair its cause or wait for confirmation; never retry the same arguments or re-create an unchanged card to clear it.',

@@ -19,6 +19,8 @@ interface Props {
   secondaryKey?: string | null;
   showSecondary?: boolean;
   onOpen: (slot: OutputSlot, all: OutputSlot[]) => void;
+  // Plugin: when provided, each filled card gets a ✕ (top-right) to delete that stored render.
+  onRemove?: ((key: string) => void) | null;
 }
 
 export function OutputGrid({
@@ -30,6 +32,7 @@ export function OutputGrid({
   secondaryKey = "wardrobe_ref",
   showSecondary = false,
   onOpen,
+  onRemove = null,
 }: Props) {
   const running = status === "queued" || status === "uploading" || status === "running";
 
@@ -56,6 +59,7 @@ export function OutputGrid({
             slot={featured.slot}
             running={running}
             featured
+            onRemove={onRemove}
             onOpen={() => featured.slot?.url && onOpen(featured.slot, openable)}
           />
         </div>
@@ -72,6 +76,7 @@ export function OutputGrid({
             label={label}
             slot={slot}
             running={running}
+            onRemove={onRemove}
             onOpen={() => slot?.url && onOpen(slot, openable)}
           />
         ))}
@@ -98,6 +103,7 @@ function OutputCard({
   running,
   compact,
   featured,
+  onRemove,
   onOpen,
 }: {
   label: string;
@@ -105,10 +111,23 @@ function OutputCard({
   running: boolean;
   compact?: boolean;
   featured?: boolean;
+  onRemove?: ((key: string) => void) | null;
   onOpen: () => void;
 }) {
   return (
-    <article className={`output-card ${compact ? "compact" : ""} ${featured ? "featured" : ""}`}>
+    <article className={`output-card ${compact ? "compact" : ""} ${featured ? "featured" : ""}`} style={{ position: "relative" }}>
+      {slot?.url && onRemove ? (
+        <button
+          type="button"
+          className="btn ghost sm"
+          title={`Delete ${label}`}
+          aria-label={`Delete ${label}`}
+          style={{ position: "absolute", top: "-0.5rem", right: "-0.5rem", width: "1.5rem", height: "1.5rem", padding: 0, borderRadius: "999px", border: "1px solid currentColor", lineHeight: 1, zIndex: 1 }}
+          onClick={() => slot.key && onRemove(slot.key)}
+        >
+          ✕
+        </button>
+      ) : null}
       <div className="output-card-label">{label}</div>
       <div className="output-card-body">
         {slot?.url ? (

@@ -1,6 +1,6 @@
 import {MediaCard} from './MediaCard.jsx';
 import {GpuUsageSettings} from './GpuUsageSettings.jsx';
-import {PresetAwareGpuStatus,readLiveStatus} from './GpuStatus.jsx';
+import {PresetAwareGpuStatus} from './GpuStatus.jsx';
 import {watchSessionWake} from './session-recovery.mjs';
 import {AssetsTab,ProductionTab} from './studio/StudioSidebar.jsx';
 import css from './media.css';
@@ -16,9 +16,7 @@ export function apply(ctx){
     }),'director Settings section');
   });
   const sendSessionMessage=async(sessionId,text)=>{
-    if(ctx.connection.state.getSnapshot()!=='connected')throw Error('Reconnect before sending a DSH request.');
-    const status=await readLiveStatus();
-    if(status.blocked||ctx.connection.state.getSnapshot()!=='connected')throw Error('Cannot send while the GPU handoff or connection is unavailable.');
+    // No GPU/connection gates: the studio bridge never pauses. conversation.send reports real delivery failures itself.
     const conversation=ctx.sessions.scope(sessionId)?.get('conversation');
     if(!conversation)throw Error('This conversation is no longer available.');
     await conversation.send(text);

@@ -42,9 +42,9 @@ export async function localImage(path,{cwd,fs,session,signal,maxBytes,knownUploa
 }
 
 export function createStageImagesTool({root,fs,comfyBaseUrl='http://127.0.0.1:8188',fetchImpl=globalThis.fetch,maxBytes=32*1024**2}){
-  const parsed=new URL(comfyBaseUrl);
-  if(!['http:','https:'].includes(parsed.protocol)||parsed.username||parsed.password||parsed.pathname!=='/'||parsed.search||parsed.hash)fail('comfyBaseUrl must be an HTTP(S) origin without credentials or a path.');
-  const origin=parsed.origin;
+  const toOrigin=value=>{const parsed=new URL(value);if(!['http:','https:'].includes(parsed.protocol)||parsed.username||parsed.password||parsed.pathname!=='/'||parsed.search||parsed.hash)fail('comfyBaseUrl must be an HTTP(S) origin without credentials or a path.');return parsed.origin};
+  // Plugin: comfyBaseUrl may be an async resolver choosing the first reachable ComfyUI endpoint per call.
+  let origin=typeof comfyBaseUrl==='function'?null:toOrigin(comfyBaseUrl);
   root=resolve(root);
   const request=(url,init={})=>fetchImpl(origin+url,{...init,redirect:'error'});
   async function remoteMatches(image,sha256,signal){
@@ -54,8 +54,9 @@ export function createStageImagesTool({root,fs,comfyBaseUrl='http://127.0.0.1:81
     if(!response.ok){await response.body?.cancel();fail(`cannot verify selected staged image ${image}: HTTP ${response.status}; check ComfyUI connectivity/access, do not repeatedly upload.`);}
     return hash(await boundedBody(response,maxBytes))===sha256;
   }
-  async function stage(source,signal){
+  async function stage(source,signal,cwd){
     signal?.throwIfAborted();
+    if(typeof comfyBaseUrl==='function')origin=toOrigin(await comfyBaseUrl(cwd));
     const key=hash(origin+'\0'+source.source_path+'\0'+source.sha256),manifest=join(root,key+'.json');
     let saved;try{saved=JSON.parse(await readFile(manifest,'utf8'));}catch(error){if(error.code!=='ENOENT'&&!(error instanceof SyntaxError))throw error;}
     const filename=source.sha256+source.extension;
@@ -91,7 +92,7 @@ export function createStageImagesTool({root,fs,comfyBaseUrl='http://127.0.0.1:81
       if(!session?.id||!cwd||!fs)fail('a live Harness session and authoritative filesystem are required.');
       const images=[];
       for(const path of args.source_paths){
-        try{images.push(await stage(await localImage(path,{cwd,fs,session,signal:exec.signal,maxBytes}),exec.signal));}
+        try{images.push(await stage(await localImage(path,{cwd,fs,session,signal:exec.signal,maxBytes}),exec.signal,cwd));}
         catch(error){if(exec.signal?.aborted)throw error;throw new Error(`${error.message}${images.length?' Already staged (reuse on retry): '+JSON.stringify(images.map(({source_path,image})=>({source_path,image}))):''}`);}
       }
       exec.signal?.throwIfAborted();return {images};

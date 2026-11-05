@@ -45,7 +45,7 @@ test('startup, skill discovery and missing-guide reads are offline and read-only
   assert.equal((await f.store.status()).available,false);
   const provider=await guides.createBundledProvider(undefined,{guideStore:f.store});
   const {candidates}=await provider.list();
-  assert.deepEqual(candidates.map(c=>c.name).sort(),['director','h3-prompt-writing']);
+assert.deepEqual(candidates.map(c=>c.name).sort(),['crew','director','h3-prompt-writing']);
   const h3=await provider.get(candidates.find(c=>c.name==='h3-prompt-writing'));
   assert.match(h3.content,/director_h3_skill/);
   assert.equal((await f.store.status()).available,false);

@@ -16,6 +16,7 @@ export interface JobOutputs {
 export interface JobRecord {
   id: string;
   status: JobStatus;
+  generation_instructions?: string;
   mode: ActorMode;
   name: string;
   notes: string;
@@ -146,4 +147,16 @@ export async function listActorJobs(
   const res = await fetch(`/api/actors/jobs?${params}`);
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
+}
+
+// Plugin: per-kind instructions the DSH agent follows when generating (gear panel).
+export async function getGenerationSettings(): Promise<Record<string, string>> {
+  const res = await fetch("/api/library/generation-settings");
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function saveGenerationSettings(kind: string, instructions: string): Promise<void> {
+  const res = await fetch("/api/library/generation-settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind, instructions }) });
+  if (!res.ok) throw new Error(await parseError(res));
 }
