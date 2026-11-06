@@ -200,6 +200,7 @@ test('registers an owned background job that completes with Comfy output paths',
   const board = JSON.parse(completedFence.replace(/^```dsh-ui\n/, '').replace(/\n```$/, ''))
   assert.equal(board.panel, true)
   assert.ok(JSON.stringify(board.items).includes('"type":"video"'))
+  assert.ok(JSON.stringify(board.items).includes('/director-studio/api/comfy-view?host=http%3A%2F%2F127.0.0.1%3A8188'))
 })
 
 test('rejects an H3-intent raw graph whose prompt has no reference connections', async () => {

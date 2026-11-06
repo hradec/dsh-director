@@ -1,5 +1,6 @@
 import {StudioStoreError,isStudioAssetKind,studioStoreConstants} from './studio-store.mjs';
 import {storyStoreFor} from './story-store.mjs';
+import {Readable} from 'node:stream';
 
 const jsonHeaders={'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
 function sendJson(res,status,value){const body=JSON.stringify(value);res.writeHead(status,{...jsonHeaders,'Content-Length':String(Buffer.byteLength(body))});res.end(body);}
@@ -36,7 +37,7 @@ function generationForm(job){return {description:job.description??'',body_descri
 function assetReferences(job,session){if(!job?.ref_asset_id)return null;return Object.fromEntries((job.inputs??[]).map(input=>[input.key,{url:fileUrl('layouts',job.ref_asset_id,input.key,session),filename:input.filename,label:job.ref_labels?.[input.key]??input.filename}]));}
 function presentProject(project,shots=[]){return {...project,shot_ids:shots.map(shot=>shot.id)};}
 
-export function createStudioApiHandler({resolveSession,requestRejection,comfyBaseUrl='http://127.0.0.1:8188',fetchImpl=globalThis.fetch,maxUploadBytes=studioStoreConstants.maxAssetBytes,controllers=new Set()}={}){
+export function createStudioApiHandler({resolveSession,requestRejection,comfyBaseUrl='http://127.0.0.1:8188',comfyHosts=async()=>[],fetchImpl=globalThis.fetch,maxUploadBytes=studioStoreConstants.maxAssetBytes,controllers=new Set()}={}){
   return async(req,res)=>{
     const controller=new AbortController();controllers.add(controller);const abort=()=>controller.abort();res.once('close',abort);
     try{
@@ -94,6 +95,18 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       match=/^\/api\/story\/episode\/([A-Za-z0-9_-]{1,128})$/.exec(path);
       if(match&&req.method==='PATCH'){sendJson(res,200,await storyStoreFor(store).saveEpisode({episode_id:match[1],...await readJson(req,controller.signal)}));return;}
       if(match&&req.method==='DELETE'){sendJson(res,200,await storyStoreFor(store).deleteEpisode(match[1]));return;}
+      // Media proxy: the browser may sit outside the Comfy network (SSH-tunnelled GUI); stream configured hosts' /view through the GUI origin. Ceiling: no Range passthrough — large video seeks re-stream.
+      if(path==='/api/comfy-view'&&['GET','HEAD'].includes(req.method)){
+        const host=url.searchParams.get('host')??'';
+        const allowed=new Set([...await comfyHosts(),...String((await store.getAppSettings()).comfy?.urls??'').split(/[\n,]+/).map(entry=>entry.trim()).filter(Boolean)]);
+        if(!allowed.has(host))throw new StudioStoreError('Comfy host is not in the configured endpoint list (gear panel Comfy URLs or plugin comfyBaseUrl/comfyTryUrls).');
+        const target=`${host}/view?filename=${encodeURIComponent(url.searchParams.get('filename')??'')}&subfolder=${encodeURIComponent(url.searchParams.get('subfolder')??'')}&type=${encodeURIComponent(url.searchParams.get('type')??'output')}`;
+        const upstream=await fetchImpl(target,{signal:controller.signal});
+        if(!upstream.ok)throw new StudioStoreError(`Comfy endpoint answered ${upstream.status}.`,upstream.status===404?404:502);
+        res.writeHead(200,{'Content-Type':upstream.headers.get('content-type')??'application/octet-stream',...(upstream.headers.get('content-length')?{'Content-Length':upstream.headers.get('content-length')}:{}),'X-Content-Type-Options':'nosniff','Cache-Control':'private, no-store'});
+        if(req.method==='HEAD'){res.end();return;}
+        Readable.fromWeb(upstream.body).pipe(res);return;
+      }
       match=/^\/api\/(actors|scenes|props)(?:\/(generate|jobs)(?:\/([A-Za-z0-9_-]{1,128})(?:\/(cancel|save))?)?)?$/.exec(path);
       if(match){
         const [,kind,section,jobId,action]=match;
@@ -174,7 +187,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
   };
 }
 
-export function registerStudioApi(ctx,{resolveSession,comfyBaseUrl}={}){
-  const controllers=new Set(),unregister=ctx.webServer.register({kind:'prefix',path:'/director-studio',handler:createStudioApiHandler({resolveSession,comfyBaseUrl,controllers,requestRejection:req=>ctx.connection.requestRejection(req)})});
+export function registerStudioApi(ctx,{resolveSession,comfyBaseUrl,comfyHosts}={}){
+  const controllers=new Set(),unregister=ctx.webServer.register({kind:'prefix',path:'/director-studio',handler:createStudioApiHandler({resolveSession,comfyBaseUrl,comfyHosts,controllers,requestRejection:req=>ctx.connection.requestRejection(req)})});
   return ()=>{unregister();for(const controller of controllers)controller.abort();};
 }

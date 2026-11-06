@@ -305,11 +305,17 @@ function liveJob(promptId, patch) {
   liveJobs.set(promptId, { ...job, ...patch })
   while (liveJobs.size > 8) liveJobs.delete(liveJobs.keys().next().value)
 }
+// ponytail: media tiles load through the GUI's own /api/comfy-view proxy — browsers outside the Comfy network (SSH tunnel) still see them; artifact view_url stays the raw origin for server-side import. Ceiling: proxy has no Range passthrough, so seeking a large mp4 re-streams.
+function mediaSrc(viewUrl) {
+  if (!/^https?:\/\//i.test(viewUrl)) return viewUrl
+  const u = new URL(viewUrl)
+  return `/director-studio/api/comfy-view?host=${encodeURIComponent(u.origin)}&filename=${encodeURIComponent(u.searchParams.get('filename') ?? '')}&subfolder=${encodeURIComponent(u.searchParams.get('subfolder') ?? '')}&type=${encodeURIComponent(u.searchParams.get('type') ?? 'output')}`
+}
 function mediaNode(artifact) {
   const name = artifact.relative_path ?? 'output'
-  if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(name)) return { type: 'image', src: artifact.view_url, alt: name }
-  if (/\.(mp4|webm|mov|mkv)$/i.test(name)) return { type: 'video', src: artifact.view_url, alt: name }
-  if (/\.(mp3|wav|flac|ogg|aac)$/i.test(name)) return { type: 'audio', src: artifact.view_url, alt: name }
+  if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(name)) return { type: 'image', src: mediaSrc(artifact.view_url), alt: name }
+  if (/\.(mp4|webm|mov|mkv)$/i.test(name)) return { type: 'video', src: mediaSrc(artifact.view_url), alt: name }
+  if (/\.(mp3|wav|flac|ogg|aac)$/i.test(name)) return { type: 'audio', src: mediaSrc(artifact.view_url), alt: name }
   return { type: 'badge', label: name, tone: 'accent' }
 }
 function mediaFence() {

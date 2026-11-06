@@ -10,9 +10,9 @@ import {createStudioTools} from '../src/studio-tools.mjs';
 
 const png=Buffer.from('89504e470d0a1a0a00000000','hex');
 // The DSH session workspace folder IS the project; tests resolve every session id to one temporary workspace.
-async function setup(t,{reject}={}){
+async function setup(t,{reject,fetchImpl}={}){
   const root=await mkdtemp(join(tmpdir(),'dsh-studio-api-'));t.after(()=>rm(root,{recursive:true,force:true}));
-  const registry=createStudioRegistry();const server=createServer(createStudioApiHandler({resolveSession:()=>registry(root),requestRejection:()=>reject,fetchImpl:async()=>new Response('{}')}));
+  const registry=createStudioRegistry();const server=createServer(createStudioApiHandler({resolveSession:()=>registry(root),requestRejection:()=>reject,comfyHosts:()=>['http://comfy.test'],fetchImpl:fetchImpl??(async()=>new Response('{}'))}));
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
   const {store,project}=await registry(root);
   return {store,project,root,base:`http://127.0.0.1:${server.address().port}/director-studio`};
@@ -36,6 +36,14 @@ test('story wall routes round-trip decisions, drag rules and chronology lint',as
   assert.match(lint.issues[0].detail,/died in Y45/);
   await json(base,`/api/story/beat/${beat.id}`,{method:'DELETE'});
   assert.equal((await (await json(base,'/api/story')).json()).beats.length,0);
+});
+
+test('comfy-view streams only configured hosts through the GUI origin',async t=>{
+  const {base}=await setup(t,{fetchImpl:async(url)=>url.includes('comfy.test')?new Response('BYTES',{status:200,headers:{'content-type':'video/mp4'}}):new Response('nope',{status:404})});
+  const ok=await json(base,'/api/comfy-view?host=http%3A%2F%2Fcomfy.test&filename=shot%2001.mp4&subfolder=rnd');
+  assert.equal(ok.status,200);assert.equal(ok.headers.get('content-type'),'video/mp4');assert.equal(await ok.text(),'BYTES');
+  const denied=await json(base,'/api/comfy-view?host=https%3A%2F%2Fevil.example&filename=x');
+  assert.equal(denied.status,400);assert.match((await denied.json()).detail,/not in the configured endpoint list/);
 });
 
 test('the session workspace auto-creates one project and extra projects are refused',async t=>{

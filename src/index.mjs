@@ -109,6 +109,6 @@ export async function apply(ctx,config={}){
     if(!snapshot)throw new StudioStoreError('Unknown DSH session.',404);
     return studioRegistry(snapshot.header.cwd);
   }
-  ctx.effect(()=>registerStudioApi(ctx,{resolveSession:resolveStudioSession,comfyBaseUrl:resolveComfyBaseUrl}),'director Studio API');
+  ctx.effect(()=>registerStudioApi(ctx,{resolveSession:resolveStudioSession,comfyBaseUrl:resolveComfyBaseUrl,comfyHosts:()=>[String(currentConfigValue('comfyBaseUrl')??'').trim(),...String(currentConfigValue('comfyTryUrls')??'').split(/[\n,]+/).map(entry=>entry.trim()).filter(Boolean)].filter(Boolean)}),'director Studio API');
   ctx.effect(()=>ctx.tools.register(createStudioTools({registry:studioRegistry,fs:ctx.fs,comfyBaseUrl:resolveComfyBaseUrl})),'director Studio project and production tools');
 }
