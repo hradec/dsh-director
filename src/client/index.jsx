@@ -3,6 +3,7 @@ import {GpuUsageSettings} from './GpuUsageSettings.jsx';
 import {PresetAwareGpuStatus} from './GpuStatus.jsx';
 import {watchSessionWake} from './session-recovery.mjs';
 import {AssetsTab,ProductionTab,StoryTab} from './studio/StudioSidebar.jsx';
+import {createMediaBody,MEDIA_KINDS} from './MediaBodies.jsx';
 import css from './media.css';
 export const name='dsh-director-ui';
 export const inject=['slots','conversation','connection','sessions','sidebarRightTabs'];
@@ -39,5 +40,11 @@ export function apply(ctx){
      const Body=definition.Body;
      ctx.effect(()=>ctx.sidebarRightTabs.register(definition),`director Studio ${definition.kind} type`);
      ctx.effect(()=>ctx.slots.inject('sidebar.right.pane.tab',()=>ctx.slots.register({name:'sidebar.right.pane.tab',key:definition.id,inject:sessionId=>({sessionId,sendDshRequest:text=>sendSessionMessage(sessionId,text)})},Body)),`director Studio ${definition.kind} body`);
+   }
+   // The core document tabs have no video/audio renderer and fall back to the Open button; stream media players instead.
+   if(ctx.documentPreviews?.register)for(const [group,extensions] of MEDIA_KINDS){
+     const id=`dsh-director/media-${group}`;
+     ctx.effect(()=>ctx.documentPreviews.register({id,extensions:Object.keys(extensions),binaryExtensions:Object.keys(extensions),priority:'builtin',title:()=>group==='video'?'Video player':'Audio player',loading:'renderer',wrap:false}),`director media ${group} preview metadata`);
+     ctx.effect(()=>ctx.slots.inject('sidebar.right.tab.document',()=>ctx.slots.register({name:'sidebar.right.tab.document',key:id}),createMediaBody(extensions)),`director media ${group} body`);
    }
 }

@@ -85,3 +85,4 @@ src/templates/
 *.pth
 .DS_Store
 Thumbs.db
+probe-clip.mp4

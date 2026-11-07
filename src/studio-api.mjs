@@ -7,7 +7,7 @@ import {homedir,tmpdir} from 'node:os';
 
 // ponytail: browsers cannot open server filesystem paths, so dsh-ui media srcs must be URLs; this route streams local media through the GUI origin.
 // Ceiling: single Range only (seeks re-stream tail), media extensions only, roots = homedir + /tmp + session workspace; secret dot-folders denied except director-media/attachments.
-const FILE_MIME={'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.bmp':'image/bmp','.mp4':'video/mp4','.webm':'video/webm','.mov':'video/quicktime','.mkv':'video/x-matroska','.mp3':'audio/mpeg','.wav':'audio/wav','.flac':'audio/flac','.ogg':'audio/ogg','.aac':'audio/aac','.pdf':'application/pdf'};
+const FILE_MIME={'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.bmp':'image/bmp','.mp4':'video/mp4','.m4v':'video/mp4','.webm':'video/webm','.mov':'video/quicktime','.mkv':'video/x-matroska','.mp3':'audio/mpeg','.m4a':'audio/mp4','.wav':'audio/wav','.flac':'audio/flac','.ogg':'audio/ogg','.aac':'audio/aac','.pdf':'application/pdf'};
 const FILE_MAX_BYTES=512*1024*1024;
 
 const jsonHeaders={'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
