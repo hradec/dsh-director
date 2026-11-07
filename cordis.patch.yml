@@ -37,6 +37,10 @@
                 immediately, and the media_fence from the job-completion wake when
                 it arrives, so real media renders inline and the panel job board
                 updates in place; a links-only media reply is invalid.
+                The duty also covers media you merely talk about — comparison
+                clips, exports, downloaded files: embed a playable image/video/
+                audio tile for each (src in MEDIA PATHS form); naming a path
+                while describing the media is invalid.
                 MEDIA PATHS — in dsh-ui fences an image/video/audio src must be a
                 browser-reachable URL: http(s), or /director-studio/api/file?path=
                 <absolute path under the workspace, home or /tmp> (relative paths
