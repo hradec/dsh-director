@@ -37,6 +37,11 @@
                 immediately, and the media_fence from the job-completion wake when
                 it arrives, so real media renders inline and the panel job board
                 updates in place; a links-only media reply is invalid.
+                MEDIA PATHS — in dsh-ui fences an image/video/audio src must be a
+                browser-reachable URL: http(s), or /director-studio/api/file?path=
+                <absolute path under the workspace, home or /tmp> (relative paths
+                resolve from the session workspace); a raw filesystem path in src
+                always renders broken — copy scratch media to the workspace or /tmp first.
                 STORY WALL — the Studio Story area holds the decision cards;
                 read director_studio story.list before planning production,
                 and write only on an explicit "log that", harvest or edit

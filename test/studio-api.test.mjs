@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {mkdtemp,rm,writeFile,stat} from 'node:fs/promises';
 import {join,resolve as pathResolve,basename} from 'node:path';
-import {tmpdir} from 'node:os';
+import {tmpdir,homedir} from 'node:os';
 import {createStudioRegistry} from '../src/studio-store.mjs';
 import {createStudioApiHandler} from '../src/studio-api.mjs';
 import {createStudioTools} from '../src/studio-tools.mjs';
@@ -44,6 +44,18 @@ test('comfy-view streams only configured hosts through the GUI origin',async t=>
   assert.equal(ok.status,200);assert.equal(ok.headers.get('content-type'),'video/mp4');assert.equal(await ok.text(),'BYTES');
   const denied=await json(base,'/api/comfy-view?host=https%3A%2F%2Fevil.example&filename=x');
   assert.equal(denied.status,400);assert.match((await denied.json()).detail,/not in the configured endpoint list/);
+});
+
+test('file route streams local media with deny and range rules',async t=>{
+  const {base,root}=await setup(t);
+  await writeFile(join(root,'shot.png'),png);
+  const rel=await json(base,'/api/file?path=shot.png');
+  assert.equal(rel.status,200);assert.equal(rel.headers.get('content-type'),'image/png');assert.deepEqual(Buffer.from(await rel.arrayBuffer()),png);
+  const abs=await json(base,`/api/file?path=${encodeURIComponent(join(root,'shot.png'))}`);assert.equal(abs.status,200);
+  const range=await json(base,'/api/file?path=shot.png',{headers:{range:'bytes=0-3'}});assert.equal(range.status,206);assert.equal((await range.arrayBuffer()).byteLength,4);
+  const outside=await json(base,'/api/file?path=%2Fetc%2Fhostname');assert.equal(outside.status,403);
+  const secret=await json(base,`/api/file?path=${encodeURIComponent(join(homedir(),'.dsh','settings.yaml.imported'))}`);assert.equal(secret.status,403);
+  const nope=await json(base,'/api/file?path=missing.png');assert.equal(nope.status,404);
 });
 
 test('the session workspace auto-creates one project and extra projects are refused',async t=>{

@@ -1,6 +1,14 @@
 import {StudioStoreError,isStudioAssetKind,studioStoreConstants} from './studio-store.mjs';
 import {storyStoreFor} from './story-store.mjs';
 import {Readable} from 'node:stream';
+import {createReadStream,statSync,realpathSync} from 'node:fs';
+import {isAbsolute,join,sep,extname} from 'node:path';
+import {homedir,tmpdir} from 'node:os';
+
+// ponytail: browsers cannot open server filesystem paths, so dsh-ui media srcs must be URLs; this route streams local media through the GUI origin.
+// Ceiling: single Range only (seeks re-stream tail), media extensions only, roots = homedir + /tmp + session workspace; secret dot-folders denied except director-media/attachments.
+const FILE_MIME={'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.bmp':'image/bmp','.mp4':'video/mp4','.webm':'video/webm','.mov':'video/quicktime','.mkv':'video/x-matroska','.mp3':'audio/mpeg','.wav':'audio/wav','.flac':'audio/flac','.ogg':'audio/ogg','.aac':'audio/aac','.pdf':'application/pdf'};
+const FILE_MAX_BYTES=512*1024*1024;
 
 const jsonHeaders={'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
 function sendJson(res,status,value){const body=JSON.stringify(value);res.writeHead(status,{...jsonHeaders,'Content-Length':String(Buffer.byteLength(body))});res.end(body);}
@@ -106,6 +114,29 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         res.writeHead(200,{'Content-Type':upstream.headers.get('content-type')??'application/octet-stream',...(upstream.headers.get('content-length')?{'Content-Length':upstream.headers.get('content-length')}:{}),'X-Content-Type-Options':'nosniff','Cache-Control':'private, no-store'});
         if(req.method==='HEAD'){res.end();return;}
         Readable.fromWeb(upstream.body).pipe(res);return;
+      }
+      if(path==='/api/file'&&['GET','HEAD'].includes(req.method)){
+        const raw=url.searchParams.get('path')??'';
+        if(!raw||raw.length>2000)throw new StudioStoreError('A path query parameter is required.');
+        const workspace=join(store.root,'..');
+        const candidate=isAbsolute(raw)?raw:join(workspace,raw);
+        let resolved;try{resolved=realpathSync(candidate);}catch{throw new StudioStoreError('File not found.',404);}
+        const inside=(file,root)=>file===root||file.startsWith(root.endsWith(sep)?root:root+sep);
+        const roots=[homedir(),tmpdir(),workspace,store.root].filter(Boolean);
+        if(!roots.some(root=>inside(resolved,root)))throw new StudioStoreError('File is outside the allowed roots (session workspace, home, /tmp).',403);
+        const home=join(homedir(),'.dsh');
+        const denied=['.ssh','.aws','.gnupg','.azure','.config'].some(dir=>inside(resolved,join(homedir(),dir)))||(inside(resolved,home)&&!['director-media','attachments'].some(dir=>inside(resolved,join(home,dir))));
+        if(denied)throw new StudioStoreError('That location is not served.',403);
+        const mime=FILE_MIME[extname(resolved).toLowerCase()];
+        if(!mime)throw new StudioStoreError('Only media and PDF files are served here.');
+        const info=statSync(resolved);
+        if(!info.isFile()||info.size>FILE_MAX_BYTES)throw new StudioStoreError('Not a servable file (size or type).',413);
+        const range=/^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range??''));
+        const base={'Content-Type':mime,'X-Content-Type-Options':'nosniff','Accept-Ranges':'bytes','Cache-Control':'private, max-age=300'};
+        if(range){const start=Math.min(Number(range[1]),info.size-1),end=range[2]?Math.min(Number(range[2]),info.size-1):info.size-1;res.writeHead(206,{...base,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${info.size}`});if(req.method==='HEAD'){res.end();return;}createReadStream(resolved,{start,end}).pipe(res);return;}
+        res.writeHead(200,{...base,'Content-Length':String(info.size)});
+        if(req.method==='HEAD'){res.end();return;}
+        createReadStream(resolved).pipe(res);return;
       }
       match=/^\/api\/(actors|scenes|props)(?:\/(generate|jobs)(?:\/([A-Za-z0-9_-]{1,128})(?:\/(cancel|save))?)?)?$/.exec(path);
       if(match){
