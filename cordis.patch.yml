@@ -41,11 +41,11 @@
                 clips, exports, downloaded files: embed a playable image/video/
                 audio tile for each (src in MEDIA PATHS form); naming a path
                 while describing the media is invalid.
-                MEDIA PATHS — in dsh-ui fences an image/video/audio src must be a
-                browser-reachable URL: http(s), or /director-studio/api/file?path=
-                <absolute path under the workspace, home or /tmp> (relative paths
-                resolve from the session workspace); a raw filesystem path in src
-                always renders broken — copy scratch media to the workspace or /tmp first.
+                MEDIA PATHS — in dsh-ui fences AND in reply markdown ![]() an
+                image/video/audio src must be a browser-reachable URL: http(s), or
+                /director-studio/api/file?path=<absolute path under the workspace,
+                home or /tmp>; a raw filesystem path always renders broken — copy
+                scratch media to the workspace or /tmp first, never inline .mp4 in markdown image syntax.
                 STORY WALL — the Studio Story area holds the decision cards;
                 read director_studio story.list before planning production,
                 and write only on an explicit "log that", harvest or edit

@@ -4,11 +4,13 @@ import {PresetAwareGpuStatus} from './GpuStatus.jsx';
 import {watchSessionWake} from './session-recovery.mjs';
 import {AssetsTab,ProductionTab,StoryTab} from './studio/StudioSidebar.jsx';
 import {createMediaBody,MEDIA_KINDS} from './MediaBodies.jsx';
+import {startMediaPathFixer} from './markdown-media.mjs';
 import css from './media.css';
 export const name='dsh-director-ui';
 export const inject=['slots','conversation','connection','sessions','sidebarRightTabs','documentPreviews'];
 export function apply(ctx){
   ctx.effect(()=>watchSessionWake(ctx.connection),'director foreground recovery');
+  ctx.effect(()=>startMediaPathFixer(document),'director markdown media path repair');
   ctx.effect(()=>{const style=document.createElement('style');style.dataset.director='media';style.textContent=css;document.head.append(style);return ()=>style.remove();},'director media styles');
   if(typeof ctx.inject==='function')ctx.inject(['configForms'],scoped=>{
     scoped.effect(()=>scoped.configForms.whileServed(['dsh-director'],()=>{

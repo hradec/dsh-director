@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {mkdtemp,rm,writeFile,stat} from 'node:fs/promises';
+import {realpathSync} from 'node:fs';
 import {join,resolve as pathResolve,basename} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {createStudioRegistry} from '../src/studio-store.mjs';
@@ -10,9 +11,9 @@ import {createStudioTools} from '../src/studio-tools.mjs';
 
 const png=Buffer.from('89504e470d0a1a0a00000000','hex');
 // The DSH session workspace folder IS the project; tests resolve every session id to one temporary workspace.
-async function setup(t,{reject,fetchImpl}={}){
+async function setup(t,{reject,fetchImpl,sessionIndex}={}){
   const root=await mkdtemp(join(tmpdir(),'dsh-studio-api-'));t.after(()=>rm(root,{recursive:true,force:true}));
-  const registry=createStudioRegistry();const server=createServer(createStudioApiHandler({resolveSession:()=>registry(root),requestRejection:()=>reject,comfyHosts:()=>['http://comfy.test'],fetchImpl:fetchImpl??(async()=>new Response('{}'))}));
+  const registry=createStudioRegistry();const server=createServer(createStudioApiHandler({resolveSession:()=>registry(root),requestRejection:()=>reject,comfyHosts:()=>['http://comfy.test'],sessionIndex:sessionIndex??(()=>[]),fetchImpl:fetchImpl??(async()=>new Response('{}'))}));
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
   const {store,project}=await registry(root);
   return {store,project,root,base:`http://127.0.0.1:${server.address().port}/director-studio`};
@@ -56,6 +57,21 @@ test('file route streams local media with deny and range rules',async t=>{
   const outside=await json(base,'/api/file?path=%2Fetc%2Fhostname');assert.equal(outside.status,403);
   const secret=await json(base,`/api/file?path=${encodeURIComponent(join(homedir(),'.dsh','settings.yaml.imported'))}`);assert.equal(secret.status,403);
   const nope=await json(base,'/api/file?path=missing.png');assert.equal(nope.status,404);
+});
+
+test('session-less file URLs gain roots from the session index',async t=>{
+  const dir='/BACKUP/home/rhradec/.dsh/custom-plugins',file=join(dir,'studio-api-test.png');
+  await writeFile(file,png);t.after(()=>rm(file,{force:true}));
+  const withIndex=await setup(t,{sessionIndex:()=>[{id:'session-b',cwd:dir}]});
+  const hit=await fetch(`${withIndex.base}/api/file?path=${encodeURIComponent(file)}`);
+  assert.equal(hit.status,200);assert.equal(hit.headers.get('content-type'),'image/png');
+  const without=await setup(t);
+  const miss=await fetch(`${without.base}/api/file?path=${encodeURIComponent(file)}`);assert.equal(miss.status,403);
+  const rel=await fetch(`${without.base}/api/file?path=shot.png`);assert.equal(rel.status,400);
+  // A session-index root that happens to be ~/.dsh itself must still deny secret files there.
+  const smuggle=await setup(t,{sessionIndex:()=>[{id:'session-c',cwd:join(realpathSync(homedir()),'.dsh')}]});
+  const secret=await fetch(`${smuggle.base}/api/file?path=${encodeURIComponent(join(homedir(),'.dsh','settings.yaml.imported'))}`);
+  assert.equal(secret.status,403);
 });
 
 test('the session workspace auto-creates one project and extra projects are refused',async t=>{

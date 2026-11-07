@@ -72,6 +72,23 @@ test('Director startup registers reversible video and audio bodies in the docume
   assert.equal(document.querySelector('style[data-director="media"]'),null);
 });
 
+test('the markdown media fixer repairs dead server paths into playable URLs',async t=>{
+  const {startMediaPathFixer}=await import('../src/client/markdown-media.mjs');
+  const dom=new JSDOM('<body><div id="msg"><img src="/tmp/shots/alpha50.png" alt="alpha"><img src="/tmp/codex/blob_sbs.mp4" alt="blob"><img src="/director-studio/api/file?path=safe"><img src="https://ok.test/a.png"></div></body>',{url:'http://localhost:3080'});
+  globalThis.window=dom.window;globalThis.document=dom.window.document;
+  t.after(()=>{dom.window.close();delete globalThis.window;delete globalThis.document;});
+  const dispose=startMediaPathFixer(dom.window.document);t.after(dispose);
+  const img=dom.window.document.querySelector('img[alt="alpha"]');
+  assert.ok(img.getAttribute('src').startsWith('/director-studio/api/file?path=%2Ftmp%2Fshots%2F'));
+  const player=dom.window.document.querySelector('video');
+  assert.ok(player&&player.controls);assert.ok(player.src.includes('blob_sbs.mp4'));
+  assert.equal(dom.window.document.querySelector('img[src*="path=safe"]').getAttribute('src'),'/director-studio/api/file?path=safe');
+  assert.equal(dom.window.document.querySelector('img[src^="https://"]').getAttribute('src'),'https://ok.test/a.png');
+  const late=dom.window.document.createElement('img');late.setAttribute('src','/net/host/share/frame.jpg');dom.window.document.getElementById('msg').append(late);
+  await new Promise(resolve=>dom.window.setTimeout(resolve,0));
+  assert.ok(late.getAttribute('src').startsWith('/director-studio/api/file?path=%2Fnet%2Fhost%2F'));
+});
+
 test('Director Settings switch maps disabled and enabled to comfy-only and llama-swap',async t=>{
   const Component=await component('src/client/GpuUsageSettings.jsx','GpuUsageSettings');
   let current={status:'ready',value:{llmHandoffMode:'comfy-only'},writable:true};const listeners=new Set(),writes=[];

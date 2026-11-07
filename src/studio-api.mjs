@@ -1,7 +1,7 @@
 import {StudioStoreError,isStudioAssetKind,studioStoreConstants} from './studio-store.mjs';
 import {storyStoreFor} from './story-store.mjs';
 import {Readable} from 'node:stream';
-import {createReadStream,statSync,realpathSync} from 'node:fs';
+import {createReadStream,statSync,realpathSync,readdirSync,readFileSync} from 'node:fs';
 import {isAbsolute,join,sep,extname} from 'node:path';
 import {homedir,tmpdir} from 'node:os';
 
@@ -45,7 +45,47 @@ function generationForm(job){return {description:job.description??'',body_descri
 function assetReferences(job,session){if(!job?.ref_asset_id)return null;return Object.fromEntries((job.inputs??[]).map(input=>[input.key,{url:fileUrl('layouts',job.ref_asset_id,input.key,session),filename:input.filename,label:job.ref_labels?.[input.key]??input.filename}]));}
 function presentProject(project,shots=[]){return {...project,shot_ids:shots.map(shot=>shot.id)};}
 
-export function createStudioApiHandler({resolveSession,requestRejection,comfyBaseUrl='http://127.0.0.1:8188',comfyHosts=async()=>[],fetchImpl=globalThis.fetch,maxUploadBytes=studioStoreConstants.maxAssetBytes,controllers=new Set()}={}){
+let sessionIndexCache=null;
+// ponytail: session-less /api/file infers the workspace root from DSH session headers (prefix match, 60s cache); ceilings: stale up to 60s, newest cwd wins.
+function defaultSessionIndex(){
+  if(sessionIndexCache&&Date.now()-sessionIndexCache.at<60000)return sessionIndexCache.rows;
+  const dir=join(homedir(),'.dsh','storages','session_projcache','sessions');let rows=[];
+  try{for(const entry of readdirSync(dir)){
+    if(!entry.startsWith('session-')||!entry.endsWith('.json'))continue;
+    try{const full=join(dir,entry);const cwd=JSON.parse(readFileSync(full,'utf8'))?.record?.identity?.cwd;if(cwd)rows.push({id:entry.slice(0,-5),cwd,mtime:statSync(full).mtimeMs});}catch{}
+  }rows.sort((a,b)=>b.mtime-a.mtime);}catch{}
+  sessionIndexCache={at:Date.now(),rows};return rows;
+}
+async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSessionIndex}){
+  const raw=url.searchParams.get('path')??'';
+  if(!raw||raw.length>2000)throw new StudioStoreError('A path query parameter is required.');
+  const candidate=isAbsolute(raw)?raw:(workspace?join(workspace,raw):'');
+  if(!candidate)throw new StudioStoreError('Relative paths need the session parameter.',400);
+  let resolved;try{resolved=realpathSync(candidate);}catch{throw new StudioStoreError('File not found.',404);}
+  const inside=(file,root)=>file===root||file.startsWith(root.endsWith(sep)?root:root+sep);
+  let roots=[homedir(),tmpdir(),...(workspace?[workspace]:[])].filter(Boolean);
+  if(!roots.some(root=>inside(resolved,root))&&isAbsolute(candidate)){for(const entry of sessionIndex()){if(entry.cwd&&(candidate.startsWith(entry.cwd+sep)||resolved.startsWith(entry.cwd+sep))){roots=[...roots,entry.cwd];break;}}}
+  if(!roots.some(root=>inside(resolved,root)))throw new StudioStoreError('File is outside the allowed roots (session workspace, home, /tmp).',403);
+  // Secret dot-folders deny at REAL paths: symlinked homes and session-index roots must not smuggle them past a literal ~/.dsh compare.
+  const realpathSafe=p=>{try{return realpathSync(p);}catch{return '';}};
+  const homeReal=realpathSafe(homedir());
+  const deniedDirs=['.ssh','.aws','.gnupg','.azure','.config'].map(d=>realpathSafe(join(homeReal,d))).filter(Boolean);
+  if(deniedDirs.some(dir=>inside(resolved,dir)))throw new StudioStoreError('That location is not served.',403);
+  const dsh=join(homeReal,'.dsh');
+  if(inside(resolved,dsh)&&!['director-media','attachments','custom-plugins'].some(x=>inside(resolved,join(dsh,x))))throw new StudioStoreError('That location is not served.',403);
+  const mime=FILE_MIME[extname(resolved).toLowerCase()];
+  if(!mime)throw new StudioStoreError('Only media and PDF files are served here.');
+  const info=statSync(resolved);
+  if(!info.isFile()||info.size>FILE_MAX_BYTES)throw new StudioStoreError('Not a servable file (size or type).',413);
+  const range=/^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range??''));
+  const base={'Content-Type':mime,'X-Content-Type-Options':'nosniff','Accept-Ranges':'bytes','Cache-Control':'private, max-age=300'};
+  if(range){const start=Math.min(Number(range[1]),info.size-1),end=range[2]?Math.min(Number(range[2]),info.size-1):info.size-1;res.writeHead(206,{...base,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${info.size}`});if(req.method==='HEAD'){res.end();return;}createReadStream(resolved,{start,end}).pipe(res);return;}
+  res.writeHead(200,{...base,'Content-Length':String(info.size)});
+  if(req.method==='HEAD'){res.end();return;}
+  createReadStream(resolved).pipe(res);
+}
+
+export function createStudioApiHandler({resolveSession,requestRejection,comfyBaseUrl='http://127.0.0.1:8188',comfyHosts=async()=>[],sessionIndex=defaultSessionIndex,fetchImpl=globalThis.fetch,maxUploadBytes=studioStoreConstants.maxAssetBytes,controllers=new Set()}={}){
   return async(req,res)=>{
     const controller=new AbortController();controllers.add(controller);const abort=()=>controller.abort();res.once('close',abort);
     try{
@@ -57,6 +97,8 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         let reachable=false,comfyError=null;try{const base=typeof comfyBaseUrl==='function'?await comfyBaseUrl():comfyBaseUrl;const response=await fetchImpl(`${base}/system_stats`,{signal:controller.signal,redirect:'error'});reachable=response.ok;if(!response.ok)comfyError=`HTTP ${response.status}`;}catch(error){comfyError=error.message;}
         sendJson(res,200,{ok:true,comfy_reachable:reachable,comfy_error:comfyError});return;
       }
+      // Repaired conversation media URLs carry no session: absolute paths resolve roots via the session index.
+      if(path==='/api/file'&&['GET','HEAD'].includes(req.method)&&typeof req.headers['x-director-session']!=='string'&&!url.searchParams.get('session')){await serveFileRoute(req,res,url,{workspace:null,sessionIndex});return;}
       // The DSH sidebar identifies its session by header; media URLs use ?session= because <img>/<video> tags cannot send headers.
       const sessionId=(typeof req.headers['x-director-session']==='string'?req.headers['x-director-session']:'')||url.searchParams.get('session')||'';
       if(!sessionId){sendJson(res,400,{detail:'Director Studio requests need the X-Director-Session header or session query parameter identifying the active DSH session.'});return;}
@@ -115,29 +157,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         if(req.method==='HEAD'){res.end();return;}
         Readable.fromWeb(upstream.body).pipe(res);return;
       }
-      if(path==='/api/file'&&['GET','HEAD'].includes(req.method)){
-        const raw=url.searchParams.get('path')??'';
-        if(!raw||raw.length>2000)throw new StudioStoreError('A path query parameter is required.');
-        const workspace=join(store.root,'..');
-        const candidate=isAbsolute(raw)?raw:join(workspace,raw);
-        let resolved;try{resolved=realpathSync(candidate);}catch{throw new StudioStoreError('File not found.',404);}
-        const inside=(file,root)=>file===root||file.startsWith(root.endsWith(sep)?root:root+sep);
-        const roots=[homedir(),tmpdir(),workspace,store.root].filter(Boolean);
-        if(!roots.some(root=>inside(resolved,root)))throw new StudioStoreError('File is outside the allowed roots (session workspace, home, /tmp).',403);
-        const home=join(homedir(),'.dsh');
-        const denied=['.ssh','.aws','.gnupg','.azure','.config'].some(dir=>inside(resolved,join(homedir(),dir)))||(inside(resolved,home)&&!['director-media','attachments'].some(dir=>inside(resolved,join(home,dir))));
-        if(denied)throw new StudioStoreError('That location is not served.',403);
-        const mime=FILE_MIME[extname(resolved).toLowerCase()];
-        if(!mime)throw new StudioStoreError('Only media and PDF files are served here.');
-        const info=statSync(resolved);
-        if(!info.isFile()||info.size>FILE_MAX_BYTES)throw new StudioStoreError('Not a servable file (size or type).',413);
-        const range=/^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range??''));
-        const base={'Content-Type':mime,'X-Content-Type-Options':'nosniff','Accept-Ranges':'bytes','Cache-Control':'private, max-age=300'};
-        if(range){const start=Math.min(Number(range[1]),info.size-1),end=range[2]?Math.min(Number(range[2]),info.size-1):info.size-1;res.writeHead(206,{...base,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${info.size}`});if(req.method==='HEAD'){res.end();return;}createReadStream(resolved,{start,end}).pipe(res);return;}
-        res.writeHead(200,{...base,'Content-Length':String(info.size)});
-        if(req.method==='HEAD'){res.end();return;}
-        createReadStream(resolved).pipe(res);return;
-      }
+      if(path==='/api/file'&&['GET','HEAD'].includes(req.method)){await serveFileRoute(req,res,url,{workspace:join(store.root,'..'),sessionIndex});return;}
       match=/^\/api\/(actors|scenes|props)(?:\/(generate|jobs)(?:\/([A-Za-z0-9_-]{1,128})(?:\/(cancel|save))?)?)?$/.exec(path);
       if(match){
         const [,kind,section,jobId,action]=match;
