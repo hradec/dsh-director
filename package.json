@@ -1,6 +1,6 @@
 {
   "name": "dsh-director",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Director tools, Assets, Production and Story sidebar tabs, decision/beat story bible with chronology lint, optional H3 guidance, and conversation media previews for DeepSeek Harness Web",
   "license": "MIT",
   "repository": {
@@ -53,7 +53,8 @@
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-sidebar-right"
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-sidebar-documentpreview"
       ]
     }
   },

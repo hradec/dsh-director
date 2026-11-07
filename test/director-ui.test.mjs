@@ -7,11 +7,12 @@ import {JSDOM} from 'jsdom';
 import React,{act} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Simulate} from 'react-dom/test-utils';
+import {readFile} from 'node:fs/promises';
 
 async function component(file,name){
   const built=await build({entryPoints:[file],bundle:true,write:false,format:'cjs',platform:'node',external:['react','react-dom'],jsx:'automatic',loader:{'.css':'text'}});
   const module={exports:{}};
-  vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:createRequire(import.meta.url),setTimeout,clearTimeout,fetch:(...args)=>globalThis.fetch(...args)});
+  vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:createRequire(import.meta.url),setTimeout,clearTimeout,get window(){return globalThis.window;},get document(){return globalThis.document;},fetch:(...args)=>globalThis.fetch(...args)});
   return module.exports[name];
 }
 async function render(t,Component,props){
@@ -44,6 +45,31 @@ test('Director extends only its own tool views and resolves the native session i
   assert.equal(dock.def.inject('s').shell,shell);
   assert.equal(dock.def.inject('s').sessionId,'s');
   assert.equal(dock.def.inject('s').sessionList,sessionList);
+});
+
+test('Director declares the document-preview service and its browser startup dependency',async()=>{
+  const inject=await component('src/client/index.jsx','inject');
+  assert.ok(inject.includes('documentPreviews'));
+  const metadata=JSON.parse(await readFile('package.json','utf8'));
+  assert.ok(metadata.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-sidebar-documentpreview'));
+});
+
+test('Director startup registers reversible video and audio bodies in the document slot',async t=>{
+  const apply=await component('src/client/index.jsx','apply');
+  const dom=new JSDOM('',{url:'http://localhost:3080'}),disposers=[],previews=[],bodies=[];
+  globalThis.window=dom.window;globalThis.document=dom.window.document;
+  t.after(()=>{for(const dispose of disposers.reverse())dispose();dom.window.close();delete globalThis.window;delete globalThis.document;});
+  const effect=fn=>{const dispose=fn();if(typeof dispose==='function')disposers.push(dispose);};
+  apply({connection:connected,inject(){},effect,documentPreviews:{register(def){previews.push(def);return()=>previews.splice(previews.indexOf(def),1);}},slots:{
+    inject(name,run){assert.equal(arguments.length,2,'slot injection accepts its callback, not the player component');return run();},
+    register(def,Body){if(def.name==='sidebar.right.tab.document'){assert.equal(typeof Body,'function','the player must be passed to slots.register');bodies.push({def,Body});return()=>bodies.splice(bodies.findIndex(body=>body.def===def),1);}return()=>{};}
+  }});
+  assert.deepEqual(previews.map(def=>def.id),['dsh-director/media-video','dsh-director/media-audio']);
+  assert.deepEqual(bodies.map(({def})=>def.key),previews.map(def=>def.id));
+  for(const def of previews){assert.equal(def.loading,'renderer');assert.deepEqual(def.binaryExtensions,def.extensions);}
+  for(const dispose of disposers.splice(0).reverse())dispose();
+  assert.equal(previews.length,0);assert.equal(bodies.length,0);
+  assert.equal(document.querySelector('style[data-director="media"]'),null);
 });
 
 test('Director Settings switch maps disabled and enabled to comfy-only and llama-swap',async t=>{

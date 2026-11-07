@@ -6,7 +6,7 @@ import {AssetsTab,ProductionTab,StoryTab} from './studio/StudioSidebar.jsx';
 import {createMediaBody,MEDIA_KINDS} from './MediaBodies.jsx';
 import css from './media.css';
 export const name='dsh-director-ui';
-export const inject=['slots','conversation','connection','sessions','sidebarRightTabs'];
+export const inject=['slots','conversation','connection','sessions','sidebarRightTabs','documentPreviews'];
 export function apply(ctx){
   ctx.effect(()=>watchSessionWake(ctx.connection),'director foreground recovery');
   ctx.effect(()=>{const style=document.createElement('style');style.dataset.director='media';style.textContent=css;document.head.append(style);return ()=>style.remove();},'director media styles');
@@ -45,6 +45,6 @@ export function apply(ctx){
    if(ctx.documentPreviews?.register)for(const [group,extensions] of MEDIA_KINDS){
      const id=`dsh-director/media-${group}`;
      ctx.effect(()=>ctx.documentPreviews.register({id,extensions:Object.keys(extensions),binaryExtensions:Object.keys(extensions),priority:'builtin',title:()=>group==='video'?'Video player':'Audio player',loading:'renderer',wrap:false}),`director media ${group} preview metadata`);
-     ctx.effect(()=>ctx.slots.inject('sidebar.right.tab.document',()=>ctx.slots.register({name:'sidebar.right.tab.document',key:id}),createMediaBody(extensions)),`director media ${group} body`);
+     ctx.effect(()=>ctx.slots.inject('sidebar.right.tab.document',()=>ctx.slots.register({name:'sidebar.right.tab.document',key:id},createMediaBody(extensions))),`director media ${group} body`);
    }
 }
