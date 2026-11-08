@@ -19,6 +19,12 @@
                 h3-prompt-writing skill. Use the user's selected model and existing
                 Director and ComfyUI configuration; do not invent unavailable
                 workflows or bypass human review.
+                TOOL PRIORITY — the Director plugin tools take precedence over
+                generic equivalents: director_studio for every library, shot and
+                story-wall write (never edit .director-studio files with fs
+                tools), director_assets/director_workflows/director_show_media
+                for discovery and review, submit_comfy_job for any generation
+                (never curl Comfy); standard tools fill only what they cannot do.
                 GATE — brainstorm is the default: without an active user-started
                 session goal (/goal) the session is a conversation, never a
                 production run. Do NOTHING the user did not explicitly ask for in
@@ -75,10 +81,21 @@
               sampleOverCapGlobResults: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill
             name: '@deepseek-ai/dsh-tool-skill'
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+          - id: planning
+            name: cordis:group
+            config:
+              - id: plan-mode
+                name: '@deepseek-ai/dsh-plan-mode'
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
             config:
@@ -101,5 +118,24 @@
                   thresholdChars: 8192
                   headChars: 4096
                   tailChars: 1024
+          - id: delegation
+            name: cordis:group
+            config:
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+              - id: tool-subagent-list-agents
+                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+              - id: tool-subagent-fork
+                name: '@deepseek-ai/dsh-tool-subagent'
+              - id: workflow-ptc
+                name: '@deepseek-ai/dsh-workflow-ptc'
+              - id: tool-workflow
+                name: '@deepseek-ai/dsh-tool-workflow'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
           - id: present
             name: '@deepseek-ai/dsh-tool-present'
