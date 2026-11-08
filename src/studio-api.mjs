@@ -1,7 +1,8 @@
 import {StudioStoreError,isStudioAssetKind,studioStoreConstants} from './studio-store.mjs';
 import {storyStoreFor} from './story-store.mjs';
 import {Readable} from 'node:stream';
-import {createReadStream,statSync,realpathSync,readdirSync,readFileSync} from 'node:fs';
+import {createReadStream,statSync,realpathSync,readdirSync,readFileSync,rmSync,existsSync,mkdirSync,writeFileSync} from 'node:fs';
+import {execFile} from 'node:child_process';
 import {isAbsolute,join,sep,extname} from 'node:path';
 import {homedir,tmpdir} from 'node:os';
 
@@ -56,6 +57,26 @@ function defaultSessionIndex(){
   }rows.sort((a,b)=>b.mtime-a.mtime);}catch{}
   sessionIndexCache={at:Date.now(),rows};return rows;
 }
+// iPad Safari cannot decode AV1 and other exotic encodings Chrome handles; transcode once, cache, then stream normally.
+const TRANSCODE_CACHE=join(tmpdir(),'dsh-director-transcode');
+const AV_CACHE_TTL=7*24*3600*1000;
+// ponytail: ceiling = one global transcode at a time (1-hour lock safety), cache 7 days; upgrade path = per-file locks + queue.
+let transcodeLock=null;
+function ffprobeInfo(file){return new Promise(resolve=>{execFile('ffprobe',['-v','error','-select_streams','v:0','-show_entries','stream=codec_name,pix_fmt','-of','csv=p=0',file],{timeout:20000},(error,stdout)=>resolve(error?'':String(stdout).trim()));});}
+const deviceFriendly=info=>/h264/.test(info)&&!/yuv4(22|44)/.test(info);
+function ensureTranscode(source,resolved){
+  if(!transcodeLock||Date.now()-transcodeLock.at>3600000)transcodeLock={at:Date.now(),files:new Set()};
+  const key=resolved.replace(/[^A-Za-z0-9._-]/g,'_');
+  const target=join(TRANSCODE_CACHE,key+'.mp4');
+  // Safari will not retry 503: concurrent waiters poll for the finished copy (up to 10 min) and then stream it.
+  if(transcodeLock.files.has(resolved))return new Promise((resolve,reject)=>{const started=Date.now();const poll=setInterval(()=>{if(existsSync(target+'.done')){clearInterval(poll);resolve(target);}else if(Date.now()-started>600000){clearInterval(poll);reject(new StudioStoreError('Transcode did not finish in time.',504));}},2000);});
+  transcodeLock.files.add(resolved);
+  try{for(const entry of readdirSync(TRANSCODE_CACHE)){if(!entry.startsWith(key))continue;const full=join(TRANSCODE_CACHE,entry);if(statSync(full).mtimeMs<Date.now()-AV_CACHE_TTL)rmSync(full,{force:true});}}catch{}
+  if(existsSync(target+'.done'))return Promise.resolve(target);
+  process.stdout.write(`[dsh-director transcode] ffmpeg starting for ${source}\n`);
+  mkdirSync(TRANSCODE_CACHE,{recursive:true});
+  return new Promise((resolve,reject)=>{execFile('ffmpeg',['-y','-v','error','-threads','4','-i',source,'-c:v','libx264','-preset','veryfast','-crf','22','-pix_fmt','yuv420p','-movflags','+faststart','-c:a','copy',target],{timeout:3600000},(error,stdout,stderr)=>{process.stdout.write(`[dsh-director transcode] ffmpeg done err=${String(error?.message??'').slice(0,120)} stderr=${String(stderr).slice(0,160)}\n`);transcodeLock?.files.delete(resolved);if(error){try{rmSync(target,{force:true});}catch{}reject(new StudioStoreError('Server transcode failed: '+String(stderr||error?.message).slice(0,160),502));return;}try{writeFileSync(target+'.done','');}catch{}resolve(target);});});
+}
 // Media request diary: one line per served answer so device-side failures (iPad Safari!) can be traced from the server journal.
 const mediaLog=(req,status,extra)=>{try{process.stdout.write(`[dsh-director media] ${req.socket?.remoteAddress??'?'} ${req.method} ${String(req.headers.range??'-')} -> ${status} ${extra}\n`);}catch{}};
 async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSessionIndex}){
@@ -79,12 +100,18 @@ async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSession
   if(!mime)throw new StudioStoreError('Only media and PDF files are served here.');
   const info=statSync(resolved);
   if(!info.isFile()||info.size>FILE_MAX_BYTES)throw new StudioStoreError('Not a servable file (size or type).',413);
+  let served=resolved,stat=info;
+  if(mime.startsWith('video/')&&/iPhone|iPad|iPod/.test(String(req.headers['user-agent']??''))){
+    mediaLog(req,'probing',mime);
+    const probe=await ffprobeInfo(resolved);mediaLog(req,'probe',probe||'unknown');
+    if(probe&&!deviceFriendly(probe)){served=await ensureTranscode(resolved,resolved);stat=statSync(served);mediaLog(req,'transcode',mime+' -> h264');}
+  }
   const range=/^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range??''));
   const base={'Content-Type':mime,'X-Content-Type-Options':'nosniff','Accept-Ranges':'bytes','Cache-Control':'private, max-age=300'};
-  if(range){if(Number(range[1])>info.size-1){res.writeHead(416,{...base,'Content-Range':`bytes */${info.size}`});mediaLog(req,416,mime);res.end();return;}const start=Number(range[1]),end=range[2]?Math.min(Number(range[2]),info.size-1):info.size-1;res.writeHead(206,{...base,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${info.size}`});mediaLog(req,206,`${mime} ${String(req.headers['range'])}`);if(req.method==='HEAD'){res.end();return;}createReadStream(resolved,{start,end}).pipe(res);return;}
-  res.writeHead(200,{...base,'Content-Length':String(info.size)});mediaLog(req,200,mime);
+  if(range){if(Number(range[1])>stat.size-1){res.writeHead(416,{...base,'Content-Range':`bytes */${stat.size}`});mediaLog(req,416,mime);res.end();return;}const start=Number(range[1]),end=range[2]?Math.min(Number(range[2]),stat.size-1):stat.size-1;res.writeHead(206,{...base,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${stat.size}`});mediaLog(req,206,`${mime} ${String(req.headers['range'])}`);if(req.method==='HEAD'){res.end();return;}createReadStream(served,{start,end}).pipe(res);return;}
+  res.writeHead(200,{...base,'Content-Length':String(stat.size)});mediaLog(req,200,mime);
   if(req.method==='HEAD'){res.end();return;}
-  createReadStream(resolved).pipe(res);
+  createReadStream(served).pipe(res);
 }
 
 export function createStudioApiHandler({resolveSession,requestRejection,comfyBaseUrl='http://127.0.0.1:8188',comfyHosts=async()=>[],sessionIndex=defaultSessionIndex,fetchImpl=globalThis.fetch,maxUploadBytes=studioStoreConstants.maxAssetBytes,controllers=new Set()}={}){
