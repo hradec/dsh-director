@@ -79,7 +79,7 @@ async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSession
   if(!info.isFile()||info.size>FILE_MAX_BYTES)throw new StudioStoreError('Not a servable file (size or type).',413);
   const range=/^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range??''));
   const base={'Content-Type':mime,'X-Content-Type-Options':'nosniff','Accept-Ranges':'bytes','Cache-Control':'private, max-age=300'};
-  if(range){const start=Math.min(Number(range[1]),info.size-1),end=range[2]?Math.min(Number(range[2]),info.size-1):info.size-1;res.writeHead(206,{...base,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${info.size}`});if(req.method==='HEAD'){res.end();return;}createReadStream(resolved,{start,end}).pipe(res);return;}
+  if(range){if(Number(range[1])>info.size-1){res.writeHead(416,{...base,'Content-Range':`bytes */${info.size}`});res.end();return;}const start=Number(range[1]),end=range[2]?Math.min(Number(range[2]),info.size-1):info.size-1;res.writeHead(206,{...base,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${info.size}`});if(req.method==='HEAD'){res.end();return;}createReadStream(resolved,{start,end}).pipe(res);return;}
   res.writeHead(200,{...base,'Content-Length':String(info.size)});
   if(req.method==='HEAD'){res.end();return;}
   createReadStream(resolved).pipe(res);
@@ -151,9 +151,13 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         const allowed=new Set([...await comfyHosts(),...String((await store.getAppSettings()).comfy?.urls??'').split(/[\n,]+/).map(entry=>entry.trim()).filter(Boolean)]);
         if(!allowed.has(host))throw new StudioStoreError('Comfy host is not in the configured endpoint list (gear panel Comfy URLs or plugin comfyBaseUrl/comfyTryUrls).');
         const target=`${host}/view?filename=${encodeURIComponent(url.searchParams.get('filename')??'')}&subfolder=${encodeURIComponent(url.searchParams.get('subfolder')??'')}&type=${encodeURIComponent(url.searchParams.get('type')??'output')}`;
-        const upstream=await fetchImpl(target,{signal:controller.signal});
-        if(!upstream.ok)throw new StudioStoreError(`Comfy endpoint answered ${upstream.status}.`,upstream.status===404?404:502);
-        res.writeHead(200,{'Content-Type':upstream.headers.get('content-type')??'application/octet-stream',...(upstream.headers.get('content-length')?{'Content-Length':upstream.headers.get('content-length')}:{}),'X-Content-Type-Options':'nosniff','Cache-Control':'private, no-store'});
+        const rangeReq=String(req.headers.range??'');
+        // iOS Safari refuses players on responses without range support; mirror Comfy's range answer through the proxy.
+        const upstream=await fetchImpl(target,{signal:controller.signal,headers:rangeReq?{range:rangeReq}:{}});
+        if(upstream.status!==200&&upstream.status!==206)throw new StudioStoreError(`Comfy endpoint answered ${upstream.status}.`,upstream.status===404?404:502);
+        const forward={'Content-Type':upstream.headers.get('content-type')??'application/octet-stream',...(upstream.headers.get('content-length')?{'Content-Length':upstream.headers.get('content-length')}:{}),'X-Content-Type-Options':'nosniff','Cache-Control':'private, no-store'};
+        for(const h of ['content-range','accept-ranges']){const v=upstream.headers.get(h);if(v)forward[h]=v;}
+        res.writeHead(upstream.status,forward);
         if(req.method==='HEAD'){res.end();return;}
         Readable.fromWeb(upstream.body).pipe(res);return;
       }
