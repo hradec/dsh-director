@@ -56,6 +56,8 @@ function defaultSessionIndex(){
   }rows.sort((a,b)=>b.mtime-a.mtime);}catch{}
   sessionIndexCache={at:Date.now(),rows};return rows;
 }
+// Media request diary: one line per served answer so device-side failures (iPad Safari!) can be traced from the server journal.
+const mediaLog=(req,status,extra)=>{try{process.stdout.write(`[dsh-director media] ${req.socket?.remoteAddress??'?'} ${req.method} ${String(req.headers.range??'-')} -> ${status} ${extra}\n`);}catch{}};
 async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSessionIndex}){
   const raw=url.searchParams.get('path')??'';
   if(!raw||raw.length>2000)throw new StudioStoreError('A path query parameter is required.');
@@ -79,8 +81,8 @@ async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSession
   if(!info.isFile()||info.size>FILE_MAX_BYTES)throw new StudioStoreError('Not a servable file (size or type).',413);
   const range=/^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range??''));
   const base={'Content-Type':mime,'X-Content-Type-Options':'nosniff','Accept-Ranges':'bytes','Cache-Control':'private, max-age=300'};
-  if(range){if(Number(range[1])>info.size-1){res.writeHead(416,{...base,'Content-Range':`bytes */${info.size}`});res.end();return;}const start=Number(range[1]),end=range[2]?Math.min(Number(range[2]),info.size-1):info.size-1;res.writeHead(206,{...base,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${info.size}`});if(req.method==='HEAD'){res.end();return;}createReadStream(resolved,{start,end}).pipe(res);return;}
-  res.writeHead(200,{...base,'Content-Length':String(info.size)});
+  if(range){if(Number(range[1])>info.size-1){res.writeHead(416,{...base,'Content-Range':`bytes */${info.size}`});mediaLog(req,416,mime);res.end();return;}const start=Number(range[1]),end=range[2]?Math.min(Number(range[2]),info.size-1):info.size-1;res.writeHead(206,{...base,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${info.size}`});mediaLog(req,206,`${mime} ${String(req.headers['range'])}`);if(req.method==='HEAD'){res.end();return;}createReadStream(resolved,{start,end}).pipe(res);return;}
+  res.writeHead(200,{...base,'Content-Length':String(info.size)});mediaLog(req,200,mime);
   if(req.method==='HEAD'){res.end();return;}
   createReadStream(resolved).pipe(res);
 }
@@ -157,7 +159,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         if(upstream.status!==200&&upstream.status!==206)throw new StudioStoreError(`Comfy endpoint answered ${upstream.status}.`,upstream.status===404?404:502);
         const forward={'Content-Type':upstream.headers.get('content-type')??'application/octet-stream',...(upstream.headers.get('content-length')?{'Content-Length':upstream.headers.get('content-length')}:{}),'X-Content-Type-Options':'nosniff','Cache-Control':'private, no-store'};
         for(const h of ['content-range','accept-ranges']){const v=upstream.headers.get(h);if(v)forward[h]=v;}
-        res.writeHead(upstream.status,forward);
+        res.writeHead(upstream.status,forward);mediaLog(req,upstream.status,`comfy ${String(req.headers.range??'-')}`);
         if(req.method==='HEAD'){res.end();return;}
         Readable.fromWeb(upstream.body).pipe(res);return;
       }
@@ -237,7 +239,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       if(path==='/api/h3-ref2va/resolutions'&&req.method==='GET'){sendJson(res,200,{presets:[{id:'704x1280',label:'Portrait · 704 × 1280',width:704,height:1280},{id:'1280x704',label:'Landscape · 1280 × 704',width:1280,height:704}]});return;}
       if(req.method==='OPTIONS'){res.writeHead(204,{Allow:'GET, HEAD, POST, PATCH, DELETE, OPTIONS'});res.end();return;}
       sendJson(res,404,{detail:'Director Studio API route is not implemented.'});
-    }catch(error){if(!res.headersSent&&!res.destroyed)routeError(res,error);else if(!res.destroyed)res.destroy();}
+    }catch(error){try{const p=new URL(req.url,'http://localhost').pathname;if(p.endsWith('/api/file')||p.endsWith('/api/comfy-view'))mediaLog(req,'err',String(error?.message??error));}catch{}if(!res.headersSent&&!res.destroyed)routeError(res,error);else if(!res.destroyed)res.destroy();}
     finally{res.removeListener('close',abort);controllers.delete(controller);}
   };
 }
