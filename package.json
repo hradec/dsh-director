@@ -32,7 +32,8 @@
     "LICENSE",
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
-    "SECURITY.md"
+    "SECURITY.md",
+    "docs/TIMELINE.md"
   ],
   "engines": {
     "node": ">=22"
