@@ -179,7 +179,10 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         const host=url.searchParams.get('host')??'';
         const allowed=new Set([...await comfyHosts(),...String((await store.getAppSettings()).comfy?.urls??'').split(/[\n,]+/).map(entry=>entry.trim()).filter(Boolean)]);
         if(!allowed.has(host))throw new StudioStoreError('Comfy host is not in the configured endpoint list (gear panel Comfy URLs or plugin comfyBaseUrl/comfyTryUrls).');
-        const target=`${host}/view?filename=${encodeURIComponent(url.searchParams.get('filename')??'')}&subfolder=${encodeURIComponent(url.searchParams.get('subfolder')??'')}&type=${encodeURIComponent(url.searchParams.get('type')??'output')}`;
+        // ponytail: this Comfy build 404s on combined filename="sub/name.png"; split legacy joined fence URLs into filename+subfolder parts.
+        let fileName=url.searchParams.get('filename')??'';let subFolder=url.searchParams.get('subfolder')??'';
+        if(fileName.includes('/')){const idx=fileName.lastIndexOf('/');const prefix=fileName.slice(0,idx);fileName=fileName.slice(idx+1);subFolder=[subFolder,prefix].filter(Boolean).join('/');}
+        const target=`${host}/view?filename=${encodeURIComponent(fileName)}&subfolder=${encodeURIComponent(subFolder)}&type=${encodeURIComponent(url.searchParams.get('type')??'output')}`;
         const rangeReq=String(req.headers.range??'');
         // iOS Safari refuses players on responses without range support; mirror Comfy's range answer through the proxy.
         const upstream=await fetchImpl(target,{signal:controller.signal,headers:rangeReq?{range:rangeReq}:{}});

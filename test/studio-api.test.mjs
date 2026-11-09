@@ -54,13 +54,18 @@ test('story wall routes round-trip decisions, drag rules and chronology lint',as
 });
 
 test('comfy-view streams only configured hosts through the GUI origin',async t=>{
-  const {base}=await setup(t,{fetchImpl:async(url,init)=>url.includes('comfy.test')?(init?.headers?.range?new Response('BY',{status:206,headers:{'content-type':'video/mp4','content-range':'bytes 0-1/4','accept-ranges':'bytes'}}):new Response('BYTES',{status:200,headers:{'content-type':'video/mp4'}})):new Response('nope',{status:404})});
+  let upstreamUrl='';
+  const {base}=await setup(t,{fetchImpl:async(url,init)=>{upstreamUrl=url;return url.includes('comfy.test')?(init?.headers?.range?new Response('BY',{status:206,headers:{'content-type':'video/mp4','content-range':'bytes 0-1/4','accept-ranges':'bytes'}}):new Response('BYTES',{status:200,headers:{'content-type':'video/mp4'}})):new Response('nope',{status:404})}});
   const ok=await json(base,'/api/comfy-view?host=http%3A%2F%2Fcomfy.test&filename=shot%2001.mp4&subfolder=rnd');
   assert.equal(ok.status,200);assert.equal(ok.headers.get('content-type'),'video/mp4');assert.equal(await ok.text(),'BYTES');
   const seek=await json(base,'/api/comfy-view?host=http%3A%2F%2Fcomfy.test&filename=shot.mp4',{headers:{range:'bytes=0-1'}});
   assert.equal(seek.status,206);assert.equal(seek.headers.get('content-range'),'bytes 0-1/4');assert.equal(await seek.text(),'BY');
   const denied=await json(base,'/api/comfy-view?host=https%3A%2F%2Fevil.example&filename=x');
   assert.equal(denied.status,400);assert.match((await denied.json()).detail,/not in the configured endpoint list/);
+  // Legacy fences carry joined filenames ("nelare/ph3.png"); the upstream Comfy only serves split filename+subfolder params.
+  const joined=await json(base,'/api/comfy-view?host=http%3A%2F%2Fcomfy.test&filename=nelare%2Fph3.png');
+  assert.equal(joined.status,200);
+  assert.match(upstreamUrl,/filename=ph3\.png&subfolder=nelare/);
 });
 
 test('file route streams local media with deny and range rules',async t=>{
