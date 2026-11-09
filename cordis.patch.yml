@@ -93,6 +93,11 @@
             name: '@deepseek-ai/dsh-tool-goal'
           - id: planning
             name: cordis:group
+            # ponytail: preset groups must isolate their service realms; without these flags
+            # mountPreset rejects the whole preset ("Preset services require isolate realms").
+            group: true
+            isolate:
+              planMode: true
             config:
               - id: plan-mode
                 name: '@deepseek-ai/dsh-plan-mode'
@@ -170,6 +175,9 @@
                   tailChars: 1024
           - id: delegation
             name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
             config:
               - id: tool-subagent-control
                 name: '@deepseek-ai/dsh-tool-subagent-control'

@@ -30,6 +30,9 @@ test('release archive excludes personal media and works without workspace skills
    assert.match(preset,/id: tool-subagent-fork[\s\S]*?config:[\s\S]*?provider: fork/);
    assert.match(preset,/id: workflow-ptc[\s\S]*?config:[\s\S]*?provider: spawn/);
    assert.match(preset,/id: tool-todo[\s\S]*?config:[\s\S]*?allowParallelInProgress: true/);
+   // mountPreset rejects the whole preset unless service groups isolate their realms.
+   assert.match(preset,/id: planning[\s\S]*?group: true[\s\S]*?isolate:[\s\S]*?planMode: true/);
+   assert.match(preset,/id: delegation[\s\S]*?group: true[\s\S]*?isolate:[\s\S]*?workflowEngine: true/);
   // A shared archive must advertise a runnable helper in its own installation,
   // not a source-checkout path or a dependency supplied only by this machine.
   const definitions=[];
