@@ -7184,3 +7184,9 @@ select {
   .music-workspace-grid { grid-template-columns: minmax(0, 1fr); }
   .music-discussion-panel .director-chat-layout.chat-only .director-chat-panel { min-height: 520px; }
 }
+
+/* —— Production hierarchy tree (Season/Episode/Sequence) —— */
+.production-tree-head{display:block;background:none;border:0;padding:.22rem 0;font-weight:600;font-size:.82rem;cursor:pointer}
+.production-tree-row{display:flex;align-items:center;gap:.35rem;padding:.3rem .25rem;cursor:pointer;border-radius:6px}
+.production-tree-row:hover{background:rgba(0,0,0,.05)}
+.production-tree-row.selected{background:#dcead8}

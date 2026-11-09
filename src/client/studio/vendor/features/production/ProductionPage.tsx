@@ -167,6 +167,10 @@ export function ProductionPage({
 } = {}) {
   const { projectId } = useProject();
   const [shots, setShots] = useState<Shot[]>([]);
+  // Production hierarchy (Season → Episode → Sequence): episodes live on the Story wall,
+  // sequences in the studio store; both arrive through the timeline route in one call.
+  const [hierarchy, setHierarchy] = useState<{ episodes: { id: string; title: string; season: number; order: number }[]; sequences: { id: string; name: string; episode_id: string; order: number }[] }>({ episodes: [], sequences: [] });
+  const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(() => new Set());
   const [projectLoad, setProjectLoad] = useState<ProjectLoadState>(() => ({
     projectId,
     status: projectId ? "loading" : "idle",
@@ -240,6 +244,38 @@ export function ProductionPage({
       (layout) => layout.asset_id === selected.layout_asset_id,
     ) || [...selected.layout_refs].reverse().find((layout) => layout.asset_id) || null;
   }, [selected]);
+
+  const toggleNode = useCallback((key: string) => setCollapsedNodes((prev) => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next; }), []);
+  useEffect(() => {
+    if (!projectId) { setHierarchy({ episodes: [], sequences: [] }); return; }
+    let cancelled = false;
+    fetch("/api/library/timeline")
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
+      .then((data) => { if (!cancelled) setHierarchy({ episodes: data.episodes ?? [], sequences: data.sequences ?? [] }); })
+      .catch(() => { if (!cancelled) setHierarchy({ episodes: [], sequences: [] }); }); // ponytail: without the timeline route the tree degrades to the Unassigned bucket only.
+    return () => { cancelled = true; };
+  }, [projectId, shots]);
+  const shotTree = useMemo(() => {
+    type TreeEpisode = { id: string; title: string; season: number; order: number };
+    type TreeSequence = { id: string; name: string; episode_id: string; order: number };
+    const episodeIds = new Set(hierarchy.episodes.map((episode) => episode.id));
+    const shotsFor = (episodeId: string, sequenceId: string | null) => shots.filter((s) => {
+      const shot = s as Shot & { episode_id?: string; sequence_id?: string };
+      const knownSequence = hierarchy.sequences.some((q) => q.id === shot.sequence_id);
+      return (shot.episode_id ?? "") === episodeId && (sequenceId === null ? !shot.sequence_id || !knownSequence : shot.sequence_id === sequenceId);
+    });
+    const seasons = new Map<number, { episode: TreeEpisode; groups: { sequence: TreeSequence | null; shots: Shot[] }[] }[]>();
+    for (const episode of [...hierarchy.episodes].sort((a, b) => (a.season - b.season) || (a.order - b.order))) {
+      const groups = [...hierarchy.sequences].filter((q) => q.episode_id === episode.id).sort((a, b) => a.order - b.order)
+        .map((q) => ({ sequence: q, shots: shotsFor(episode.id, q.id) }));
+      const unsequenced = shotsFor(episode.id, null);
+      if (unsequenced.length) groups.push({ sequence: null, shots: unsequenced });
+      if (!seasons.has(episode.season)) seasons.set(episode.season, []);
+      seasons.get(episode.season)!.push({ episode, groups });
+    }
+    const loose = shots.filter((s) => { const shot = s as Shot & { episode_id?: string }; return !shot.episode_id || !episodeIds.has(shot.episode_id); });
+    return { seasons: [...seasons.entries()], loose };
+  }, [shots, hierarchy]);
 
   const loadProject = useCallback(async (id: string) => {
     const detail = await getProject(id);
@@ -887,32 +923,61 @@ export function ProductionPage({
             ) : projectFailed ? null : shots.length === 0 ? (
               <p className="empty-copy">No shots yet. Plan them in Director first.</p>
             ) : (
-              <div className="shot-table-wrap">
-                <table className="shot-table">
-                  <thead>
-                    <tr>
-                      <th>Shot</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {shots.map((s) => (
-                      <tr
-                        key={s.id}
-                        className={s.id === selectedId ? "selected" : ""}
-                        onClick={() => setSelectedId(s.id)}
-                      >
-                        <td>
-                          <div className="shot-table-title">{s.title || s.id}</div>
-                          <div className="muted tiny">{s.duration_s}s</div>
-                        </td>
-                        <td>
-                          <ProductionStatusChip shot={s} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="shot-table-wrap" role="tree" aria-label="Production hierarchy">
+                {shotTree.seasons.map(([season, episodes]) => {
+                  const key = `s${season}`;
+                  const open = !collapsedNodes.has(key);
+                  return (
+                    <div key={key}>
+                      <button type="button" className="production-tree-head" onClick={() => toggleNode(key)} aria-expanded={open}>
+                        {`Season ${season}`} <span className="muted tiny">{episodes.reduce((n, node) => n + node.groups.reduce((m, group) => m + group.shots.length, 0), 0)} shots</span>
+                      </button>
+                      {open ? episodes.map(({ episode, groups }) => {
+                        const ekey = `e${episode.id}`;
+                        const eopen = !collapsedNodes.has(ekey);
+                        return (
+                          <div key={ekey} style={{ marginLeft: "0.7rem" }}>
+                            <button type="button" className="production-tree-head" onClick={() => toggleNode(ekey)} aria-expanded={eopen}>
+                              {episode.title || `E${episode.order}`} <span className="muted tiny">{`E${episode.order}`}</span>
+                            </button>
+                            {eopen ? groups.map((group, index) => {
+                              const qkey = `q${group.sequence ? group.sequence.id : `${episode.id}-none-${index}`}`;
+                              const qopen = !collapsedNodes.has(qkey);
+                              return (
+                                <div key={qkey} style={{ marginLeft: "1.4rem" }}>
+                                  <button type="button" className="production-tree-head" onClick={() => toggleNode(qkey)} aria-expanded={qopen}>
+                                    {group.sequence ? group.sequence.name : "No sequence"} <span className="muted tiny">{group.shots.length}</span>
+                                  </button>
+                                  {qopen ? group.shots.map((s) => (
+                                    <div key={s.id} className={s.id === selectedId ? "production-tree-row selected" : "production-tree-row"} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)} style={{ paddingLeft: "2.1rem" }}>
+                                      <span className="shot-table-title">{s.title || s.id}</span>
+                                      <span className="muted tiny" style={{ marginLeft: ".4rem" }}>{s.duration_s}s</span>
+                                      <span style={{ marginLeft: ".5rem" }}><ProductionStatusChip shot={s} /></span>
+                                    </div>
+                                  )) : null}
+                                </div>
+                              );
+                            }) : null}
+                          </div>
+                        );
+                      }) : null}
+                    </div>
+                  );
+                })}
+                {shotTree.loose.length ? (
+                  <div>
+                    <button type="button" className="production-tree-head" onClick={() => toggleNode("loose")} aria-expanded={!collapsedNodes.has("loose")}>
+                      Unassigned <span className="muted tiny">{shotTree.loose.length}</span>
+                    </button>
+                    {!collapsedNodes.has("loose") ? shotTree.loose.map((s) => (
+                      <div key={s.id} className={s.id === selectedId ? "production-tree-row selected" : "production-tree-row"} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)}>
+                        <span className="shot-table-title">{s.title || s.id}</span>
+                        <span className="muted tiny" style={{ marginLeft: ".4rem" }}>{s.duration_s}s</span>
+                        <span style={{ marginLeft: ".5rem" }}><ProductionStatusChip shot={s} /></span>
+                      </div>
+                    )) : null}
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
