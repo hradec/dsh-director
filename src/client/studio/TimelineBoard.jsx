@@ -13,6 +13,7 @@ export function TimelineBoard(){
   const [episodeId,setEpisodeId]=useState('');
   const [sequenceId,setSequenceId]=useState('');
   const [openShotId,setOpenShotId]=useState('');
+  const [newSeqName,setNewSeqName]=useState('');
   const [playIndex,setPlayIndex]=useState(-1);
   const videoRef=useRef(null),queueRef=useRef([]);
   const load=useCallback(()=>apiFetch('/api/library/timeline').then(r=>r.ok?r.json():Promise.reject(new Error(String(r.status)))).then(setBoard).catch(()=>setError('Timeline API not live yet — the running DSH service needs a restart (when idle) to enable it.')),[]);
@@ -56,6 +57,8 @@ export function TimelineBoard(){
     <div role="tablist" aria-label="Sequences" style={{display:'flex',gap:'.35rem',flexWrap:'wrap'}}>
       <button role="tab" aria-selected={!sequenceId} className={!sequenceId?'btn primary sm':'btn ghost sm'} onClick={()=>setSequenceId('')}>All</button>
       {sequences.map(sequence=><button key={sequence.id} role="tab" aria-selected={sequenceId===sequence.id} className={sequenceId===sequence.id?'btn primary sm':'btn ghost sm'} onClick={()=>setSequenceId(sequence.id)}>{sequence.name}</button>)}
+      <input value={newSeqName} onChange={event=>setNewSeqName(event.target.value)} placeholder="new sequence" style={{fontSize:'.74rem',padding:'2px 6px',width:'8.5rem'}} aria-label="New sequence name"/>
+      <button className="btn sm" disabled={!newSeqName.trim()} onClick={async()=>{await apiFetch('/api/library/sequence',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:newSeqName.trim(),episode_id:episodeId})});setNewSeqName('');load();}}>+ Sequence</button>
     </div>
     <div style={{display:'flex',gap:'2px',overflowX:'auto',padding:'.4rem',background:'rgba(0,0,0,.06)',borderRadius:'8px'}} aria-label="Timeline track">
       {shots.map((shot,index)=>{
@@ -74,6 +77,12 @@ export function TimelineBoard(){
         <strong>{openShot.title}</strong>
         <label className="field" style={{margin:0}}><span>Duration (s)</span>
           <input type="number" min="0.1" step="0.1" defaultValue={openShot.duration_s} onBlur={event=>setDuration(openShot.id,event.target.value)} style={{width:'5.5rem'}}/>
+        </label>
+        <label className="field" style={{margin:0}}><span>Sequence</span>
+          <select value={openShot.sequence_id??''} onChange={async event=>{await apiFetch(`/api/shots/${encodeURIComponent(openShot.id)}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({sequence_id:event.target.value||null})});load();}}>
+            <option value="">— none —</option>
+            {(board?.sequences??[]).map(sequence=><option key={sequence.id} value={sequence.id}>{sequence.name}</option>)}
+          </select>
         </label>
         {board.clips[openShot.id]?<button className="btn sm" onClick={()=>playFrom(shots.findIndex(shot=>shot.id===openShot.id))}>▶ from here</button>:null}
       </div>
