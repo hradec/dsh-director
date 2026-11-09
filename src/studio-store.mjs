@@ -34,13 +34,16 @@ export class StudioStoreError extends Error {
   constructor(message,status=400){super(message);this.status=status;}
 }
 
-function initialState(){return {version:1,projects:[],assets:[],shots:[],files:[],jobs:[]};}
+function initialState(){return {version:1,projects:[],assets:[],shots:[],files:[],jobs:[],sequences:[],takes:[]};}
 function validName(value,label){const name=safeText(value,160);if(!name)throw new StudioStoreError(`${label} is required.`);return name;}
 function canonicalKind(kind){if(!ASSET_KINDS.has(kind))throw new StudioStoreError('Unsupported asset kind.');return kind;}
 const REF_KIND={actor:'actors',costume:'costumes',scene:'scenes',prop:'props',layout_ref_frame:'layouts'};
 const PROMPT_KEYS=['subject_definitions','summary','retention_analysis','detailed_description','overall_soundscape','non_diegetic_music'];
 const SHOT_TEXT_FIELDS={scene_id:128,shot_type:160,camera_angle:256,camera_motion:512,composition:4000};
 function shotMetadata(input={}){const metadata={};for(const [key,max] of Object.entries(SHOT_TEXT_FIELDS))if(input[key]!==undefined){if(typeof input[key]!=='string')throw new StudioStoreError(`${key} must be a string.`);metadata[key]=safeText(input[key],max);}return metadata;}
+// Arcs are free-text tags (arc1, B-plot…): a show interleaves several arcs across episodes, so they are tags on shots, not another tree level.
+function arcTags(value){if(value===undefined)return undefined;if(!Array.isArray(value)||value.length>12)throw new StudioStoreError('arcs must be an array of at most 12 tags.');return [...new Set(value.map(tag=>{if(typeof tag!=='string')throw new StudioStoreError('Each arc tag must be a string.');return safeText(tag,80);}).filter(Boolean))];}
+const TAKE_STATUS=new Set(['pending','ready','selected','discarded']);
 function validateVideoContext(s,shot,value){
   if(!value||typeof value!=='object'||Array.isArray(value))throw new StudioStoreError('video_context must be an object.');
   const frames=value.context_frames??22;if(![5,22,39,56].includes(frames))throw new StudioStoreError('context_frames must be 5, 22, 39, or 56.');
@@ -122,6 +125,8 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
     try{state=JSON.parse(await readFile(statePath,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;state=initialState();}
     if(!state||state.version!==1||!Array.isArray(state.projects)||!Array.isArray(state.assets)||!Array.isArray(state.shots)||!Array.isArray(state.files))throw new Error('Director Studio data file is invalid; it was left untouched.');
     if(!Array.isArray(state.jobs))state.jobs=[];// older workspaces predate generation jobs; widen in place on next write.
+    if(!Array.isArray(state.sequences))state.sequences=[];// multi-season hierarchy (season/episode live on the Story wall).
+    if(!Array.isArray(state.takes))state.takes=[];// clip versions: one row per generation/upscale so prompts+refs survive.
     return state;
   }
   async function change(mutator){
@@ -151,7 +156,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
     root,
     async listProjects(){return clone((await load()).projects);},
     async createProject(input={}){return change(s=>{const item={id:id(),name:validName(input.name,'Project name'),script_text:safeText(input.script_text,100000),mode:['director','mv','json_production'].includes(input.mode)?input.mode:'director',created_at:stamp(),updated_at:stamp()};s.projects.push(item);return clone(item);});},
-    async getProject(projectId){const s=await load();const p=await project(projectId,s);return {...clone(p),shots:clone(s.shots.filter(item=>item.project_id===projectId)),assets:clone(s.assets.filter(item=>item.project_id===projectId))};},
+    async getProject(projectId){const s=await load();const p=await project(projectId,s);return {...clone(p),shots:clone(s.shots.filter(item=>item.project_id===projectId)),assets:clone(s.assets.filter(item=>item.project_id===projectId)),sequences:clone(s.sequences.filter(item=>item.project_id===projectId)),takes:clone(s.takes.filter(item=>item.project_id===projectId))};},
     async patchProject(projectId,input={}){return change(async s=>{const item=await project(projectId,s);if(input.name!==undefined)item.name=validName(input.name,'Project name');if(input.script_text!==undefined)item.script_text=safeText(input.script_text,100000);if(input.mode!==undefined){if(!['director','mv','json_production'].includes(input.mode))throw new StudioStoreError('Unsupported project mode.');item.mode=input.mode;}item.updated_at=stamp();return clone(item);});},
     async listAssets({kind,project_id,include_unassigned=false}={}){const s=await load();return clone(s.assets.filter(item=>(!kind||item.kind===canonicalKind(kind))&&(!project_id||item.project_id===project_id||include_unassigned&&!item.project_id)));},
     async saveAsset(input={}){
@@ -234,6 +239,61 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
         item.project_id=target;return clone(item);
       });
     },
+    // Hierarchy: season/episode live on the Story wall (saveEpisode); Production adds Sequence between episode and shot. episode_id is the story episode id, kept as an unvalidated string (separate store; ponytail: wall deletion already nulls beats only).
+    async listSequences(projectId){const s=await load();await project(projectId,s);return clone(s.sequences.filter(item=>item.project_id===projectId).sort((a,b)=>(a.order-b.order)||String(a.created_at).localeCompare(String(b.created_at))));},
+    async saveSequence(projectId,input={}){
+      const name=validName(input.name,'Sequence name');
+      return change(async s=>{
+        await project(projectId,s);
+        if(input.sequence_id){
+          const item=s.sequences.find(value=>value.id===input.sequence_id&&value.project_id===projectId);if(!item)throw new StudioStoreError('Sequence not found.',404);
+          item.name=name;if(input.episode_id!==undefined)item.episode_id=safeText(input.episode_id,128);if(Number.isSafeInteger(Number(input.order)))item.order=Number(input.order);
+          item.updated_at=stamp();return clone(item);
+        }
+        const item={id:input.sequence_id||id(),project_id:projectId,name,episode_id:safeText(input.episode_id,128),order:Number.isSafeInteger(Number(input.order))?Number(input.order):s.sequences.filter(value=>value.project_id===projectId).length+1,created_at:stamp(),updated_at:stamp()};
+        s.sequences.push(item);return clone(item);
+      });
+    },
+    async deleteSequence(sequenceId){return change(s=>{const index=s.sequences.findIndex(item=>item.id===sequenceId);if(index<0)throw new StudioStoreError('Sequence not found.',404);s.sequences.splice(index,1);for(const shot of s.shots)if(shot.sequence_id===sequenceId)shot.sequence_id='';return {deleted:sequenceId};});},
+    // Clip versions: every bound or registered clip becomes a take row keeping prompt+refs+workflow so upscales and re-generations can be guided from the original.
+    async listTakes({project_id,shot_id}={}){const s=await load();return clone(s.takes.filter(item=>(!project_id||item.project_id===project_id)&&(!shot_id||item.shot_id===shot_id)).sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at))));},
+    async saveTake(input={}){
+      return change(s=>{
+        const shot=s.shots.find(item=>item.id===input.shot_id);if(!shot)throw new StudioStoreError('Shot not found.',404);
+        const videoAsset=video=>{const asset=s.assets.find(item=>item.id===video&&item.kind==='layouts');if(!asset)throw new StudioStoreError('video_asset_id must reference a layouts asset.',404);return asset;};
+        if(input.take_id){
+          const item=s.takes.find(take=>take.id===input.take_id);if(!item)throw new StudioStoreError('Take not found.',404);
+          if(input.label!==undefined)item.label=safeText(input.label,160);if(input.notes!==undefined)item.notes=safeText(input.notes,4000);
+          if(input.parent_take_id!==undefined){if(input.parent_take_id&&!s.takes.find(take=>take.id===input.parent_take_id&&take.shot_id===item.shot_id))throw new StudioStoreError('parent_take_id must be a take of the same shot.');item.parent_take_id=input.parent_take_id||null;}
+          if(input.workflow_path!==undefined)item.workflow_path=safeText(input.workflow_path,2000);
+          if(input.canvas!==undefined){if(!input.canvas||typeof input.canvas!=='object')throw new StudioStoreError('canvas must be {width,height}.');item.canvas={width:Number(input.canvas.width)||0,height:Number(input.canvas.height)||0};}
+          if(input.video_asset_id!==undefined){const asset=videoAsset(input.video_asset_id);item.video_asset_id=asset.id;item.video_job_id=asset.job_id||asset.id;}
+          if(input.status!==undefined){
+            if(!TAKE_STATUS.has(input.status))throw new StudioStoreError('Unsupported take status.');
+            if(input.status==='selected'){for(const other of s.takes)if(other.shot_id===item.shot_id&&other.status==='selected'&&other.id!==item.id)other.status='ready';if(!item.video_asset_id&&shot.video_asset_id){item.video_asset_id=shot.video_asset_id;item.video_job_id=shot.video_job_id||'';}}
+            item.status=input.status;
+          }
+          item.updated_at=stamp();return clone(item);
+        }
+        const kind=input.kind==='upscale'?'upscale':'generation';
+        if(input.parent_take_id&&!s.takes.find(take=>take.id===input.parent_take_id&&take.shot_id===shot.id))throw new StudioStoreError('parent_take_id must be a take of the same shot.');
+        const take={id:input.take_id||id(),project_id:shot.project_id,shot_id:shot.id,label:safeText(input.label,160)||kind,parent_take_id:input.parent_take_id||null,kind,job_id:safeText(input.job_id,200),workflow_path:safeText(input.workflow_path,2000),canvas:{width:Number(input.canvas?.width)||0,height:Number(input.canvas?.height)||0},duration_s:Number.isFinite(input.duration_s)?Math.max(0.1,Math.min(3600,input.duration_s)):shot.duration_s,prompt_sections:clone(shot.prompt_sections??{}),refs:clone(shot.refs??[]),voice_refs:clone(shot.voice_refs??[]),status:'ready',video_asset_id:null,video_job_id:'',notes:safeText(input.notes,4000),created_at:stamp(),updated_at:stamp()};
+        if(input.video_asset_id){const asset=videoAsset(input.video_asset_id);take.video_asset_id=asset.id;take.video_job_id=asset.job_id||asset.id;}
+        s.takes.push(take);return clone(take);
+      });
+    },
+    // Selecting a take is the edit decision the timeline reads; it also rebinds the shot so continuation and exports follow the selection.
+    async selectTake(takeId){
+      return change(s=>{
+        const take=s.takes.find(item=>item.id===takeId);if(!take)throw new StudioStoreError('Take not found.',404);
+        if(take.status==='discarded'||!take.video_asset_id)throw new StudioStoreError('Only a take with a bound video can be selected.');
+        for(const other of s.takes)if(other.shot_id===take.shot_id&&other.status==='selected'&&other.id!==take.id)other.status='ready';
+        take.status='selected';take.updated_at=stamp();
+        const shot=s.shots.find(item=>item.id===take.shot_id);
+        if(shot){shot.video_asset_id=take.video_asset_id;shot.video_job_id=take.video_job_id||shot.video_job_id;shot.updated_at=stamp();}
+        return {take:clone(take),shot:shot?clone(shot):null};
+      });
+    },
     async listShots(projectId){const s=await load();await project(projectId,s);return clone(s.shots.filter(item=>item.project_id===projectId));},
     async getShot(shotId){const shot=(await load()).shots.find(item=>item.id===shotId);if(!shot)throw new StudioStoreError('Shot not found.',404);return clone(shot);},
     async getVideoContextStatus(shotId){const s=await load(),shot=s.shots.find(item=>item.id===shotId);if(!shot)throw new StudioStoreError('Shot not found.',404);const context=shot.video_context??{mode:'off'};const index=s.shots.findIndex(item=>item.id===shot.id),sourceId=context.mode==='previous_shot'?(context.source_shot_id||s.shots[index-1]?.id):null,source=s.shots.find(item=>item.id===sourceId&&item.project_id===shot.project_id);const blocked_reasons=context.mode==='previous_shot'&&!source?.video_asset_id?['Source shot has no linked video asset.']:[];return {mode:context.mode,source_job_id:context.source_job_id||source?.video_job_id||null,context_frames:context.context_frames??null,carry_audio:Boolean(context.carry_audio),blocked_reasons,resolution:null};},
@@ -242,10 +302,11 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
       const title=validName(input.title,'Shot title'),metadata=shotMetadata(input);
       return change(async s=>{
         await project(projectId,s);
+        if(input.sequence_id&&!s.sequences.find(item=>item.id===input.sequence_id&&item.project_id===projectId))throw new StudioStoreError('sequence_id must reference a sequence in this project.',404);
         const dialogue=input.dialogue??[];
         if(!Array.isArray(dialogue)||dialogue.length>100||dialogue.some(line=>typeof line!=='string'))throw new StudioStoreError('dialogue must be an array of at most 100 strings.');
         const refs=validateShotRefs(s,projectId,input.refs??[],input.voice_refs??[]);
-        const shot={id:id(),project_id:projectId,scene_id:metadata.scene_id??'',title,script_beat:safeText(input.script_beat,10000),shot_type:metadata.shot_type??'',camera_angle:metadata.camera_angle??'',camera_motion:metadata.camera_motion??'',composition:metadata.composition??'',duration_s:Number.isFinite(input.duration_s)?Math.max(0.1,Math.min(3600,input.duration_s)):4,dialogue:dialogue.map(line=>safeText(line,2000)).filter(Boolean),dialogue_lines:[],refs:refs.refs,voice_refs:refs.voice_refs,prompt_sections:promptSections(input.prompt_sections),layout_asset_id:null,layout_review_status:null,ref_frame_job_id:null,layout_refs:[],video_asset_id:null,video_job_id:null,h3_job_id:null,video_context:{mode:'off'},source_audio_path:null,feedback:'',blocked_reasons:[],meta:{},status:'draft',created_at:stamp(),updated_at:stamp()};
+        const shot={id:id(),project_id:projectId,scene_id:metadata.scene_id??'',title,sequence_id:safeText(input.sequence_id,128),arcs:arcTags(input.arcs)??[],script_beat:safeText(input.script_beat,10000),shot_type:metadata.shot_type??'',camera_angle:metadata.camera_angle??'',camera_motion:metadata.camera_motion??'',composition:metadata.composition??'',duration_s:Number.isFinite(input.duration_s)?Math.max(0.1,Math.min(3600,input.duration_s)):4,dialogue:dialogue.map(line=>safeText(line,2000)).filter(Boolean),dialogue_lines:[],refs:refs.refs,voice_refs:refs.voice_refs,prompt_sections:promptSections(input.prompt_sections),layout_asset_id:null,layout_review_status:null,ref_frame_job_id:null,layout_refs:[],video_asset_id:null,video_job_id:null,h3_job_id:null,video_context:{mode:'off'},source_audio_path:null,feedback:'',blocked_reasons:[],meta:{},status:'draft',created_at:stamp(),updated_at:stamp()};
         s.shots.push(shot);return clone(shot);
       });
     },
@@ -253,7 +314,13 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
       const metadata=shotMetadata(input);
       return change(s=>{
         const shot=s.shots.find(value=>value.id===shotId);if(!shot)throw new StudioStoreError('Shot not found.',404);
+        const previousVideo=shot.video_asset_id;
         Object.assign(shot,metadata);
+        if(input.sequence_id!==undefined){
+          if(input.sequence_id===null||input.sequence_id==='')shot.sequence_id='';
+          else{if(!s.sequences.find(item=>item.id===input.sequence_id&&item.project_id===shot.project_id))throw new StudioStoreError('sequence_id must reference a sequence in this project.',404);shot.sequence_id=input.sequence_id;}
+        }
+        const tags=arcTags(input.arcs);if(tags!==undefined)shot.arcs=tags;
         if(input.title!==undefined)shot.title=validName(input.title,'Shot title');
         if(input.script_beat!==undefined)shot.script_beat=safeText(input.script_beat,10000);
         if(input.duration_s!==undefined){if(!Number.isFinite(input.duration_s)||input.duration_s<=0||input.duration_s>3600)throw new StudioStoreError('Shot duration must be between 0 and 3600 seconds.');shot.duration_s=input.duration_s;}
@@ -266,7 +333,13 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
         }
         if(input.video_asset_id!==undefined){
           if(input.video_asset_id===null){shot.video_asset_id=null;shot.video_job_id=null;}
-          else{const asset=s.assets.find(item=>item.id===input.video_asset_id&&item.kind==='layouts'&&(item.project_id===shot.project_id||item.project_id===null)&&item.files?.master);const file=asset&&s.files.find(item=>item.path===asset.files.master);if(!file?.mime?.startsWith('video/'))throw new StudioStoreError('video_asset_id must reference a project-available layout asset with a video master file.');shot.video_asset_id=asset.id;shot.video_job_id=asset.job_id||asset.id;}
+          else{const asset=s.assets.find(item=>item.id===input.video_asset_id&&item.kind==='layouts'&&(item.project_id===shot.project_id||item.project_id===null)&&item.files?.master);const file=asset&&s.files.find(item=>item.path===asset.files.master);if(!file?.mime?.startsWith('video/'))throw new StudioStoreError('video_asset_id must reference a project-available layout asset with a video master file.');shot.video_asset_id=asset.id;shot.video_job_id=asset.job_id||asset.id;
+            // Every newly bound clip is a take automatically — the prompt+refs snapshot is what guides upscales and re-generations later.
+            if(shot.video_asset_id!==previousVideo&&!s.takes.some(take=>take.video_asset_id===shot.video_asset_id&&take.shot_id===shot.id)){
+              for(const other of s.takes)if(other.shot_id===shot.id&&other.status==='selected')other.status='ready';
+              s.takes.push({id:id(),project_id:shot.project_id,shot_id:shot.id,label:'auto',kind:'generation',parent_take_id:null,job_id:shot.video_job_id||'',workflow_path:'',canvas:{width:0,height:0},duration_s:shot.duration_s,prompt_sections:clone(shot.prompt_sections??{}),refs:clone(shot.refs??[]),voice_refs:clone(shot.voice_refs??[]),status:'selected',video_asset_id:shot.video_asset_id,video_job_id:shot.video_job_id||'',notes:'Auto-registered at clip bind; add workflow_path for upscale guidance.',created_at:stamp(),updated_at:stamp()});
+            }
+          }
         }
         if(input.video_context!==undefined)shot.video_context=validateVideoContext(s,shot,input.video_context);
         if(input.feedback!==undefined)shot.feedback=safeText(input.feedback,10000);

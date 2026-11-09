@@ -191,6 +191,13 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         Readable.fromWeb(upstream.body).pipe(res);return;
       }
       if(path==='/api/file'&&['GET','HEAD'].includes(req.method)){await serveFileRoute(req,res,url,{workspace:join(store.root,'..'),sessionIndex});return;}
+      // Multi-season spine + clip versions for the episode timeline (season/episode live on the Story wall).
+      if(path==='/api/library/sequences'&&req.method==='GET'){sendJson(res,200,{sequences:await store.listSequences(project.id),takes:await store.listTakes({project_id:project.id})});return;}
+      if(path==='/api/library/sequence'&&req.method==='POST'){sendJson(res,201,await store.saveSequence(project.id,await readJson(req,controller.signal)));return;}
+      match=/^\/api\/library\/sequence\/([A-Za-z0-9_-]{1,128})$/.exec(path);
+      if(match&&req.method==='DELETE'){sendJson(res,200,await store.deleteSequence(match[1]));return;}
+      if(path==='/api/library/take'&&req.method==='POST'){sendJson(res,201,await store.saveTake(await readJson(req,controller.signal)));return;}
+      if(path==='/api/library/take/select'&&req.method==='POST'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.selectTake(String(b.take_id??'')));return;}
       match=/^\/api\/(actors|scenes|props)(?:\/(generate|jobs)(?:\/([A-Za-z0-9_-]{1,128})(?:\/(cancel|save))?)?)?$/.exec(path);
       if(match){
         const [,kind,section,jobId,action]=match;
