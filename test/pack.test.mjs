@@ -24,6 +24,12 @@ test('release archive excludes personal media and works without workspace skills
   for(const id of ['persona','agent-instructions','time-context','tool-bash','tool-pwsh','tool-fs','tool-fs-search','tool-jobs','skill-filesystem','tool-skill','tool-ask-user','compaction','present'])assert.match(preset,new RegExp(`^\\s+- id: ${id}$`,'m'));
   assert.match(preset,/- id: tool-bash[\s\S]*?disabled: !!js process\.platform === 'win32'/);assert.match(preset,/- id: tool-pwsh[\s\S]*?disabled: !!js process\.platform !== 'win32'/);
   assert.match(preset,/- id: tool-ask-user[\s\S]*?mode: timed[\s\S]*?timeout: 180/);assert.doesNotMatch(preset,/^\s+name: dsh-director$/m);
+   // A group-list entry REPLACES the default entry, so every enabled tool must carry its
+   // required config here or preset-director fails validation ("Failed to load" + resume errors).
+   assert.match(preset,/id: plan-mode[\s\S]*?config:[\s\S]*?section: >/);
+   assert.match(preset,/id: tool-subagent-fork[\s\S]*?config:[\s\S]*?provider: fork/);
+   assert.match(preset,/id: workflow-ptc[\s\S]*?config:[\s\S]*?provider: spawn/);
+   assert.match(preset,/id: tool-todo[\s\S]*?config:[\s\S]*?allowParallelInProgress: true/);
   // A shared archive must advertise a runnable helper in its own installation,
   // not a source-checkout path or a dependency supplied only by this machine.
   const definitions=[];
