@@ -198,6 +198,13 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       if(match&&req.method==='DELETE'){sendJson(res,200,await store.deleteSequence(match[1]));return;}
       if(path==='/api/library/take'&&req.method==='POST'){sendJson(res,201,await store.saveTake(await readJson(req,controller.signal)));return;}
       if(path==='/api/library/take/select'&&req.method==='POST'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.selectTake(String(b.take_id??'')));return;}
+      if(path==='/api/library/timeline'&&req.method==='GET'){
+        const shots=await store.listShots(project.id),sequences=await store.listSequences(project.id),takes=await store.listTakes({project_id:project.id});
+        const assets=new Map((await store.listAssets({project_id:project.id,include_unassigned:true})).map(item=>[item.id,item]));
+        const files=new Map((await store.snapshot()).files.map(item=>[item.path,item]));
+        const clips=Object.fromEntries(shots.map(shot=>{const asset=shot.video_asset_id?assets.get(shot.video_asset_id):null,file=asset?.files?.master?files.get(asset.files.master):null;return [shot.id,file?{asset_id:asset.id,path:file.path,filename:file.filename}:null];}));
+        sendJson(res,200,{shots,sequences,takes,clips,episodes:(await storyStoreFor(store).story()).episodes});return;
+      }
       match=/^\/api\/(actors|scenes|props)(?:\/(generate|jobs)(?:\/([A-Za-z0-9_-]{1,128})(?:\/(cancel|save))?)?)?$/.exec(path);
       if(match){
         const [,kind,section,jobId,action]=match;

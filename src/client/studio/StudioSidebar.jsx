@@ -17,3 +17,4 @@ function StudioTab({area,label,sessionId,sendDshRequest}){
 export function AssetsTab({sessionId,sendDshRequest}={}){return <StudioTab area="assets" label="Assets" sessionId={sessionId} sendDshRequest={sendDshRequest}/>;}
 export function ProductionTab({sessionId,sendDshRequest}={}){return <StudioTab area="production" label="Production" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
 export function StoryTab({sessionId,sendDshRequest}={}){return <StudioTab area="story" label="Story" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
+export function TimelineTab({sessionId,sendDshRequest}={}){return <StudioTab area="timeline" label="Timeline" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}

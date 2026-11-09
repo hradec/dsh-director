@@ -20,6 +20,20 @@ async function setup(t,{reject,fetchImpl,sessionIndex}={}){
 }
 const json=(base,path,init={})=>fetch(base+path,{...init,headers:{'content-type':'application/json','x-director-session':'session-a',...init.headers}});
 
+test('timeline board routes serve sequences, arc tags and story episodes for the Timeline tab',async t=>{
+  const {base,store,project}=await setup(t);
+  const episode=await (await json(base,'/api/story/episode',{method:'POST',body:JSON.stringify({title:'Pilot',season:1,order:1})})).json();
+  const sequence=await (await json(base,'/api/library/sequence',{method:'POST',body:JSON.stringify({name:'Cold open',episode_id:episode.id,order:1})})).json();
+  const shot=await store.saveShot(project.id,{title:'S01',sequence_id:sequence.id,arcs:['arc1']});
+  const board=await (await json(base,'/api/library/timeline')).json();
+  assert.equal(board.sequences[0].name,'Cold open');assert.equal(board.shots[0].title,'S01');assert.deepEqual(board.shots[0].arcs,['arc1']);
+  assert.equal(board.clips[shot.id],null);assert.deepEqual(board.takes,[]);assert.equal(board.episodes[0].title,'Pilot');
+  const moved=await (await json(base,`/api/shots/${shot.id}`,{method:'PATCH',body:JSON.stringify({sequence_id:sequence.id,arcs:['arc2','arc2'],duration_s:7.5})})).json();
+  assert.deepEqual(moved.arcs,['arc2']);assert.equal(moved.duration_s,7.5);
+  const removed=await json(base,`/api/library/sequence/${sequence.id}`,{method:'DELETE'});assert.equal(removed.status,200);
+  assert.equal((await store.getShot(shot.id)).sequence_id,'');
+});
+
 test('story wall routes round-trip decisions, drag rules and chronology lint',async t=>{
   const {base}=await setup(t);
   const logged=await (await json(base,'/api/story/decision',{method:'POST',body:JSON.stringify({handle:'Catten dies in act 1',kind:'decided',arc:'Act 1',body:'ngokang kills him'})})).json();
