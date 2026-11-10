@@ -127,6 +127,8 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
     if(!Array.isArray(state.jobs))state.jobs=[];// older workspaces predate generation jobs; widen in place on next write.
     if(!Array.isArray(state.sequences))state.sequences=[];// multi-season hierarchy (season/episode live on the Story wall).
     if(!Array.isArray(state.takes))state.takes=[];// clip versions: one row per generation/upscale so prompts+refs survive.
+    // ponytail: one-time backfill for shots written before 0.2.24 — creation array order becomes explicit order; persisted on next write.
+    state.shots.forEach((shot,index)=>{if(!Number.isSafeInteger(shot.order))shot.order=index+1;});
     return state;
   }
   async function change(mutator){
