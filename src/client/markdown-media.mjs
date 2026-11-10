@@ -5,7 +5,9 @@
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif|bmp|ico)$/i;
 const VIDEO_EXT = /\.(mp4|webm|mov|mkv|m4v)$/i;
 const AUDIO_EXT = /\.(mp3|wav|ogg|flac|aac|m4a)$/i;
-const SERVED_PREFIX = /^\/(director-studio|api|assets|front|avatars|app)(\/|\b)/;
+// ponytail: every path the web server itself serves must be whitelisted here — /director-media is
+// the media card route; rewriting it into /api/file?path=… 404s and blanks every review card image.
+const SERVED_PREFIX = /^\/(director-studio|director-media|api|assets|front|avatars|app)(\/|\b)/;
 
 export function startMediaPathFixer(doc, { MutationObserver = doc.defaultView?.MutationObserver } = {}) {
   const target = src => `/director-studio/api/file?path=${encodeURIComponent(src)}`;

@@ -205,5 +205,14 @@
               allowParallelInProgress: true
           - id: tool-web
             name: '@deepseek-ai/dsh-tool-web'
+            config:
+              search: false
+          - id: dsh-web-search-local
+            name: '@local/dsh-web-search-local'
+            config:
+              totalTimeoutMs: 20000
+              maxResults: 8
+              maxQueries: 4
+              browser: true
           - id: present
             name: '@deepseek-ai/dsh-tool-present'
