@@ -10,11 +10,25 @@ async function load(){
   const built=await build({entryPoints:['src/client/studio/vendor/shared/shot-tree.ts'],bundle:true,write:false,format:'cjs',platform:'node'});
   const module={exports:{}};
   vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:createRequire(import.meta.url)});
-  return module.exports.buildShotTree;
+  return module.exports;
 }
 
+test('filter matches title/beat/type/camera motion/arc tag; empty text passes everything',async()=>{
+  const {filterShots}=await load();
+  const shots=[
+    {id:'a',title:'Crane silhouette',script_beat:'Opening',shot_type:'extreme wide',camera_motion:'tilt up',arcs:['arc1']},
+    {id:'b',title:'Whip-pan bridge',script_beat:'',shot_type:'bridge',camera_motion:'whip pan',arcs:['test']},
+  ];
+  assert.deepEqual(filterShots(shots,'').map(s=>s.id),['a','b']);
+  assert.deepEqual(filterShots(shots,'CRANE').map(s=>s.id),['a']);
+  assert.deepEqual(filterShots(shots,'whip').map(s=>s.id),['b']);
+  assert.deepEqual(filterShots(shots,'arc1').map(s=>s.id),['a']);
+  assert.deepEqual(filterShots(shots,'tilt up').map(s=>s.id),['a']);
+  assert.deepEqual(filterShots(shots,'zzz').map(s=>s.id),[]);
+});
+
 test('shots nest under season/episode/sequence via sequence_id; homeless shots stay loose',async()=>{
-  const buildShotTree=await load();
+  const {buildShotTree}=await load();
   const episodes=[{id:'ep1',title:'Pilot',season:1,order:1},{id:'ep2',title:'S1E2',season:1,order:2},{id:'ep9',title:'S2E1',season:2,order:1}];
   const sequences=[
     {id:'q1',name:'Cold open',episode_id:'ep1',order:1},

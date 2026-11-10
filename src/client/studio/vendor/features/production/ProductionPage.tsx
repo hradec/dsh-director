@@ -12,7 +12,7 @@ import {
   type ShotVoiceRef,
 } from "../../shared/api/types";
 import { PageShell } from "../../shared/components/PageShell";
-import { buildShotTree } from "../../shared/shot-tree";
+import { buildShotTree, filterShots } from "../../shared/shot-tree";
 import { useProject } from "../../shared/project/ProjectContext";
 import { promptReady, shotWorkflowStatus } from "../../shared/shotWorkflowStatus";
 import {
@@ -172,6 +172,8 @@ export function ProductionPage({
   // sequences in the studio store; both arrive through the timeline route in one call.
   const [hierarchy, setHierarchy] = useState<{ episodes: { id: string; title: string; season: number; order: number }[]; sequences: { id: string; name: string; episode_id: string; order: number }[] }>({ episodes: [], sequences: [] });
   const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(() => new Set());
+  const [shotFilter, setShotFilter] = useState("");
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [projectLoad, setProjectLoad] = useState<ProjectLoadState>(() => ({
     projectId,
     status: projectId ? "loading" : "idle",
@@ -265,9 +267,39 @@ export function ProductionPage({
     return () => { cancelled = true; };
   }, [projectId, shots]);
   const shotTree = useMemo(
-    () => buildShotTree(shots as (Shot & { episode_id?: string | null; sequence_id?: string | null })[], hierarchy.episodes, hierarchy.sequences),
-    [shots, hierarchy],
+    () => buildShotTree(filterShots(shots as (Shot & { episode_id?: string | null; sequence_id?: string | null })[], shotFilter), hierarchy.episodes, hierarchy.sequences),
+    [shots, hierarchy, shotFilter],
   );
+  const draggingShot = (event: React.DragEvent) => Array.from(event.dataTransfer.types).includes("text/dsh-shot");
+  const beginShotDrag = (event: React.DragEvent, shotId: string) => {
+    event.dataTransfer.setData("text/dsh-shot", shotId);
+    event.dataTransfer.effectAllowed = "move";
+  };
+  const moveShot = async (shotId: string, sequenceId: string) => {
+    const shot = shots.find((s) => s.id === shotId) as (Shot & { sequence_id?: string }) | undefined;
+    if (!shot || (shot.sequence_id ?? "") === sequenceId) return;
+    try {
+      replaceShot(await patchShot(shotId, { sequence_id: sequenceId }));
+    } catch (err) {
+      console.error("re-sequence failed", err);
+    }
+  };
+  const visibleShotCount = shotTree.seasons.reduce((n, [, nodes]) => n + nodes.reduce((m, node) => m + node.groups.reduce((g, group) => g + group.shots.length, 0), 0), 0) + shotTree.loose.length;
+  const headDrop = (key: string, sequenceId: string) => ({
+    onDragOver: (event: React.DragEvent) => {
+      if (!draggingShot(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      if (dropTarget !== key) setDropTarget(key);
+    },
+    onDragLeave: () => setDropTarget((current) => (current === key ? null : current)),
+    onDrop: (event: React.DragEvent) => {
+      if (!draggingShot(event)) return;
+      event.preventDefault();
+      setDropTarget(null);
+      void moveShot(event.dataTransfer.getData("text/dsh-shot"), sequenceId);
+    },
+  });
 
   const loadProject = useCallback(async (id: string) => {
     const detail = await getProject(id);
@@ -905,8 +937,15 @@ export function ProductionPage({
         <aside className="split-side">
           <div className="section-card compact-card">
             <div className="section-card-head">
-              <h2 className="section-card-title">Shots</h2>
-              <span className="muted tiny">{projectLoading ? "Loading…" : shots.length}</span>
+              <input
+                type="search"
+                className="shot-filter-input"
+                placeholder="Filter shots — title, beat, type, camera, arc…"
+                aria-label="Filter shots"
+                value={shotFilter}
+                onChange={(event) => setShotFilter(event.target.value)}
+              />
+              <span className="muted tiny">{projectLoading ? "Loading…" : shotFilter.trim() ? `${visibleShotCount} / ${shots.length}` : shots.length}</span>
             </div>
             {!projectId ? (
               <p className="empty-copy">No project selected.</p>
@@ -918,13 +957,16 @@ export function ProductionPage({
               <div className="shot-table-wrap" role="tree" aria-label="Production hierarchy">
                 {shotTree.seasons.map(([season, episodes]) => {
                   const key = `s${season}`;
+                  const seasonCount = episodes.reduce((n, node) => n + node.groups.reduce((m, group) => m + group.shots.length, 0), 0);
+                  if (shotFilter.trim() && seasonCount === 0) return null;
                   const open = !collapsedNodes.has(key);
                   return (
                     <div key={key}>
                       <button type="button" className="production-tree-head" onClick={() => toggleNode(key)} aria-expanded={open}>
-                        {`Season ${season}`} <span className="muted tiny">{episodes.reduce((n, node) => n + node.groups.reduce((m, group) => m + group.shots.length, 0), 0)} shots</span>
+                        {`Season ${season}`} <span className="muted tiny">{seasonCount} shots</span>
                       </button>
                       {open ? episodes.map(({ episode, groups }) => {
+                        if (shotFilter.trim() && !groups.some((group) => group.shots.length)) return null;
                         const ekey = `e${episode.id}`;
                         const eopen = !collapsedNodes.has(ekey);
                         return (
@@ -933,15 +975,16 @@ export function ProductionPage({
                               {episode.title || `E${episode.order}`} <span className="muted tiny">{`E${episode.order}`}</span>
                             </button>
                             {eopen ? groups.map((group, index) => {
+                              if (shotFilter.trim() && group.shots.length === 0) return null;
                               const qkey = `q${group.sequence ? group.sequence.id : `${episode.id}-none-${index}`}`;
                               const qopen = !collapsedNodes.has(qkey);
                               return (
                                 <div key={qkey} style={{ marginLeft: "1.4rem" }}>
-                                  <button type="button" className="production-tree-head" onClick={() => toggleNode(qkey)} aria-expanded={qopen}>
+                                  <button type="button" className={dropTarget === qkey ? "production-tree-head drop-over" : "production-tree-head"} onClick={() => toggleNode(qkey)} aria-expanded={qopen} {...headDrop(qkey, group.sequence?.id ?? "")}>
                                     {group.sequence ? group.sequence.name : "No sequence"} <span className="muted tiny">{group.shots.length}</span>
                                   </button>
                                   {qopen ? group.shots.map((s) => (
-                                    <div key={s.id} className={s.id === selectedId ? "production-tree-row selected" : "production-tree-row"} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)} style={{ paddingLeft: "2.1rem" }}>
+                                    <div key={s.id} className={s.id === selectedId ? "production-tree-row selected" : "production-tree-row"} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)} draggable onDragStart={(event) => beginShotDrag(event, s.id)} style={{ paddingLeft: "2.1rem" }}>
                                       <span className="shot-table-title">{s.title || s.id}</span>
                                       <span className="muted tiny" style={{ marginLeft: ".4rem" }}>{s.duration_s}s</span>
                                       <span style={{ marginLeft: ".5rem" }}><ProductionStatusChip shot={s} /></span>
@@ -958,11 +1001,11 @@ export function ProductionPage({
                 })}
                 {shotTree.loose.length ? (
                   <div>
-                    <button type="button" className="production-tree-head" onClick={() => toggleNode("loose")} aria-expanded={!collapsedNodes.has("loose")}>
+                    <button type="button" className={dropTarget === "loose" ? "production-tree-head drop-over" : "production-tree-head"} onClick={() => toggleNode("loose")} aria-expanded={!collapsedNodes.has("loose")} {...headDrop("loose", "")}>
                       Unassigned <span className="muted tiny">{shotTree.loose.length}</span>
                     </button>
                     {!collapsedNodes.has("loose") ? shotTree.loose.map((s) => (
-                      <div key={s.id} className={s.id === selectedId ? "production-tree-row selected" : "production-tree-row"} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)}>
+                      <div key={s.id} className={s.id === selectedId ? "production-tree-row selected" : "production-tree-row"} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)} draggable onDragStart={(event) => beginShotDrag(event, s.id)}>
                         <span className="shot-table-title">{s.title || s.id}</span>
                         <span className="muted tiny" style={{ marginLeft: ".4rem" }}>{s.duration_s}s</span>
                         <span style={{ marginLeft: ".5rem" }}><ProductionStatusChip shot={s} /></span>

@@ -61,3 +61,19 @@ export function buildShotTree<T extends TreeShot>(shots: T[], episodes: TreeEpis
   });
   return { seasons: [...seasons.entries()], loose };
 }
+
+export interface FilterableShot extends TreeShot {
+  title?: string;
+  script_beat?: string;
+  shot_type?: string;
+  camera_motion?: string;
+  arcs?: string[];
+}
+
+/** ponytail: single free-text match over the fields the tree shows — one box, no facet UI. */
+export function filterShots<T extends FilterableShot>(shots: T[], text: string): T[] {
+  const needle = text.trim().toLowerCase();
+  if (!needle) return shots;
+  return shots.filter((shot) => [shot.title, shot.script_beat, shot.shot_type, shot.camera_motion, (shot.arcs ?? []).join(" ")]
+    .some((field) => String(field ?? "").toLowerCase().includes(needle)));
+}
