@@ -72,7 +72,7 @@ test('prune: plain word matches a node name (whole subtree) or shot fields',asyn
   assert.deepEqual(seasonWord,[[1,['ep1','ep2']],[2,['ep9']]]);
   assert.equal(JSON.stringify(shape(pruneShotTree(tree,'Season'))),'[[1,[["ep1",[["s1","s2"],["s3"]]],["ep2",[["s5"]]]]],[2,[["ep9",[]]]]]');
   assert.deepEqual(JSON.parse(JSON.stringify(shape(pruneShotTree(tree,'Cold')))),[[1,[['ep1',[['s1','s2']]]]]]);
-  assert.deepEqual(pruneShotTree(tree,'Splash').loose,[]);
+  assert.deepEqual(JSON.parse(JSON.stringify(pruneShotTree(tree,'Splash').loose)),[]);
   assert.equal(pruneShotTree(tree,'Splash').seasons[0][1][0].groups[0].shots.length,1);
 });
 
@@ -84,4 +84,12 @@ test('prune: slash paths align Season/Episode/Sequence/Shot, empty segment skips
   assert.deepEqual(JSON.parse(JSON.stringify(shape(pruneShotTree(tree,'Season 1//cold')))),[[1,[['ep1',[['s1','s2']]]]]]);
   assert.deepEqual(JSON.parse(JSON.stringify(shape(pruneShotTree(tree,'Season 1//cold/splash')))),[[1,[['ep1',[['s1']]]]]]);
   assert.deepEqual(JSON.parse(JSON.stringify(pruneShotTree(tree,'zzz/qqq').seasons)),[]);
+});
+
+test('buildShotTree sorts group shots by explicit order',async()=>{
+  const {buildShotTree}=await load();
+  const episodes=[{id:'ep1',title:'Pilot',season:1,order:1}];
+  const sequences=[{id:'q1',name:'Cold open',episode_id:'ep1',order:1}];
+  const tree=buildShotTree([{id:'s1',sequence_id:'q1',order:5},{id:'s2',sequence_id:'q1',order:1}],episodes,sequences);
+  assert.equal(JSON.stringify(tree.seasons[0][1][0].groups[0].shots.map(s=>s.id)),'["s2","s1"]');
 });

@@ -37,6 +37,8 @@ export interface EpisodeNode<T extends TreeShot> {
 }
 
 export function buildShotTree<T extends TreeShot>(shots: T[], episodes: TreeEpisode[], sequences: TreeSequence[]) {
+  // ponytail: sort defensively by explicit order so a drag re-order renders even from unsorted local state.
+  const ordered = [...shots].sort((a, b) => ((a.order ?? 0) - (b.order ?? 0)) || String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")));
   const sequenceById = new Map(sequences.map((q) => [q.id, q] as const));
   const episodeOf = (shot: T): string => {
     if (shot.sequence_id) {
@@ -51,13 +53,13 @@ export function buildShotTree<T extends TreeShot>(shots: T[], episodes: TreeEpis
     const groups: ShotGroup<T>[] = [...sequences]
       .filter((q) => q.episode_id === episode.id)
       .sort((a, b) => a.order - b.order)
-      .map((q) => ({ sequence: q, shots: shots.filter((s) => s.sequence_id === q.id) }));
-    const unsequenced = shots.filter((s) => (!s.sequence_id || !sequenceById.has(s.sequence_id)) && episodeOf(s) === episode.id);
+      .map((q) => ({ sequence: q, shots: ordered.filter((s) => s.sequence_id === q.id) }));
+    const unsequenced = ordered.filter((s) => (!s.sequence_id || !sequenceById.has(s.sequence_id)) && episodeOf(s) === episode.id);
     if (unsequenced.length) groups.push({ sequence: null, shots: unsequenced });
     if (!seasons.has(episode.season)) seasons.set(episode.season, []);
     seasons.get(episode.season)!.push({ episode, groups });
   }
-  const loose = shots.filter((s) => {
+  const loose = ordered.filter((s) => {
     const ep = episodeOf(s);
     return !ep || !episodeIds.has(ep);
   });

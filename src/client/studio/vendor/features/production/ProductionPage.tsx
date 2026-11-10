@@ -294,7 +294,7 @@ export function ProductionPage({
       console.error("move failed", err);
     }
   };
-  const insertBefore = async (shotId: string, beforeId: string) => {
+  const insertBefore = async (shotId: string, beforeId: string, after = false) => {
     if (shotId === beforeId) return;
     const before = (shots as ShotExt[]).find((s) => s.id === beforeId);
     const moved = (shots as ShotExt[]).find((s) => s.id === shotId);
@@ -302,7 +302,7 @@ export function ProductionPage({
     const target = { sequence_id: before.sequence_id ?? "", episode_id: before.sequence_id ? "" : before.episode_id ?? "" };
     const bucket = (shots as ShotExt[]).filter((s) => bucketKeyOf(s) === targetKeyOf(target) && s.id !== shotId);
     const index = bucket.findIndex((s) => s.id === beforeId);
-    bucket.splice(index < 0 ? bucket.length : index, 0, moved);
+    bucket.splice(index < 0 ? bucket.length : index + (after ? 1 : 0), 0, moved);
     try {
       await patchShot(shotId, { sequence_id: target.sequence_id || null, episode_id: target.episode_id } as never);
       await fetch("/api/shots/reorder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shot_ids: bucket.map((s) => s.id) }) });
@@ -327,6 +327,28 @@ export function ProductionPage({
       dragShotRef.current = null;
       setDropTarget(null);
       if (shotId) onDropShot(shotId);
+    },
+  });
+  // ponytail: cursor above/below the row midline picks the insertion side — the line you see is the line you get.
+  const rowDropZone = (rowId: string) => ({
+    onDragOver: (event: React.DragEvent) => {
+      if (!draggingShot()) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      const rect = event.currentTarget.getBoundingClientRect();
+      const key = `r${rowId}-${event.clientY > rect.top + rect.height / 2 ? "a" : "b"}`;
+      if (dropTarget !== key) setDropTarget(key);
+    },
+    onDragLeave: () => setDropTarget((current) => (current.startsWith(`r${rowId}-`) ? null : current)),
+    onDrop: (event: React.DragEvent) => {
+      if (!draggingShot()) return;
+      event.preventDefault();
+      const rect = event.currentTarget.getBoundingClientRect();
+      const after = event.clientY > rect.top + rect.height / 2;
+      const shotId = dragShotRef.current;
+      dragShotRef.current = null;
+      setDropTarget(null);
+      if (shotId) void insertBefore(shotId, rowId, after);
     },
   });
 
@@ -1010,7 +1032,7 @@ export function ProductionPage({
                                     {group.sequence ? group.sequence.name : "No sequence"} <span className="muted tiny">{group.shots.length}</span>
                                   </button>
                                   {qopen ? group.shots.map((s) => (
-                                    <div key={s.id} className={dropTarget === `r${s.id}` ? "production-tree-row drop-over" : s.id === selectedId ? "production-tree-row selected" : "production-tree-row"} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)} draggable onDragStart={(event) => beginShotDrag(event, s.id)} onDragEnd={() => { dragShotRef.current = null; }} {...dropZone(`r${s.id}`, (shotId) => void insertBefore(shotId, s.id))} style={{ paddingLeft: "2.1rem" }}>
+                                    <div key={s.id} className={`${dropTarget === `r${s.id}-b` ? " insert-before" : dropTarget === `r${s.id}-a` ? " insert-after" : ""}${s.id === selectedId ? " production-tree-row selected" : " production-tree-row"}`} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)} draggable onDragStart={(event) => beginShotDrag(event, s.id)} onDragEnd={() => { dragShotRef.current = null; }} {...rowDropZone(s.id)} style={{ paddingLeft: "2.1rem" }}>
                                       <span className="shot-table-title">{s.title || s.id}</span>
                                       <span className="muted tiny" style={{ marginLeft: ".4rem" }}>{s.duration_s}s</span>
                                       <span style={{ marginLeft: ".5rem" }}><ProductionStatusChip shot={s} /></span>
@@ -1031,7 +1053,7 @@ export function ProductionPage({
                       Unassigned <span className="muted tiny">{shotTree.loose.length}</span>
                     </button>
                     {!collapsedNodes.has("loose") ? shotTree.loose.map((s) => (
-                      <div key={s.id} className={dropTarget === `r${s.id}` ? "production-tree-row drop-over" : s.id === selectedId ? "production-tree-row selected" : "production-tree-row"} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)} draggable onDragStart={(event) => beginShotDrag(event, s.id)} onDragEnd={() => { dragShotRef.current = null; }} {...dropZone(`r${s.id}`, (shotId) => void insertBefore(shotId, s.id))}>
+                      <div key={s.id} className={`${dropTarget === `r${s.id}-b` ? " insert-before" : dropTarget === `r${s.id}-a` ? " insert-after" : ""}${s.id === selectedId ? " production-tree-row selected" : " production-tree-row"}`} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)} draggable onDragStart={(event) => beginShotDrag(event, s.id)} onDragEnd={() => { dragShotRef.current = null; }} {...rowDropZone(s.id)}>
                         <span className="shot-table-title">{s.title || s.id}</span>
                         <span className="muted tiny" style={{ marginLeft: ".4rem" }}>{s.duration_s}s</span>
                         <span style={{ marginLeft: ".5rem" }}><ProductionStatusChip shot={s} /></span>

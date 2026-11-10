@@ -83,3 +83,10 @@ test('shots carry order + episode_id; reorderShots renumbers one bucket only',as
   const ordered=await store.patchShot(c.id,{order:99});
   assert.equal(ordered.order,99);
 });
+
+test('getProject returns shots in explicit order (0.2.26: unsorted getProject hid re-orders)',async ()=>{
+  const {store,project}=await seeded();
+  await store.saveShot(project.id,{title:'X',order:50});
+  await store.saveShot(project.id,{title:'Y',order:1});
+  assert.deepEqual((await store.getProject(project.id)).shots.map(s=>s.title),['S01','Y','X']);
+});
