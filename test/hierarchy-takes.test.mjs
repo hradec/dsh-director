@@ -65,3 +65,21 @@ test('takes chain generation to upscale and selecting one rebinds the shot',asyn
   const reselected=await store.selectTake(first.id);
   assert.equal(reselected.shot.video_asset_id,video.id);
 });
+
+test('shots carry order + episode_id; reorderShots renumbers one bucket only',async ()=>{
+  const {store,project}=await seeded();
+  const a=await store.saveShot(project.id,{title:'A'});
+  const b=await store.saveShot(project.id,{title:'B'});
+  const c=await store.saveShot(project.id,{title:'C',episode_id:'ep-9'});
+  assert.equal(a.order,2); // ponytail: default = creation counter, keeps legacy insertion order.
+  assert.equal(c.episode_id,'ep-9');
+  await assert.rejects(store.reorderShots([c.id,a.id]),/same project and bucket/);
+  await assert.rejects(store.patchShot(c.id,{order:0}),/positive safe integer/);
+  await store.reorderShots([b.id,a.id]);
+  const loose=(await store.listShots(project.id)).filter(s=>s.sequence_id==='');
+  assert.deepEqual(loose.map(s=>s.title),['B','A','C']);
+  const cleared=await store.patchShot(c.id,{episode_id:''});
+  assert.equal(cleared.episode_id,'');
+  const ordered=await store.patchShot(c.id,{order:99});
+  assert.equal(ordered.order,99);
+});

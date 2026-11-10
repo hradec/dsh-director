@@ -12,7 +12,7 @@ import {
   type ShotVoiceRef,
 } from "../../shared/api/types";
 import { PageShell } from "../../shared/components/PageShell";
-import { buildShotTree, filterShots } from "../../shared/shot-tree";
+import { buildShotTree, pruneShotTree } from "../../shared/shot-tree";
 import { useProject } from "../../shared/project/ProjectContext";
 import { promptReady, shotWorkflowStatus } from "../../shared/shotWorkflowStatus";
 import {
@@ -267,37 +267,66 @@ export function ProductionPage({
     return () => { cancelled = true; };
   }, [projectId, shots]);
   const shotTree = useMemo(
-    () => buildShotTree(filterShots(shots as (Shot & { episode_id?: string | null; sequence_id?: string | null })[], shotFilter), hierarchy.episodes, hierarchy.sequences),
+    () => pruneShotTree(buildShotTree(shots as (Shot & { episode_id?: string | null; sequence_id?: string | null })[], hierarchy.episodes, hierarchy.sequences), shotFilter),
     [shots, hierarchy, shotFilter],
   );
-  const draggingShot = (event: React.DragEvent) => Array.from(event.dataTransfer.types).includes("text/dsh-shot");
+  // ponytail: drag id kept in a ref (Firefox unreliable custom-MIME reads during dragover);
+  // text/plain is the fallback the browser needs. Drops hit moveTo/insertBefore.
+  const dragShotRef = useRef<string | null>(null);
+  const draggingShot = () => dragShotRef.current !== null;
   const beginShotDrag = (event: React.DragEvent, shotId: string) => {
-    event.dataTransfer.setData("text/dsh-shot", shotId);
+    dragShotRef.current = shotId;
+    event.dataTransfer.setData("text/plain", shotId);
     event.dataTransfer.effectAllowed = "move";
   };
-  const moveShot = async (shotId: string, sequenceId: string) => {
-    const shot = shots.find((s) => s.id === shotId) as (Shot & { sequence_id?: string }) | undefined;
-    if (!shot || (shot.sequence_id ?? "") === sequenceId) return;
+  type ShotExt = Shot & { sequence_id?: string | null; episode_id?: string | null; order?: number };
+  const bucketKeyOf = (shot: ShotExt) => (shot.sequence_id ? `s:${shot.sequence_id}` : shot.episode_id ? `e:${shot.episode_id}` : "loose");
+  const targetKeyOf = (target: { sequence_id: string; episode_id: string }) => (target.sequence_id ? `s:${target.sequence_id}` : target.episode_id ? `e:${target.episode_id}` : "loose");
+  const moveTo = async (shotId: string, target: { sequence_id: string; episode_id: string }) => {
+    const shot = (shots as ShotExt[]).find((s) => s.id === shotId);
+    if (!shot) return;
+    const bucket = (shots as ShotExt[]).filter((s) => bucketKeyOf(s) === targetKeyOf(target) && s.id !== shotId);
     try {
-      replaceShot(await patchShot(shotId, { sequence_id: sequenceId }));
+      await patchShot(shotId, { sequence_id: target.sequence_id || null, episode_id: target.episode_id } as never);
+      if (bucket.length) await fetch("/api/shots/reorder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shot_ids: [...bucket.map((s) => s.id), shotId] }) });
+      await loadProject(projectId);
     } catch (err) {
-      console.error("re-sequence failed", err);
+      console.error("move failed", err);
+    }
+  };
+  const insertBefore = async (shotId: string, beforeId: string) => {
+    if (shotId === beforeId) return;
+    const before = (shots as ShotExt[]).find((s) => s.id === beforeId);
+    const moved = (shots as ShotExt[]).find((s) => s.id === shotId);
+    if (!before || !moved) return;
+    const target = { sequence_id: before.sequence_id ?? "", episode_id: before.sequence_id ? "" : before.episode_id ?? "" };
+    const bucket = (shots as ShotExt[]).filter((s) => bucketKeyOf(s) === targetKeyOf(target) && s.id !== shotId);
+    const index = bucket.findIndex((s) => s.id === beforeId);
+    bucket.splice(index < 0 ? bucket.length : index, 0, moved);
+    try {
+      await patchShot(shotId, { sequence_id: target.sequence_id || null, episode_id: target.episode_id } as never);
+      await fetch("/api/shots/reorder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shot_ids: bucket.map((s) => s.id) }) });
+      await loadProject(projectId);
+    } catch (err) {
+      console.error("reorder failed", err);
     }
   };
   const visibleShotCount = shotTree.seasons.reduce((n, [, nodes]) => n + nodes.reduce((m, node) => m + node.groups.reduce((g, group) => g + group.shots.length, 0), 0), 0) + shotTree.loose.length;
-  const headDrop = (key: string, sequenceId: string) => ({
+  const dropZone = (key: string, onDropShot: (shotId: string) => void) => ({
     onDragOver: (event: React.DragEvent) => {
-      if (!draggingShot(event)) return;
+      if (!draggingShot()) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = "move";
       if (dropTarget !== key) setDropTarget(key);
     },
     onDragLeave: () => setDropTarget((current) => (current === key ? null : current)),
     onDrop: (event: React.DragEvent) => {
-      if (!draggingShot(event)) return;
+      if (!draggingShot()) return;
       event.preventDefault();
+      const shotId = dragShotRef.current;
+      dragShotRef.current = null;
       setDropTarget(null);
-      void moveShot(event.dataTransfer.getData("text/dsh-shot"), sequenceId);
+      if (shotId) onDropShot(shotId);
     },
   });
 
@@ -940,7 +969,7 @@ export function ProductionPage({
               <input
                 type="search"
                 className="shot-filter-input"
-                placeholder="Filter shots — title, beat, type, camera, arc…"
+                placeholder="Filter — word, or path like Season 1/Pilot/Cold open (// skips a level)…"
                 aria-label="Filter shots"
                 value={shotFilter}
                 onChange={(event) => setShotFilter(event.target.value)}
@@ -958,33 +987,30 @@ export function ProductionPage({
                 {shotTree.seasons.map(([season, episodes]) => {
                   const key = `s${season}`;
                   const seasonCount = episodes.reduce((n, node) => n + node.groups.reduce((m, group) => m + group.shots.length, 0), 0);
-                  if (shotFilter.trim() && seasonCount === 0) return null;
                   const open = !collapsedNodes.has(key);
                   return (
                     <div key={key}>
-                      <button type="button" className="production-tree-head" onClick={() => toggleNode(key)} aria-expanded={open}>
+                      <button type="button" className={dropTarget === key ? "production-tree-head drop-over" : "production-tree-head"} onClick={() => toggleNode(key)} aria-expanded={open} {...dropZone(key, (shotId) => { const firstEpisode = episodes[0]?.episode; if (firstEpisode) void moveTo(shotId, { sequence_id: "", episode_id: firstEpisode.id }); })}>
                         {`Season ${season}`} <span className="muted tiny">{seasonCount} shots</span>
                       </button>
                       {open ? episodes.map(({ episode, groups }) => {
-                        if (shotFilter.trim() && !groups.some((group) => group.shots.length)) return null;
                         const ekey = `e${episode.id}`;
                         const eopen = !collapsedNodes.has(ekey);
                         return (
                           <div key={ekey} style={{ marginLeft: "0.7rem" }}>
-                            <button type="button" className="production-tree-head" onClick={() => toggleNode(ekey)} aria-expanded={eopen}>
+                            <button type="button" className={dropTarget === ekey ? "production-tree-head drop-over" : "production-tree-head"} onClick={() => toggleNode(ekey)} aria-expanded={eopen} {...dropZone(ekey, (shotId) => void moveTo(shotId, { sequence_id: "", episode_id: episode.id }))}>
                               {episode.title || `E${episode.order}`} <span className="muted tiny">{`E${episode.order}`}</span>
                             </button>
                             {eopen ? groups.map((group, index) => {
-                              if (shotFilter.trim() && group.shots.length === 0) return null;
                               const qkey = `q${group.sequence ? group.sequence.id : `${episode.id}-none-${index}`}`;
                               const qopen = !collapsedNodes.has(qkey);
                               return (
                                 <div key={qkey} style={{ marginLeft: "1.4rem" }}>
-                                  <button type="button" className={dropTarget === qkey ? "production-tree-head drop-over" : "production-tree-head"} onClick={() => toggleNode(qkey)} aria-expanded={qopen} {...headDrop(qkey, group.sequence?.id ?? "")}>
+                                  <button type="button" className={dropTarget === qkey ? "production-tree-head drop-over" : "production-tree-head"} onClick={() => toggleNode(qkey)} aria-expanded={qopen} {...dropZone(qkey, (shotId) => void moveTo(shotId, group.sequence ? { sequence_id: group.sequence.id, episode_id: "" } : { sequence_id: "", episode_id: episode.id }))}>
                                     {group.sequence ? group.sequence.name : "No sequence"} <span className="muted tiny">{group.shots.length}</span>
                                   </button>
                                   {qopen ? group.shots.map((s) => (
-                                    <div key={s.id} className={s.id === selectedId ? "production-tree-row selected" : "production-tree-row"} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)} draggable onDragStart={(event) => beginShotDrag(event, s.id)} style={{ paddingLeft: "2.1rem" }}>
+                                    <div key={s.id} className={dropTarget === `r${s.id}` ? "production-tree-row drop-over" : s.id === selectedId ? "production-tree-row selected" : "production-tree-row"} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)} draggable onDragStart={(event) => beginShotDrag(event, s.id)} onDragEnd={() => { dragShotRef.current = null; }} {...dropZone(`r${s.id}`, (shotId) => void insertBefore(shotId, s.id))} style={{ paddingLeft: "2.1rem" }}>
                                       <span className="shot-table-title">{s.title || s.id}</span>
                                       <span className="muted tiny" style={{ marginLeft: ".4rem" }}>{s.duration_s}s</span>
                                       <span style={{ marginLeft: ".5rem" }}><ProductionStatusChip shot={s} /></span>
@@ -1001,11 +1027,11 @@ export function ProductionPage({
                 })}
                 {shotTree.loose.length ? (
                   <div>
-                    <button type="button" className={dropTarget === "loose" ? "production-tree-head drop-over" : "production-tree-head"} onClick={() => toggleNode("loose")} aria-expanded={!collapsedNodes.has("loose")} {...headDrop("loose", "")}>
+                    <button type="button" className={dropTarget === "loose" ? "production-tree-head drop-over" : "production-tree-head"} onClick={() => toggleNode("loose")} aria-expanded={!collapsedNodes.has("loose")} {...dropZone("loose", (shotId) => void moveTo(shotId, { sequence_id: "", episode_id: "" }))}>
                       Unassigned <span className="muted tiny">{shotTree.loose.length}</span>
                     </button>
                     {!collapsedNodes.has("loose") ? shotTree.loose.map((s) => (
-                      <div key={s.id} className={s.id === selectedId ? "production-tree-row selected" : "production-tree-row"} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)} draggable onDragStart={(event) => beginShotDrag(event, s.id)}>
+                      <div key={s.id} className={dropTarget === `r${s.id}` ? "production-tree-row drop-over" : s.id === selectedId ? "production-tree-row selected" : "production-tree-row"} role="treeitem" aria-selected={s.id === selectedId} onClick={() => setSelectedId(s.id)} draggable onDragStart={(event) => beginShotDrag(event, s.id)} onDragEnd={() => { dragShotRef.current = null; }} {...dropZone(`r${s.id}`, (shotId) => void insertBefore(shotId, s.id))}>
                         <span className="shot-table-title">{s.title || s.id}</span>
                         <span className="muted tiny" style={{ marginLeft: ".4rem" }}>{s.duration_s}s</span>
                         <span style={{ marginLeft: ".5rem" }}><ProductionStatusChip shot={s} /></span>

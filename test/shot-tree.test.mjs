@@ -52,3 +52,36 @@ test('shots nest under season/episode/sequence via sequence_id; homeless shots s
   assert.deepEqual(ep2.groups.map(g=>[g.sequence?.name??null,g.shots.map(s=>s.id)]),[[null,['s5']]]);
   assert.deepEqual(tree.loose.map(s=>s.id),['s4','s6']);
 });
+
+const FIXTURE=()=>{
+  const episodes=[{id:'ep1',title:'Pilot',season:1,order:1},{id:'ep2',title:'S1E2',season:1,order:2},{id:'ep9',title:'S2E1',season:2,order:1}];
+  const sequences=[{id:'q1',name:'Cold open',episode_id:'ep1',order:1},{id:'q2',name:'Development',episode_id:'ep1',order:2},{id:'q9',name:'Later',episode_id:'ep9',order:1}];
+  const shots=[
+    {id:'s1',title:'Splash',sequence_id:'q1'},{id:'s2',sequence_id:'q1'},{id:'s3',sequence_id:'q2'},
+    {id:'s5',episode_id:'ep2'},{id:'s4'},{id:'s6',sequence_id:'gone'},
+  ];
+  return {episodes,sequences,shots};
+};
+const shape=tree=>tree.seasons.map(([s,nodes])=>[s,nodes.map(n=>[n.episode.id,n.groups.filter(g=>g.shots.length).map(g=>g.shots.map(x=>x.id))])]);
+
+test('prune: plain word matches a node name (whole subtree) or shot fields',async()=>{
+  const {buildShotTree,pruneShotTree}=await load();
+  const {episodes,sequences,shots}=FIXTURE();
+  const tree=buildShotTree(shots,episodes,sequences);
+  const seasonWord=JSON.parse(JSON.stringify(pruneShotTree(tree,'Season').seasons.map(([s,nodes])=>[s,nodes.map(n=>n.episode.id)])));
+  assert.deepEqual(seasonWord,[[1,['ep1','ep2']],[2,['ep9']]]);
+  assert.equal(JSON.stringify(shape(pruneShotTree(tree,'Season'))),'[[1,[["ep1",[["s1","s2"],["s3"]]],["ep2",[["s5"]]]]],[2,[["ep9",[]]]]]');
+  assert.deepEqual(JSON.parse(JSON.stringify(shape(pruneShotTree(tree,'Cold')))),[[1,[['ep1',[['s1','s2']]]]]]);
+  assert.deepEqual(pruneShotTree(tree,'Splash').loose,[]);
+  assert.equal(pruneShotTree(tree,'Splash').seasons[0][1][0].groups[0].shots.length,1);
+});
+
+test('prune: slash paths align Season/Episode/Sequence/Shot, empty segment skips a level',async()=>{
+  const {buildShotTree,pruneShotTree}=await load();
+  const {episodes,sequences,shots}=FIXTURE();
+  const tree=buildShotTree(shots,episodes,sequences);
+  assert.deepEqual(JSON.parse(JSON.stringify(shape(pruneShotTree(tree,'Season 1/E1')))),[[1,[['ep1',[['s1','s2'],['s3']]]]]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(shape(pruneShotTree(tree,'Season 1//cold')))),[[1,[['ep1',[['s1','s2']]]]]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(shape(pruneShotTree(tree,'Season 1//cold/splash')))),[[1,[['ep1',[['s1']]]]]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(pruneShotTree(tree,'zzz/qqq').seasons)),[]);
+});

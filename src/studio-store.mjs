@@ -294,7 +294,20 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
         return {take:clone(take),shot:shot?clone(shot):null};
       });
     },
-    async listShots(projectId){const s=await load();await project(projectId,s);return clone(s.shots.filter(item=>item.project_id===projectId));},
+    async listShots(projectId){const s=await load();await project(projectId,s);return clone(s.shots.filter(item=>item.project_id===projectId).sort((a,b)=>((a.order??0)-(b.order??0))||String(a.created_at).localeCompare(String(b.created_at))));},
+    // One-write re-ordering for drag/drop: ordered ids of one bucket (same sequence, or same episode's unsequenced, or homeless).
+    async reorderShots(shotIds){
+      return change(s=>{
+        if(!Array.isArray(shotIds)||shotIds.length<2||shotIds.length>500||shotIds.some(value=>typeof value!=='string'))throw new StudioStoreError('shot_ids must be an array of 2-500 shot ids.',400);
+        if(new Set(shotIds).size!==shotIds.length)throw new StudioStoreError('shot_ids contains duplicates.',400);
+        const shots=shotIds.map(shotId=>{const shot=s.shots.find(value=>value.id===shotId);if(!shot)throw new StudioStoreError('Shot not found.',404);return shot;});
+        const bucketOf=shot=>shot.sequence_id?`s:${shot.sequence_id}`:shot.episode_id?`e:${shot.episode_id}`:'loose';
+        const bucket=bucketOf(shots[0]);
+        if(shots.some(shot=>bucketOf(shot)!==bucket||shot.project_id!==shots[0].project_id))throw new StudioStoreError('all shot_ids must belong to the same project and bucket (sequence, episode-unsequenced, or unassigned).',400);
+        shots.forEach((shot,index)=>{shot.order=index+1;shot.updated_at=stamp();});
+        return clone(shots);
+      });
+    },
     async getShot(shotId){const shot=(await load()).shots.find(item=>item.id===shotId);if(!shot)throw new StudioStoreError('Shot not found.',404);return clone(shot);},
     async getVideoContextStatus(shotId){const s=await load(),shot=s.shots.find(item=>item.id===shotId);if(!shot)throw new StudioStoreError('Shot not found.',404);const context=shot.video_context??{mode:'off'};const index=s.shots.findIndex(item=>item.id===shot.id),sourceId=context.mode==='previous_shot'?(context.source_shot_id||s.shots[index-1]?.id):null,source=s.shots.find(item=>item.id===sourceId&&item.project_id===shot.project_id);const blocked_reasons=context.mode==='previous_shot'&&!source?.video_asset_id?['Source shot has no linked video asset.']:[];return {mode:context.mode,source_job_id:context.source_job_id||source?.video_job_id||null,context_frames:context.context_frames??null,carry_audio:Boolean(context.carry_audio),blocked_reasons,resolution:null};},
     async getVideoAssetJob(jobId){const s=await load(),asset=s.assets.find(item=>item.kind==='layouts'&&(item.job_id===jobId||item.id===jobId)&&item.files?.master);if(!asset)return null;const file=s.files.find(item=>item.path===asset.files.master);if(!file?.mime?.startsWith('video/'))return null;return {id:jobId,asset_id:asset.id,filename:file.filename,mime:file.mime,source_path:file.path};},
@@ -306,7 +319,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
         const dialogue=input.dialogue??[];
         if(!Array.isArray(dialogue)||dialogue.length>100||dialogue.some(line=>typeof line!=='string'))throw new StudioStoreError('dialogue must be an array of at most 100 strings.');
         const refs=validateShotRefs(s,projectId,input.refs??[],input.voice_refs??[]);
-        const shot={id:id(),project_id:projectId,scene_id:metadata.scene_id??'',title,sequence_id:safeText(input.sequence_id,128),arcs:arcTags(input.arcs)??[],script_beat:safeText(input.script_beat,10000),shot_type:metadata.shot_type??'',camera_angle:metadata.camera_angle??'',camera_motion:metadata.camera_motion??'',composition:metadata.composition??'',duration_s:Number.isFinite(input.duration_s)?Math.max(0.1,Math.min(3600,input.duration_s)):4,dialogue:dialogue.map(line=>safeText(line,2000)).filter(Boolean),dialogue_lines:[],refs:refs.refs,voice_refs:refs.voice_refs,prompt_sections:promptSections(input.prompt_sections),layout_asset_id:null,layout_review_status:null,ref_frame_job_id:null,layout_refs:[],video_asset_id:null,video_job_id:null,h3_job_id:null,video_context:{mode:'off'},source_audio_path:null,feedback:'',blocked_reasons:[],meta:{},status:'draft',created_at:stamp(),updated_at:stamp()};
+        const shot={id:id(),project_id:projectId,scene_id:metadata.scene_id??'',title,sequence_id:safeText(input.sequence_id,128),episode_id:safeText(input.episode_id,128),order:Number.isSafeInteger(Number(input.order))?Number(input.order):s.shots.filter(value=>value.project_id===projectId).length+1,arcs:arcTags(input.arcs)??[],script_beat:safeText(input.script_beat,10000),shot_type:metadata.shot_type??'',camera_angle:metadata.camera_angle??'',camera_motion:metadata.camera_motion??'',composition:metadata.composition??'',duration_s:Number.isFinite(input.duration_s)?Math.max(0.1,Math.min(3600,input.duration_s)):4,dialogue:dialogue.map(line=>safeText(line,2000)).filter(Boolean),dialogue_lines:[],refs:refs.refs,voice_refs:refs.voice_refs,prompt_sections:promptSections(input.prompt_sections),layout_asset_id:null,layout_review_status:null,ref_frame_job_id:null,layout_refs:[],video_asset_id:null,video_job_id:null,h3_job_id:null,video_context:{mode:'off'},source_audio_path:null,feedback:'',blocked_reasons:[],meta:{},status:'draft',created_at:stamp(),updated_at:stamp()};
         s.shots.push(shot);return clone(shot);
       });
     },
@@ -320,6 +333,9 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
           if(input.sequence_id===null||input.sequence_id==='')shot.sequence_id='';
           else{if(!s.sequences.find(item=>item.id===input.sequence_id&&item.project_id===shot.project_id))throw new StudioStoreError('sequence_id must reference a sequence in this project.',404);shot.sequence_id=input.sequence_id;}
         }
+        // ponytail: episode_id kept as an unvalidated string like Sequence.episode_id (Story wall is a separate store).
+        if(input.episode_id!==undefined)shot.episode_id=safeText(input.episode_id,128);
+        if(input.order!==undefined){if(!Number.isSafeInteger(Number(input.order))||Number(input.order)<1)throw new StudioStoreError('order must be a positive safe integer.',400);shot.order=Number(input.order);}
         const tags=arcTags(input.arcs);if(tags!==undefined)shot.arcs=tags;
         if(input.title!==undefined)shot.title=validName(input.title,'Shot title');
         if(input.script_beat!==undefined)shot.script_beat=safeText(input.script_beat,10000);

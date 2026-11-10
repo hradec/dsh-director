@@ -7193,3 +7193,4 @@ select {
 .shot-filter-input{flex:1 1 14rem;max-width:26rem;padding:.3rem .55rem;border:1px solid rgba(0,0,0,.22);border-radius:6px;font:inherit;background:rgba(255,255,255,.6)}
 .production-tree-row[draggable="true"]{cursor:grab}
 .production-tree-head.drop-over{background:#dcead8;outline:2px dashed #5b8a58;outline-offset:2px;border-radius:6px}
+.production-tree-row.drop-over{outline:2px dashed #5b8a58;outline-offset:-2px;background:rgba(91,138,88,.18)}

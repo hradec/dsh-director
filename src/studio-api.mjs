@@ -259,6 +259,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         const input=await readJson(req,controller.signal);if(!Array.isArray(input.asset_ids)||input.asset_ids.length>200)throw new StudioStoreError('asset_ids must be an array with at most 200 entries.');
         const result=[];for(const asset of input.asset_ids){if(!asset||!isStudioAssetKind(asset.kind))throw new StudioStoreError('Each asset needs a supported kind.');result.push(presentAsset(await store.assignAsset(asset.kind,asset.id,project.id),sessionId));}sendJson(res,200,result);return;
       }
+      if(path==='/api/shots/reorder'&&req.method==='POST'){sendJson(res,200,{shots:await store.reorderShots((await readJson(req,controller.signal)).shot_ids)});return;}
       match=/^\/api\/shots\/([A-Za-z0-9_-]{1,128})$/.exec(path);
       if(match&&req.method==='GET'){sendJson(res,200,await store.getShot(match[1]));return;}
       if(match&&req.method==='PATCH'){sendJson(res,200,await store.patchShot(match[1],await readJson(req,controller.signal)));return;}

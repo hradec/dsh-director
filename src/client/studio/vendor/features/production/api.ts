@@ -41,6 +41,9 @@ export async function patchShot(
     title?: string;
     script_beat?: string;
     feedback?: string;
+    sequence_id?: string | null;
+    episode_id?: string | null;
+    order?: number;
   },
 ): Promise<Shot> {
   const res = await fetch(`/api/shots/${shotId}`, {
