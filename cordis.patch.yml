@@ -213,6 +213,6 @@
               totalTimeoutMs: 20000
               maxResults: 8
               maxQueries: 4
-              browser: true
+              browser: false
           - id: present
             name: '@deepseek-ai/dsh-tool-present'

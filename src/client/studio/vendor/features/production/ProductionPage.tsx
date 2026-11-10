@@ -12,6 +12,7 @@ import {
   type ShotVoiceRef,
 } from "../../shared/api/types";
 import { PageShell } from "../../shared/components/PageShell";
+import { buildShotTree } from "../../shared/shot-tree";
 import { useProject } from "../../shared/project/ProjectContext";
 import { promptReady, shotWorkflowStatus } from "../../shared/shotWorkflowStatus";
 import {
@@ -197,8 +198,16 @@ export function ProductionPage({
       }
     } catch (err) {
       if (request === profileRequest.current) {
-        setWorkflowProfile(null);
-        setWorkflowProfileError(err instanceof Error ? err.message : String(err));
+        const message = err instanceof Error ? err.message : String(err);
+        // ponytail: the standalone plugin routes per-kind workflows, not the monolith's profile store;
+        // its honest "route not implemented" 404 is a configured state, not a broken one.
+        if (/not implemented/i.test(message)) {
+          setWorkflowProfile({ profile_id: "plugin-managed", display_name: "plugin-managed workflows", source: "builtin", workflow_sha256: "", contract_version: 1, warning: null });
+          setWorkflowProfileError(null);
+        } else {
+          setWorkflowProfile(null);
+          setWorkflowProfileError(message);
+        }
       }
     }
   }, []);
@@ -255,27 +264,10 @@ export function ProductionPage({
       .catch(() => { if (!cancelled) setHierarchy({ episodes: [], sequences: [] }); }); // ponytail: without the timeline route the tree degrades to the Unassigned bucket only.
     return () => { cancelled = true; };
   }, [projectId, shots]);
-  const shotTree = useMemo(() => {
-    type TreeEpisode = { id: string; title: string; season: number; order: number };
-    type TreeSequence = { id: string; name: string; episode_id: string; order: number };
-    const episodeIds = new Set(hierarchy.episodes.map((episode) => episode.id));
-    const shotsFor = (episodeId: string, sequenceId: string | null) => shots.filter((s) => {
-      const shot = s as Shot & { episode_id?: string; sequence_id?: string };
-      const knownSequence = hierarchy.sequences.some((q) => q.id === shot.sequence_id);
-      return (shot.episode_id ?? "") === episodeId && (sequenceId === null ? !shot.sequence_id || !knownSequence : shot.sequence_id === sequenceId);
-    });
-    const seasons = new Map<number, { episode: TreeEpisode; groups: { sequence: TreeSequence | null; shots: Shot[] }[] }[]>();
-    for (const episode of [...hierarchy.episodes].sort((a, b) => (a.season - b.season) || (a.order - b.order))) {
-      const groups = [...hierarchy.sequences].filter((q) => q.episode_id === episode.id).sort((a, b) => a.order - b.order)
-        .map((q) => ({ sequence: q, shots: shotsFor(episode.id, q.id) }));
-      const unsequenced = shotsFor(episode.id, null);
-      if (unsequenced.length) groups.push({ sequence: null, shots: unsequenced });
-      if (!seasons.has(episode.season)) seasons.set(episode.season, []);
-      seasons.get(episode.season)!.push({ episode, groups });
-    }
-    const loose = shots.filter((s) => { const shot = s as Shot & { episode_id?: string }; return !shot.episode_id || !episodeIds.has(shot.episode_id); });
-    return { seasons: [...seasons.entries()], loose };
-  }, [shots, hierarchy]);
+  const shotTree = useMemo(
+    () => buildShotTree(shots as (Shot & { episode_id?: string | null; sequence_id?: string | null })[], hierarchy.episodes, hierarchy.sequences),
+    [shots, hierarchy],
+  );
 
   const loadProject = useCallback(async (id: string) => {
     const detail = await getProject(id);
