@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { OutputSlot } from "../../shared/api/types";
 import { Lightbox } from "../../shared/components/Lightbox";
+import { CompareWipe } from "../../shared/components/ImageCanvas";
 import type { LibraryAsset } from "./api";
 
 const PREVIEW_KEYS = [
@@ -142,12 +143,18 @@ export function AssetDetailDialog({
                     <div className="folder-file-label">{slot.label}</div>
                     {slot.filename ? <div className="muted tiny ellipsis">{slot.filename}</div> : null}
                   </button>
-                ),
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+                 ),
+               )}
+             </div>
+           )}
+           {asset.kind !== "voices" && slots.filter((slot) => slot.url).length >= 2 ? (
+             <div className="asset-compare">
+               <div className="muted tiny">Compare files — pick A and B, drag the slider to wipe</div>
+               <CompareWipe images={slots.filter((slot) => slot.url).map((slot) => ({ src: slot.url!, label: slot.label || slot.key }))} />
+             </div>
+           ) : null}
+         </div>
+       </div>
 
       {lightboxIndex != null ? (
         <Lightbox

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { PageShell } from "../../shared/components/PageShell";
+import { ZoomPanImage } from "../../shared/components/ImageCanvas";
 import { useProject } from "../../shared/project/ProjectContext";
 import {
   deleteLibraryAsset,
@@ -252,7 +253,7 @@ export function LibraryPage({
                   >
                   <div className="library-thumb">
                     {thumb ? (
-                      <img src={thumb} alt={a.name} />
+                      <ZoomPanImage src={thumb} alt={a.name} className="library-canvas" />
                     ) : (
                       <div className="output-empty">No preview</div>
                     )}

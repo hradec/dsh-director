@@ -12,6 +12,7 @@ import {
   type ShotVoiceRef,
 } from "../../shared/api/types";
 import { PageShell } from "../../shared/components/PageShell";
+import { ZoomPanImage } from "../../shared/components/ImageCanvas";
 import { buildShotTree, pruneShotTree } from "../../shared/shot-tree";
 import { useProject } from "../../shared/project/ProjectContext";
 import { promptReady, shotWorkflowStatus } from "../../shared/shotWorkflowStatus";
@@ -950,7 +951,7 @@ export function ProductionPage({
             <button type="button" className="lightbox-close btn secondary sm" onClick={() => setPreviewUrl(null)}>
               Close
             </button>
-            <img className="lightbox-img" src={previewUrl} alt="ref preview" onClick={(event) => event.stopPropagation()} />
+            <div className="lightbox-body" onClick={(event) => event.stopPropagation()}><ZoomPanImage src={previewUrl} alt="ref preview" className="lightbox-canvas" /></div>
           </div>
         ) : null}
       </main>
@@ -1127,7 +1128,7 @@ export function ProductionPage({
                     </p>
                     <div className="layout-preview-box">
                       {layoutUrl ? (
-                        <img src={layoutUrl} alt="layout" />
+                        <ZoomPanImage src={layoutUrl} alt="layout" className="layout-canvas" />
                       ) : (
                         <div className="output-empty">No layout</div>
                       )}
@@ -1426,12 +1427,7 @@ export function ProductionPage({
           >
             Close
           </button>
-          <img
-            className="lightbox-img"
-            src={previewUrl}
-            alt="ref preview"
-            onClick={(e) => e.stopPropagation()}
-          />
+          <div className="lightbox-body" onClick={(e) => e.stopPropagation()}><ZoomPanImage src={previewUrl} alt="ref preview" className="lightbox-canvas" /></div>
         </div>
       ) : null}
     </PageShell>

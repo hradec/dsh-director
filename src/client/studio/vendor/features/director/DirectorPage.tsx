@@ -4,6 +4,7 @@ import {
   type Shot,
 } from "../../shared/api/types";
 import { ResizableWorkspace } from "../../shared/components/ResizableWorkspace";
+import { ZoomPanImage } from "../../shared/components/ImageCanvas";
 import { useProject } from "../../shared/project/ProjectContext";
 import type { SegmentSelection } from "../music/api";
 import { SongTransport } from "../music/SongTransport";
@@ -1025,7 +1026,7 @@ function DirectorAgentWorkspace({
           onClick={() => setLightbox(null)}
           onKeyDown={(e) => e.key === "Escape" && setLightbox(null)}
         >
-          <img src={lightbox} alt="full preview" className="lightbox-img" />
+          <div className="lightbox-body" onClick={(e) => e.stopPropagation()}><ZoomPanImage src={lightbox} alt="full preview" className="lightbox-canvas" /></div>
         </div>
       ) : null}
     </main>

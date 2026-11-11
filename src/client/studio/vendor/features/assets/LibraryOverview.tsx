@@ -8,6 +8,7 @@ import {
 } from "../library/api";
 import { AssetImportDialog } from "../library/AssetImportDialog";
 import { AssetDetailDialog, assetPreviewUrl } from "../library/AssetDetailDialog";
+import { ZoomPanImage } from "../../shared/components/ImageCanvas";
 import { AssetMetadataDialog } from "../library/AssetMetadataDialog";
 
 type VisibleLibraryKind = Exclude<LibraryKind, "layouts" | "costumes">;
@@ -129,7 +130,7 @@ export function LibraryOverview({ onSelectKind, onEditInStudio }: {
                         onClick={() => setDetailAsset(asset)}
                       >
                         <div className={`mobile-library-preview${preview ? "" : " empty"}`}>
-                          {preview ? <img src={preview} alt="" /> : <span>{group.id === "voices" ? "VOICE" : "ASSET"}</span>}
+                          {preview ? <ZoomPanImage src={preview} alt="" className="library-canvas" /> : <span>{group.id === "voices" ? "VOICE" : "ASSET"}</span>}
                         </div>
                         <strong>{asset.name}</strong>
                       </button>

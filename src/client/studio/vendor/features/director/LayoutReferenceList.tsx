@@ -6,6 +6,7 @@ import {
   type Shot,
 } from "../../shared/api/types";
 import { isDisplayableLayout, isRetiredLayout } from "../../shared/layoutReferenceStatus";
+import { CompareWipe } from "../../shared/components/ImageCanvas";
 
 interface LayoutReferenceListProps {
   shot: Shot;
@@ -156,6 +157,12 @@ export function LayoutReferenceList({ shot, busy, onDiscussAddReference, onOpenI
           onOpenImage={onOpenImage}
         />
       ))}
+      {currentLayouts.filter((layout) => layout.asset_id).length >= 2 ? (
+        <details className="layout-compare">
+          <summary>Compare references — wipe A over B</summary>
+          <CompareWipe images={currentLayouts.filter((layout) => layout.asset_id).map((layout) => ({ src: layoutPreviewUrl(layout.asset_id!)!, label: layout.purpose || layout.id }))} />
+        </details>
+      ) : null}
       {retiredLayouts.length ? (
         <details className="layout-history">
           <summary>Previous layouts ({retiredLayouts.length})</summary>

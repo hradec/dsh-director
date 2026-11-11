@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { OutputSlot } from "../api/types";
+import { ZoomPanImage } from "./ImageCanvas";
 
 interface Props {
   slots: OutputSlot[];
@@ -32,7 +33,7 @@ export function Lightbox({ slots, index, onClose, onIndex }: Props) {
             Close
           </button>
         </div>
-        <img src={slot.url} alt={slot.label} />
+        <ZoomPanImage src={slot.url} alt={slot.label} className="lightbox-canvas" />
         {slots.length > 1 ? (
           <div className="lightbox-nav">
             <button type="button" className="btn secondary" onClick={() => onIndex((index - 1 + slots.length) % slots.length)}>

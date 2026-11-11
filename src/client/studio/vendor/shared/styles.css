@@ -7195,3 +7195,43 @@ select {
 .production-tree-head.drop-over{background:#dcead8;outline:2px dashed #5b8a58;outline-offset:2px;border-radius:6px}
 .production-tree-row.insert-before{box-shadow:0 -2px 0 0 #2e7d32}
 .production-tree-row.insert-after{box-shadow:0 2px 0 0 #2e7d32}
+
+/* —— Image canvas: wheel zoom, right-drag pan, compare wipe (0.2.27) —— */
+.image-canvas{display:block;width:100%;height:100%;position:relative;overflow:hidden}
+.image-canvas img{width:100%;height:100%;object-fit:contain;transform-origin:0 0}
+.image-canvas-reset{position:absolute;top:.35rem;right:.35rem;z-index:3;padding:.15rem .5rem;border-radius:999px;border:1px solid var(--border-strong);background:var(--bg-panel);color:var(--text);font-size:.72rem;cursor:pointer}
+.lightbox-body{display:flex;align-items:center;justify-content:center;min-width:0;min-height:0}
+.lightbox-canvas{width:min(100%,1100px);height:min(92vh,calc(100dvh - 4.5rem));border-radius:10px}
+.lightbox-canvas img{border-radius:10px}
+.asset-compare{margin-top:.9rem}
+.layout-compare{margin:.4rem 0;padding:0 .2rem}
+.asset-compare summary,.layout-compare summary{cursor:pointer;font-size:.85rem;margin-bottom:.4rem}
+.image-compare{display:flex;flex-direction:column;gap:.45rem}
+.image-compare-stage{position:relative;height:22rem;border-radius:8px;overflow:hidden;background:color-mix(in srgb,var(--text) 6%,transparent)}
+.image-compare-stage img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform-origin:0 0}
+.compare-line{position:absolute;top:0;bottom:0;width:2px;background:#2e7d32;pointer-events:none;z-index:2}
+.image-compare-bar{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.image-compare-bar select{max-width:13rem;padding:.25rem .35rem;border:1px solid var(--border-strong);border-radius:6px;font:inherit;color:var(--text);background:var(--bg-panel)}
+.image-compare-bar input[type="range"]{flex:1;min-width:8rem}
+
+/* —— Session media rail: every image/video card in this session (0.2.27) —— */
+.corner-media,.corner-settings{position:absolute;top:.55rem;z-index:41;width:2.3rem;height:2.3rem;font-size:1.2rem;padding:0;border-radius:999px;border:1px solid currentColor;line-height:1}
+.corner-media{right:.7rem}
+.corner-settings{right:3.4rem}
+/* ponytail: 19rem matches .media-rail width; bump both together. */
+.media-rail-open .corner-media{right:calc(3.4rem + min(19rem,85%))}
+.media-rail-open .corner-settings{right:calc(.7rem + min(19rem,85%))}
+.media-rail-open .topbar{padding-right:min(19rem,85%)}
+.media-rail{position:fixed;top:0;right:0;bottom:0;width:min(19rem,85%);z-index:38;display:flex;flex-direction:column;background:var(--bg-panel);border-left:1px solid var(--border-strong);box-shadow:-10px 0 26px rgba(0,0,0,.22);color:var(--text)}
+.media-rail-head{display:flex;align-items:center;gap:.4rem;padding:.55rem .6rem;border-bottom:1px solid var(--border-strong)}
+.media-rail-filters{display:flex;gap:.25rem;margin-left:auto}
+.media-rail-grid{flex:1;overflow-y:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem;padding:.55rem;align-content:start}
+.media-card{position:relative;border:1px solid var(--border-strong);border-radius:7px;overflow:hidden;cursor:pointer;background:color-mix(in srgb,var(--text) 4%,transparent)}
+.media-card img,.media-card video{display:block;width:100%;aspect-ratio:4/3;object-fit:cover}
+.media-card-versions{position:absolute;top:.25rem;right:.25rem;z-index:2;display:flex;align-items:center;gap:.1rem;background:rgba(0,0,0,.6);color:#fff;border-radius:999px;padding:0 .3rem;font-size:.72rem}
+.media-card-versions button{background:none;border:0;color:#fff;cursor:pointer;font-size:.95rem;line-height:1.2;padding:.05rem .25rem}
+.media-card-foot{display:flex;flex-direction:column;gap:.1rem;padding:.3rem .4rem;font-size:.75rem}
+.media-card-foot span:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.media-rail-viewer{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.72);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.6rem;padding:1rem}
+.media-rail-viewer .lightbox-body{width:min(92vw,1100px);height:min(82vh,1100px)}
+.media-rail-viewer video{max-width:92vw;max-height:82vh;border-radius:10px}

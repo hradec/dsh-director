@@ -4,6 +4,7 @@ import {ProductionPage} from './vendor/features/production/ProductionPage.tsx';
 import {StoryWall} from './StoryWall.jsx';
 import {TimelineBoard} from './TimelineBoard.jsx';
 import {ProjectProvider,useProject} from './vendor/shared/project/ProjectContext.tsx';
+import {MediaRail} from './MediaRail.jsx';
 import {fetch as apiFetch} from './fetch-inject.mjs';
 import css from './vendor/shared/styles.css';
 
@@ -111,6 +112,7 @@ function AppSettingsPanel({onClose}){
 }
 function StudioContent({area,sendDshRequest}){
   const [settingsOpen,setSettingsOpen]=useState(false);
+  const [railOpen,setRailOpen]=useState(false);
   useEffect(()=>{
     // Plugin: keep the latest crew persona notes visible to the request bridge (film-crew skill).
     apiFetch('/api/library/app-settings').then((r)=>r.json()).then((v)=>{globalThis.__DSH_CREW__=v.crew??{};}).catch(()=>{});
@@ -120,11 +122,13 @@ function StudioContent({area,sendDshRequest}){
     globalThis.__DSH_STUDIO_JOB__=(kind,job)=>sendDshRequest?.(studioJobPrompt(kind,job));
     return()=>{delete globalThis.__DSH_STUDIO_JOB__;};
   },[sendDshRequest]);
-  return <div className="app dsh-director-studio-app" data-theme="oat-walnut" style={{position:'relative'}}>
-    <button className="btn ghost" title="Studio settings" aria-label="Studio settings" onClick={()=>setSettingsOpen(true)} style={{position:'absolute',top:'.55rem',right:'.7rem',zIndex:40,width:'2.3rem',height:'2.3rem',fontSize:'1.2rem',padding:0,borderRadius:'999px',border:'1px solid currentColor',lineHeight:1}}>⚙</button>
+  return <div className={`app dsh-director-studio-app${railOpen?" media-rail-open":""}`} data-theme="oat-walnut" style={{position:'relative'}}>
+    <button className="btn ghost corner-media" title="Studio media rail" aria-label="Studio media rail" aria-pressed={railOpen} onClick={()=>setRailOpen((v)=>!v)}>🎞</button>
+    <button className="btn ghost corner-settings" title="Studio settings" aria-label="Studio settings" onClick={()=>setSettingsOpen(true)}>⚙</button>
     {settingsOpen?<AppSettingsPanel onClose={()=>setSettingsOpen(false)}/>:null}
     <WorkspaceHeader/>
     {area==='story'?<StoryWall/>:area==='timeline'?<TimelineBoard/>:area==='assets'?<AssetWorkspace sendAssetRequest={sendDshRequest}/>:<ProductionPage requestProduction={sendDshRequest}/>}
+    {railOpen?<MediaRail onClose={()=>setRailOpen(false)}/>:null}
   </div>;
 }
 
