@@ -4,6 +4,7 @@ import {keepCompletedMediaVisible} from './media-visibility.mjs';
 import {MediaDialog} from './MediaDialog.jsx';
 import {entriesFromChat,proposalState,proposalConfirmationText} from '../proposal-state.mjs';
 import {clipReferenceLists} from '../shot-proposal.mjs';
+import {CompareWipe} from './studio/vendor/shared/components/ImageCanvas.tsx';
 const chatSnapshot=s=>s;
 const statusLabels={confirmed:'Confirmed',auto_authorized:'Authorized for unattended continuation',awaiting_display:'Waiting for card display acknowledgement',superseded:'Superseded',invalid_references:'Invalid references',references_pending:'References pending',changes_requested:'Changes requested',unverified:'Confirmation unverified',awaiting_confirmation:'Awaiting confirmation'};
 
@@ -31,6 +32,7 @@ export function MediaCard({block,sessionId,useChat,leadingIcon,turnClosed,sendCo
   const result=parseMediaResult(block,sessionId),[selected,setSelected]=useState(null);
   const [confirming,setConfirming]=useState(false),[confirmationError,setConfirmationError]=useState('');
   const [presentation,setPresentation]=useState(null),[presentationError,setPresentationError]=useState('');
+  const [compare,setCompare]=useState(false);
   const proposal=result.kind==='ready'?result.proposal:undefined,hasProposal=Boolean(proposal);
   const hasPresentationState=result.kind==='ready'&&typeof result.card_displayed==='boolean';
   const localPresentedAt=presentation&&presentation.card_id===result.card_id?presentation.presentedAt:undefined;
@@ -56,6 +58,9 @@ export function MediaCard({block,sessionId,useChat,leadingIcon,turnClosed,sendCo
   if(result.kind==='running')return <div className="dsh-director-card" role="status">Preparing media preview…</div>;
   if(result.kind==='error')return <div className="dsh-director-card" role="alert">{result.message}</div>;
   const close=time=>{if(selected.inline&&Number.isFinite(time))try{selected.inline.currentTime=time;}catch{}setSelected(null);};
+  // ponytail: one wipe pair at a time; tabs pick which two images face off, matching the Studio compare.
+  const stills=result.items.filter(item=>item.type==='image');
+  const compareImages=stills.map(item=>({src:item.url,label:item.label||item.filename}));
   const reviewContext={requirePresentation:hasPresentationState,isPresented:(sid,cid,time)=>sid===sessionId&&cid===result.card_id&&displayAcknowledged&&(time===undefined||Number.isFinite(time)&&Number.isFinite(presentedAt)&&time>=presentedAt)};
   const localReview=proposal?(snapshot?proposalState(entriesFromChat(snapshot),proposal.version,{seq:block.seq,callId:block.callId,card_id:result.card_id},reviewContext):{status:hasPresentationState&&!displayAcknowledged?'awaiting_display':result.review_status==='awaiting_display'?'awaiting_confirmation':result.review_status??(proposal.pending_references?.length?'references_pending':'awaiting_confirmation'),pending:proposal.pending_references??[]}):null;
   const review=result.review_status==='auto_authorized'&&['awaiting_confirmation','awaiting_display','unverified'].includes(localReview?.status)?{...localReview,status:'auto_authorized',authorization_reason:result.authorization_reason}:localReview;
@@ -70,7 +75,7 @@ export function MediaCard({block,sessionId,useChat,leadingIcon,turnClosed,sendCo
   const dimensions=new Map(proposal?.clip_dimensions?.map(clip=>[clip.clip_id,clip])??[]);
   const workflows=new Map(proposal?.clip_workflows?.map(clip=>[clip.clip_id,clip])??[]);
   const bound=new Set(clips.flatMap(clip=>clip.reference_numbers));
-  return <section ref={cardRef} className="dsh-director-card" aria-label={result.title}><h3>{leadingIcon}{result.title}</h3>
+  return <section ref={cardRef} className="dsh-director-card" aria-label={result.title}><h3>{leadingIcon}{result.title}{!hasProposal&&stills.length>1&&<button type="button" data-action="compare" aria-pressed={compare} onClick={()=>setCompare(v=>!v)}>{compare?'Gallery':'Compare'}</button>}</h3>
     {result.proposalWarning&&<p role="alert">{result.proposalWarning}</p>}
     {proposal?<div className="dsh-director-proposal" data-proposal-version={proposal.version} data-proposal-status={review.status}>
       <header className="dsh-director-review-header"><strong>Shot &amp; reference review</strong><span>{proposal.version}</span><span>{new Set(proposal.shots.map(shot=>shot.clip_id)).size} clip{new Set(proposal.shots.map(shot=>shot.clip_id)).size===1?'':'s'} / {proposal.shots.length} shot{proposal.shots.length===1?'':'s'}</span><span className="dsh-director-awaiting">{statusLabels[review.status]}</span></header>
@@ -88,6 +93,6 @@ export function MediaCard({block,sessionId,useChat,leadingIcon,turnClosed,sendCo
       <p className="dsh-director-confirm-note">{review.unverifiable?.length?'A reference edit has an invalid saved baseline. Its original image bindings cannot be verified; another full card or confirmation cannot resolve it. Reconcile the intended references with the user before production.':review.status==='awaiting_display'?'The client has not verified that this card rendered. No approval request is active; confirmation remains disabled.':review.status==='auto_authorized'?`Authorized for this request (${result.authorization_reason==='active_goal'?'active goal':result.authorization_reason==='user_instruction'?'current-task instruction':'unattended instruction'}); reference, canvas, duration, workflow and H3 preflight checks still apply.`:review.status==='references_pending'?'This reference list has pending changes and cannot be submitted. Apply the requested add, replace or remove operation to the actual bound images and show a complete revised card.':review.status==='confirmed'?`Confirmed in chat: ${proposal.version}. Video submission must match these actual references.`:review.status==='superseded'?`This version was superseded by ${review.latestVersion}. Review and confirm the latest complete proposal instead.`:<>Use the visible Confirm button to approve {proposal.version}, or describe changes. The button appears only after the client acknowledges this card rendered.</>}</p>
       {result.card_id&&sendConfirmation&&displayAcknowledged&&review.status==='awaiting_confirmation'&&<button type="button" data-action="confirm-proposal" disabled={confirming} onClick={confirm}>{confirming?'Sending confirmation…':`Confirm ${proposal.version}`}</button>}
       {confirmationError&&<p role="alert">{confirmationError}</p>}
-    </div>:<div className="dsh-director-gallery">{result.items.map(item=><MediaItem key={item.id} item={item} onEnlarge={setSelected}/>)}</div>}
+    </div>:compare&&stills.length>1?<div className="dsh-director-compare"><CompareWipe tabs images={compareImages}/></div>:<div className="dsh-director-gallery">{result.items.map(item=><MediaItem key={item.id} item={item} onEnlarge={setSelected}/>)}</div>}
     {selected&&<MediaDialog item={selected.item} startTime={selected.startTime} opener={selected.opener} onClose={close}/>}</section>;
 }

@@ -69,8 +69,9 @@ export function ZoomPanImage({ src, alt, className, view, onView }: { src: strin
 }
 
 // Compare two (pick from more): A sits clipped over B; the slider wipes A; pan/zoom is shared so matching
-// details stay registered. ponytail: assumes similar aspect ratios — mismatched pairs letterbox.
-export function CompareWipe({ images }: { images: { src: string; label: string }[] }) {
+// details stay registered. tabs=true swaps the two pickers for one tab per image (chat media cards).
+// ponytail: assumes similar aspect ratios — mismatched pairs letterbox.
+export function CompareWipe({ images, tabs = false }: { images: { src: string; label: string }[]; tabs?: boolean }) {
   const [a, setA] = useState(0);
   const [b, setB] = useState(1);
   const [wipe, setWipe] = useState(50);
@@ -80,19 +81,32 @@ export function CompareWipe({ images }: { images: { src: string; label: string }
   const ia = options.find((o) => o.index === a) ?? options[0];
   const ib = options.find((o) => o.index === b && o.index !== ia.index) ?? options.find((o) => o.index !== ia.index)!;
   const transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+  // clicking a tab makes it the top (A) image; if it was the base (B), the pair swaps
+  const pick = (index: number) => { if (index === ia.index) return; if (index === ib.index) { setA(ib.index); setB(ia.index); } else setA(index); };
   return (
     <div className="image-compare">
+      {tabs ? (
+        <div className="image-compare-tabs" role="tablist" aria-label="Compare images">
+          {options.map(({ image, index }) => (
+            <button key={index} type="button" role="tab" aria-selected={index === ia.index} className={index === ia.index ? "active" : ""} onClick={() => pick(index)}>{image.label}</button>
+          ))}
+        </div>
+      ) : null}
       <div className="image-canvas image-compare-stage">
         <StageWheel setView={setView} />
-        <img src={ib.src} alt={`${ib.label} (B)`} draggable={false} className="compare-bottom" style={{ transform }} />
-        <img src={ia.src} alt={`${ia.label} (A)`} draggable={false} className="compare-top" style={{ transform, clipPath: `inset(0 ${100 - wipe}% 0 0)` }} />
+        <img src={ib.image.src} alt={`${ib.image.label} (B)`} draggable={false} className="compare-bottom" style={{ transform }} />
+        <img src={ia.image.src} alt={`${ia.image.label} (A)`} draggable={false} className="compare-top" style={{ transform, clipPath: `inset(0 ${100 - wipe}% 0 0)` }} />
         <div className="compare-line" style={{ left: `${wipe}%` }} />
         {view.scale !== 1 ? <button type="button" className="image-canvas-reset" onClick={() => setView(() => IDENTITY)}>{`×${view.scale.toFixed(1)} reset`}</button> : null}
       </div>
       <div className="image-compare-bar">
-        <select value={ia.index} onChange={(event) => setA(Number(event.target.value))}>{options.map(({ image, index }) => <option key={index} value={index}>{`A · ${image.label}`}</option>)}</select>
+        {tabs ? <span className="muted tiny">{`A · ${ia.image.label}  ▸  B · ${ib.image.label}`}</span> : (
+          <>
+            <select value={ia.index} onChange={(event) => setA(Number(event.target.value))}>{options.map(({ image, index }) => <option key={index} value={index}>{`A · ${image.label}`}</option>)}</select>
+            <select value={ib.index} onChange={(event) => setB(Number(event.target.value))}>{options.map(({ image, index }) => <option key={index} value={index}>{`B · ${image.label}`}</option>)}</select>
+          </>
+        )}
         <input type="range" min={0} max={100} value={wipe} onChange={(event) => setWipe(Number(event.target.value))} aria-label="Wipe between A and B" />
-        <select value={ib.index} onChange={(event) => setB(Number(event.target.value))}>{options.map(({ image, index }) => <option key={index} value={index}>{`B · ${image.label}`}</option>)}</select>
         <button type="button" onClick={() => { setA(ib.index); setB(ia.index); }} aria-label="Swap A and B">⇄</button>
       </div>
     </div>
