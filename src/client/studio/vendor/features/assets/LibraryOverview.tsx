@@ -170,6 +170,16 @@ export function LibraryOverview({ onSelectKind, onEditInStudio }: {
             }
           }}
           onDelete={() => void onDeleteAsset(detailAsset)}
+          onFilesChanged={() => {
+            // Plugin: a file was deleted inside the dialog — re-pull that kind and keep the dialog on the fresh record.
+            const kind = detailAsset.kind as string;
+            listLibraryAssets(kind, projectId)
+              .then((assets) => {
+                setGroups((g) => ({ ...g, [kind]: assets }));
+                setDetailAsset((d) => (d ? assets.find((a) => a.id === d.id) ?? null : d));
+              })
+              .catch(() => undefined);
+          }}
         />
       ) : null}
       {editingAsset ? (

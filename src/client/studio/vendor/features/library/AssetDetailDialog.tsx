@@ -72,15 +72,25 @@ export function AssetDetailDialog({
   onClose,
   onDelete,
   onEdit,
+  onFilesChanged,
 }: {
   asset: LibraryAsset;
   busy?: boolean;
   onClose: () => void;
   onDelete?: () => void;
   onEdit?: () => void;
+  onFilesChanged?: () => void;
 }) {
   const slots = useMemo(() => assetSlots(asset), [asset]);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+
+  // Plugin: delete ONE stored file (agents can pile hundreds of test renders onto an asset).
+  async function removeFile(key: string) {
+    if (!window.confirm(`Delete “${labelForKey(key)}” from “${asset.name}”?\n\nThis cannot be undone.`)) return;
+    const res = await fetch(`/api/library/${asset.kind}/${asset.id}/files/${encodeURIComponent(key)}`, { method: "DELETE" });
+    if (res.ok) onFilesChanged?.();
+    else window.alert(`Delete failed: ${await res.text()}`);
+  }
 
   return (
     <>
@@ -129,20 +139,35 @@ export function AssetDetailDialog({
                     <div className="folder-file-label">{slot.label}</div>
                     <audio controls preload="metadata" src={slot.url || undefined} />
                     {slot.filename ? <div className="muted tiny ellipsis">{slot.filename}</div> : null}
+                    <button type="button" className="btn ghost sm" title="Delete file" aria-label={`Delete ${slot.label}`} disabled={busy} style={{ marginTop: "0.3rem" }} onClick={() => void removeFile(slot.key)}>
+                      ✕
+                    </button>
                   </div>
                 ) : (
-                  <button
-                    key={slot.key}
-                    type="button"
-                    className="folder-file-card"
-                    onClick={() => setLightboxIndex(index)}
-                  >
-                    <div className="folder-file-thumb">
-                      {slot.url ? <img src={slot.url} alt={slot.label} /> : <div className="output-empty">—</div>}
-                    </div>
-                    <div className="folder-file-label">{slot.label}</div>
-                    {slot.filename ? <div className="muted tiny ellipsis">{slot.filename}</div> : null}
-                  </button>
+                  <div key={slot.key} style={{ position: "relative" }}>
+                    <button
+                      type="button"
+                      className="folder-file-card"
+                      onClick={() => setLightboxIndex(index)}
+                    >
+                      <div className="folder-file-thumb">
+                        {slot.url ? <img loading="lazy" src={slot.url} alt={slot.label} /> : <div className="output-empty">—</div>}
+                      </div>
+                      <div className="folder-file-label">{slot.label}</div>
+                      {slot.filename ? <div className="muted tiny ellipsis">{slot.filename}</div> : null}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn ghost sm"
+                      title="Delete file"
+                      aria-label={`Delete ${slot.label}`}
+                      disabled={busy}
+                      style={{ position: "absolute", top: "-0.5rem", right: "-0.4rem", width: "1.5rem", height: "1.5rem", padding: 0, borderRadius: "999px", border: "1px solid currentColor", lineHeight: 1 }}
+                      onClick={() => void removeFile(slot.key)}
+                    >
+                      ✕
+                    </button>
+                  </div>
                  ),
                )}
              </div>

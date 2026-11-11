@@ -6,6 +6,7 @@ import type { OutputSlot } from "../../shared/api/types";
 import { useProject } from "../../shared/project/ProjectContext";
 import {
   cancelJob,
+  deleteActorFile,
   fetchDefaults,
   generateActor,
   getJob,
@@ -127,17 +128,18 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
     setWardrobeImg(null);
     setWardrobeOpen(false);
     setExtraImgs([]);
-    const toLocal = async (ref: { url: string; filename: string }) => {
+    const toLocal = async (ref: { url: string; filename: string; storageKey?: string }) => {
       const blob = await fetch(ref.url).then((r) => r.blob());
-      return { file: new File([blob], ref.filename, { type: blob.type }), previewUrl: URL.createObjectURL(blob) };
+      return { file: new File([blob], ref.filename, { type: blob.type }), previewUrl: URL.createObjectURL(blob), storageKey: ref.storageKey };
     };
     const extras: (LocalImage | null)[] = [];
     const primary = references?.actor_image ?? (picked.urls?.master ? { url: picked.urls.master, filename: picked.files?.master || "master.png" } : null);
     if (primary) setActorImg(await toLocal(primary));
     // Plugin: images imported into the asset later (any non-master key) are references too — show and re-send them, even when the asset has no job inputs.
-    for (const key of Object.keys(picked.urls ?? {})) {
-      if (key === "master" || key === "wardrobe_ref") continue;
-      extras.push(await toLocal({ url: picked.urls[key], filename: picked.files?.[key] || `${key}.png` }));
+    // ponytail: cap at the 12 newest stored extras (an agent running render tests piled 195 files onto one actor and opening the editor
+    // downloaded every one of them, one at a time, for minutes); "remove all stored extras" below wipes every extra key, shown or not.
+    for (const key of Object.keys(picked.urls ?? {}).filter((key) => key !== "master" && key !== "wardrobe_ref").slice(-12)) {
+      extras.push(await toLocal({ url: picked.urls[key], filename: picked.files?.[key] || `${key}.png`, storageKey: key }));
     }
     if (!references?.wardrobe_image && picked.urls?.wardrobe_ref) {
       setWardrobeOpen(true);
@@ -456,7 +458,14 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
                       aria-label="Remove reference"
                       disabled={isRunning}
                       style={{ position: "absolute", top: "-0.5rem", right: "-0.4rem", width: "1.5rem", height: "1.5rem", padding: 0, borderRadius: "999px", border: "1px solid currentColor", lineHeight: 1 }}
-                      onClick={() => setExtraImgs((list) => list.filter((_, position) => position !== index))}
+                      onClick={async () => {
+                        // A stored reference must be deleted on the server too — removing only the slot left the image on the asset forever.
+                        const entry = extraImgs[index] as (LocalImage & { storageKey?: string }) | null;
+                        if (entry?.storageKey && editId) {
+                          try { await deleteActorFile(editId, entry.storageKey); } catch (e) { window.alert(`Delete failed: ${String(e)}`); return; }
+                        }
+                        setExtraImgs((list) => list.filter((_, position) => position !== index));
+                      }}
                     >
                       ✕
                     </button>
@@ -467,6 +476,28 @@ export function CastingPage({ onOpenLibrary, initialEditId }: Props) {
             <button type="button" className="btn secondary sm" style={{ marginTop: "0.5rem" }} disabled={isRunning || extraImgs.length >= 6} onClick={() => setExtraImgs((list) => [...list, null])}>
               + Add reference
             </button>
+            {editId && Object.keys(libraryActors.find((item) => item.id === editId)?.urls ?? {}).some((key) => key !== "master" && key !== "wardrobe_ref") ? (
+              <button
+                type="button"
+                className="btn danger sm"
+                style={{ marginTop: "0.5rem", marginLeft: "0.5rem" }}
+                disabled={isRunning}
+                onClick={async () => {
+                  const asset = libraryActors.find((item) => item.id === editId);
+                  const keys = Object.keys(asset?.urls ?? {}).filter((key) => key !== "master" && key !== "wardrobe_ref");
+                  if (!window.confirm(`Delete all ${keys.length} stored extra images from “${asset?.name}”?\n\nThe master render and wardrobe reference are kept. This cannot be undone.`)) return;
+                  let failed = 0;
+                  for (const key of keys) {
+                    try { await deleteActorFile(editId, key); } catch { failed += 1; }
+                  }
+                  if (failed) window.alert(`${failed} of ${keys.length} deletes failed.`);
+                  setExtraImgs((list) => list.filter((entry) => !(entry as (LocalImage & { storageKey?: string }) | null)?.storageKey));
+                  listActors(projectId).then((items) => setLibraryActors(items)).catch(() => undefined);
+                }}
+              >
+                Remove all stored extras
+              </button>
+            ) : null}
             {wardrobeImg ? (
               <div className="wardrobe-options">
                 <label className="check">

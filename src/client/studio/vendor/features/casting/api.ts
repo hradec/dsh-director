@@ -160,3 +160,10 @@ export async function saveGenerationSettings(kind: string, instructions: string)
   const res = await fetch("/api/library/generation-settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind, instructions }) });
   if (!res.ok) throw new Error(await parseError(res));
 }
+
+// Plugin: remove one stored file from an asset. The editor's remove/purge actions call this;
+// without it a removed reference is only local and the stored image reappears on next open.
+export async function deleteActorFile(assetId: string, key: string): Promise<void> {
+  const res = await fetch(`/api/library/actors/${assetId}/files/${encodeURIComponent(key)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await parseError(res));
+}
