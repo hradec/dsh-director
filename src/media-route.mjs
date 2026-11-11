@@ -32,6 +32,14 @@ export function createMediaHandler({store,requestRejection,presentation,controll
         const response=JSON.stringify({presented_at:presentedAt});
         res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store','Content-Length':String(Buffer.byteLength(response))});res.end(response);return;
       }
+      if(req.method==='GET'&&url.pathname==='/director-media/list'){
+        // Session media shelf for the Studio rail: images+videos this session registered, with playback URLs.
+        const wanted=url.searchParams.getAll('session');
+        if(wanted.length!==1||[...url.searchParams.keys()].some(k=>k!=='session'))throw new MediaError('Media list is invalid.',400);
+        const items=await store.listForSession(wanted[0],controller.signal);
+        const response=JSON.stringify({items:items.filter(item=>item.type==='image'||item.type==='video').map(item=>({...item,url:`/director-media/${item.id}?session=${encodeURIComponent(wanted[0])}`}))});
+        res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store','Content-Length':String(Buffer.byteLength(response))});res.end(response);return;
+      }
       if(!['GET','HEAD'].includes(req.method)){res.writeHead(405,{Allow:'GET, HEAD'});res.end();return;}
       const id=/^\/director-media\/([A-Za-z0-9_-]{43})$/.exec(url.pathname)?.[1];
       const sessions=url.searchParams.getAll('session');

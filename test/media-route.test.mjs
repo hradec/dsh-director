@@ -97,3 +97,24 @@ test('single range parser clamps end and rejects invalid or zero-sized ranges',a
   for(const h of ['bytes=-0','bytes=999999999999999999999999-','bytes=1-2,3-4'])assert.throws(()=>parseSingleRange(h,10));
   assert.throws(()=>parseSingleRange('bytes=0-',0));
 });
+
+test('session media list route serves image/video registrations with playback URLs',async t=>{
+  const {createMediaHandler}=await import('../src/media-route.mjs');
+  const id='b'.repeat(43);
+  const store={async listForSession(session){
+    if(session!=='s')throw Object.assign(new Error('Media not found.'),{status:404});
+    return [
+      {id,type:'video',mime:'video/mp4',filename:'clip.mp4',size:10,source:'/tmp/clip.mp4',at:'2026-11-10T20:00:00.000Z'},
+      {id:'c'.repeat(43),type:'audio',mime:'audio/wav',filename:'voice.wav',size:4,source:'/tmp/voice.wav',at:'2026-11-10T21:00:00.000Z'},
+    ];
+  }};
+  const handler=createMediaHandler({requestRejection:()=>undefined,store});
+  const server=createServer(handler);await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();server.close();});
+  const base=`http://127.0.0.1:${server.address().port}/director-media/list`;
+  let response=await fetch(`${base}?session=s`);assert.equal(response.status,200);
+  const body=await response.json();
+  assert.deepEqual(body.items.map(i=>i.type),['video']); // audio filtered out of the shelf
+  assert.equal(body.items[0].url,`/director-media/${id}?session=s`);
+  assert.equal(body.items[0].filename,'clip.mp4');
+  for(const [suffix,status] of [['?session=s&extra=1',400],['?session=s&session=t',400],['',400],['?other=s',400]])assert.equal((await fetch(`${base}${suffix}`)).status,status,`${suffix||'no query'} should be ${status}`);
+});

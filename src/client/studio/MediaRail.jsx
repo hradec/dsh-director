@@ -43,11 +43,24 @@ const fmt = (at) => String(at).replace("T", " ").slice(0, 16);
 
 export function MediaRail({ onClose }) {
   const [assets, setAssets] = useState(null);
+  const [records, setRecords] = useState([]); // session media-store registrations (review/registered media)
   const [filter, setFilter] = useState("both");
   const [cursor, setCursor] = useState({}); // title → chosen version index
   const [open, setOpen] = useState(null); // card open in the big viewer
-  useEffect(() => { apiFetch("/api/library").then((r) => r.json()).then(setAssets).catch(() => setAssets([])); }, []);
-  const groups = useMemo(() => (assets ? groupVersions(buildCards(assets)) : []), [assets]);
+  useEffect(() => {
+    const session = globalThis.__DSH_DIRECTOR_SESSION__ ?? "";
+    // ponytail: no cross-source dedupe — a review image that later became an asset can show twice;
+    // the title-group stacks usually fold them together anyway. Upgrade path: dedupe by sha256 once the library API exposes it.
+    Promise.all([
+      apiFetch("/api/library").then((r) => r.json()).catch(() => []),
+      session ? apiFetch(`/director-media/list?session=${encodeURIComponent(session)}`).then((r) => r.json()).then((v) => (Array.isArray(v?.items) ? v.items : [])).catch(() => []) : Promise.resolve([]),
+    ]).then(([assetList, list]) => { setAssets(assetList); setRecords(list); });
+  }, []);
+  const groups = useMemo(() => {
+    const shelf = assets ? buildCards(assets) : [];
+    if (assets) for (const r of records) shelf.push({ title: String(r.filename ?? "").replace(/\.[^.]+$/, "") || r.id, kind: "session", key: r.type, url: r.url, type: r.type, at: r.at ?? "" });
+    return groupVersions(shelf);
+  }, [assets, records]);
   const shown = filter === "both" ? groups : groups.filter((g) => g.some((c) => c.type === filter));
   return (
     <aside className="media-rail" aria-label="Session media">

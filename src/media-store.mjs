@@ -1,6 +1,6 @@
 import {randomBytes,createHash} from 'node:crypto';
 import {constants} from 'node:fs';
-import {lstat,mkdir,open,readFile,rename,realpath,unlink} from 'node:fs/promises';
+import {lstat,mkdir,open,readdir,readFile,rename,realpath,unlink} from 'node:fs/promises';
 import {basename,extname,join,resolve} from 'node:path';
 import {imageType} from './image-type.mjs';
 
@@ -127,6 +127,23 @@ export function createMediaStore({root,maxBytes=512*1024*1024}){
     finally{await source?.close();}
     return openSnapshot(record,signal);
   }
+  // Session media shelf: every registration belonging to one session, newest first.
+  // ponytail: full-directory scan (O(all sessions' media)); fine at this scale. Upgrade path: one index file per session.
+  async function listForSession(sessionId){
+    if(typeof sessionId!=='string'||!sessionId)throw new MediaError('Media not found.',404);
+    let names;try{names=await readdir(root);}catch{return[];}
+    const items=[];
+    for(const name of names){
+      if(!name.endsWith('.json'))continue;
+      let record;try{record=JSON.parse(await readFile(join(root,name),'utf8'));}catch{continue;}
+      if(record.sessionId!==sessionId||typeof record.id!=='string'||record.id+'.json'!==name)continue;
+      // The manifest mtime is the registration time: each card's version-stack stamp.
+      const info=await lstat(join(root,name)).catch(()=>undefined);
+      items.push({id:record.id,type:record.type,mime:record.mime,filename:record.filename,size:Number(record.size??0),source:record.source,at:new Date(info?.mtimeMs??0).toISOString()});
+    }
+    items.sort((a,b)=>String(b.at).localeCompare(String(a.at)));
+    return items;
+  }
   // Preserve the old strict contract for callers still using openVerified.
-  return {register,lookup,openForPlayback,openOriginal,openVerified:openOriginal};
+  return {register,lookup,openForPlayback,openOriginal,openVerified:openOriginal,listForSession};
 }
