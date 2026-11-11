@@ -87,3 +87,33 @@ test('session media rail stacks versions, merges library and registered media, n
   assert.equal(document.querySelector('.media-card video'),null); // Videos hidden under Images filter
   await act(()=>root.unmount());dom.window.close();delete globalThis.window;delete globalThis.document;
 });
+
+test('GenUI media fence takeover: tabs per image, compare wipe toggle, mixed fences untouched',async()=>{
+  const built=await build({entryPoints:['src/client/media-fence-enhancer.mjs'],bundle:true,write:false,format:'cjs',platform:'node',external:['react','react-dom','react/jsx-runtime'],jsx:'automatic'});
+  const dom=new JSDOM(`<div id="root"></div><div class="genui-dom-fence"><div>
+    <figure class="x_media"><img class="x_mediaPlayer" src="http://h/u/vendor.png" alt="vendor"><span class="x_mediaLabel">vendor 2K</span></figure>
+    <figure class="x_media"><img class="x_mediaPlayer" src="http://h/u/ailab.png" alt="ailab"><span class="x_mediaLabel">AILab 2K</span></figure>
+    <figure class="x_media"><video class="x_videoPlayer" src="http://h/u/clip.mp4"></video><span class="x_mediaLabel">clip</span></figure>
+  </div></div><div class="genui-dom-fence"><div><figure class="x_media"><img class="x_mediaPlayer" src="http://h/u/one.png"></figure><p>some caption text</p></div></div>`,{url:'http://localhost:3080'});
+  globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+  const module={exports:{}};
+  vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:createRequire(import.meta.url),document:dom.window.document,MutationObserver:dom.window.MutationObserver,setTimeout:globalThis.setTimeout,clearTimeout:globalThis.clearTimeout,WeakMap,React:globalThis.React??React});
+  const {startMediaFenceTakeover}=module.exports;
+  const cleanup=startMediaFenceTakeover(dom.window.document);
+  await act(async()=>{});
+  assert.equal(dom.window.document.querySelectorAll('.dsh-fence-card').length,1); // mixed fence untouched
+  assert.match(dom.window.document.querySelectorAll('.genui-dom-fence')[1].textContent,/some caption text/);
+  const tabs=[...dom.window.document.querySelectorAll('.dsh-fence-tabs button')];
+  assert.deepEqual(tabs.map((b)=>b.textContent),['vendor 2K','AILab 2K']);
+  assert.equal(dom.window.document.querySelector('.dsh-fence-card .image-canvas img').src,'http://h/u/vendor.png');
+  await act(()=>tabs[1].click());
+  assert.equal(dom.window.document.querySelector('.dsh-fence-card .image-canvas img').src,'http://h/u/ailab.png');
+  const compare=dom.window.document.querySelector('.dsh-fence-mode');
+  await act(()=>compare.click());
+  assert.ok(dom.window.document.querySelector('.dsh-fence-card .image-compare-stage'));
+  assert.ok(dom.window.document.querySelector('.dsh-fence-card .image-compare-bar input[type="range"]'));
+  assert.equal(dom.window.document.querySelectorAll('.dsh-fence-videos video').length,1); // video kept as player below
+  await act(()=>compare.click());
+  assert.equal(dom.window.document.querySelector('.dsh-fence-card .image-compare-stage'),null); // back to viewer
+  cleanup();await act(async()=>{});dom.window.close();delete globalThis.window;delete globalThis.document;
+});

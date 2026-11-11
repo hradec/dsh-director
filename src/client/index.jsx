@@ -5,12 +5,14 @@ import {watchSessionWake} from './session-recovery.mjs';
 import {AssetsTab,MediaTab,ProductionTab,StoryTab,TimelineTab} from './studio/StudioSidebar.jsx';
 import {createMediaBody,MEDIA_KINDS} from './MediaBodies.jsx';
 import {startMediaPathFixer} from './markdown-media.mjs';
+import {startMediaFenceTakeover} from './media-fence-enhancer.mjs';
 import css from './media.css';
 export const name='dsh-director-ui';
 export const inject=['slots','conversation','connection','sessions','sidebarRightTabs','documentPreviews'];
 export function apply(ctx){
   ctx.effect(()=>watchSessionWake(ctx.connection),'director foreground recovery');
   ctx.effect(()=>startMediaPathFixer(document),'director markdown media path repair');
+  ctx.effect(()=>startMediaFenceTakeover(document),'director GenUI media fence takeover');
   ctx.effect(()=>{const style=document.createElement('style');style.dataset.director='media';style.textContent=css;document.head.append(style);return ()=>style.remove();},'director media styles');
   if(typeof ctx.inject==='function')ctx.inject(['configForms'],scoped=>{
     scoped.effect(()=>scoped.configForms.whileServed(['dsh-director'],()=>{

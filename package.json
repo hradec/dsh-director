@@ -1,6 +1,6 @@
 {
   "name": "dsh-director",
-  "version": "0.2.30",
+  "version": "0.2.31",
   "description": "Director tools, Assets, Production and Story sidebar tabs, decision/beat story bible with chronology lint, optional H3 guidance, and conversation media previews for DeepSeek Harness Web",
   "license": "MIT",
   "repository": {
