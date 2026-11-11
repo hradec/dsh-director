@@ -112,7 +112,7 @@ function AppSettingsPanel({onClose}){
 }
 function StudioContent({area,sendDshRequest}){
   const [settingsOpen,setSettingsOpen]=useState(false);
-  const [railOpen,setRailOpen]=useState(true); // human wants the media shelf visible; ✕ closes until next open
+  const [railOpen,setRailOpen]=useState(false); // human asked 0.2.30: rail never auto-opens; 🎞 or the Media tab only
   useEffect(()=>{
     // Plugin: keep the latest crew persona notes visible to the request bridge (film-crew skill).
     apiFetch('/api/library/app-settings').then((r)=>r.json()).then((v)=>{globalThis.__DSH_CREW__=v.crew??{};}).catch(()=>{});

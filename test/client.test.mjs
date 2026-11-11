@@ -61,3 +61,29 @@ test('multi-image card Compare button swaps gallery for tabs + wipe slider',asyn
   assert.equal(document.querySelector('button[data-action="compare"]'),null);
   await act(()=>root.unmount());dom.window.close();delete globalThis.window;delete globalThis.document;
 });
+
+test('session media rail stacks versions, merges library and registered media, no close button standalone',async()=>{
+  const built=await build({entryPoints:['src/client/studio/MediaRail.jsx'],bundle:true,write:false,format:'cjs',platform:'node',external:['react','react-dom'],jsx:'automatic'});
+  const module={exports:{}};
+  const assets=[
+    {kind:'actors',name:'Mia',files:{master:'v1.png'},urls:{master:'/director-studio/api/f/1'},created_at:'2026-10-01T00:00:00Z',updated_at:'2026-10-01T00:00:00Z'},
+    {kind:'actors',name:'Mia',files:{master:'v2.png'},urls:{master:'/director-studio/api/f/2'},created_at:'2026-11-02T00:00:00Z',updated_at:'2026-11-02T00:00:00Z'},
+  ];
+  const media={items:[{id:'d'.repeat(43),type:'video',mime:'video/mp4',filename:'clip.mp4',size:9,url:'/director-media/d?session=s',at:'2026-11-03T00:00:00Z'}]};
+  const sandbox={Headers:globalThis.Headers,Request:globalThis.Request,Response:globalThis.Response,URL:globalThis.URL,__DSH_DIRECTOR_SESSION__:'s'};
+  sandbox.globalThis=sandbox;
+  sandbox.fetch=async(input)=>({json:async()=>String(input).includes('director-media/list')?media:assets});
+  vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:createRequire(import.meta.url),...sandbox});
+  const {MediaRail}=module.exports;
+  const dom=new JSDOM('<div id="root"></div>',{url:'http://localhost:3080'});
+  globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+  const root=createRoot(document.getElementById('root'));
+  await act(async()=>{root.render(React.createElement(MediaRail,{}));});
+  assert.equal(document.querySelector('[aria-label="Close media rail"]'),null); // standalone has no ✕
+  assert.match(document.querySelector('.media-card-versions span').textContent,/v2\/2/); // newest is the face
+  assert.ok(document.querySelector('.media-card video')); // registered session video renders
+  const imagesFilter=[...document.querySelectorAll('.media-rail-filters button')].find((b)=>b.textContent==='Images');
+  await act(()=>imagesFilter.click());
+  assert.equal(document.querySelector('.media-card video'),null); // Videos hidden under Images filter
+  await act(()=>root.unmount());dom.window.close();delete globalThis.window;delete globalThis.document;
+});

@@ -2,7 +2,7 @@ import {MediaCard} from './MediaCard.jsx';
 import {GpuUsageSettings} from './GpuUsageSettings.jsx';
 import {PresetAwareGpuStatus} from './GpuStatus.jsx';
 import {watchSessionWake} from './session-recovery.mjs';
-import {AssetsTab,ProductionTab,StoryTab,TimelineTab} from './studio/StudioSidebar.jsx';
+import {AssetsTab,MediaTab,ProductionTab,StoryTab,TimelineTab} from './studio/StudioSidebar.jsx';
 import {createMediaBody,MEDIA_KINDS} from './MediaBodies.jsx';
 import {startMediaPathFixer} from './markdown-media.mjs';
 import css from './media.css';
@@ -38,6 +38,7 @@ export function apply(ctx){
      {id:'dsh-director-studio-production',kind:'director-studio-production',title:()=>'Production',Body:ProductionTab,guide:[{id:'production',order:40,title:()=>'Production',description:()=>'Project shots, references, dialogue, and generation review.'}]},
      {id:'dsh-director-studio-timeline',kind:'director-studio-timeline',title:()=>'Timeline',Body:TimelineTab,guide:[{id:'timeline',order:45,title:()=>'Timeline',description:()=>'Episode timeline: sequence buttons, shot blocks, take switching, watch the whole cut before rendering it.'}]},
      {id:'dsh-director-studio-story',kind:'director-studio-story',title:()=>'Story',Body:StoryTab,guide:[{id:'story',order:50,title:()=>'Story',description:()=>'Decision cards, canon floor, story beats on two clocks — the wall that remembers what you decided.'}]},
+     {id:'dsh-director-studio-media',kind:'director-studio-media',title:()=>'Media',Body:MediaTab,guide:[{id:'media',order:35,title:()=>'Media',description:()=>'Every image and video of this session as cards: Images/Videos/Both filter, same-title version stacks, click to zoom or play.'}]},
    ];
    if(ctx.sidebarRightTabs?.register)for(const definition of studioTabs){
      const Body=definition.Body;

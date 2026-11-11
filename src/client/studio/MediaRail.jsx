@@ -71,7 +71,7 @@ export function MediaRail({ onClose }) {
             <button key={f} type="button" className={filter === f ? "btn primary sm" : "btn ghost sm"} onClick={() => setFilter(f)}>{label}</button>
           ))}
         </div>
-        <button type="button" className="btn ghost sm" aria-label="Close media rail" onClick={onClose}>✕</button>
+        {onClose ? <button type="button" className="btn ghost sm" aria-label="Close media rail" onClick={onClose}>✕</button> : null}
       </div>
       <div className="media-rail-grid">
         {shown.map((g) => {
