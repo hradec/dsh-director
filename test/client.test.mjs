@@ -121,8 +121,8 @@ test('GenUI media fence takeover: tabs per image, compare wipe toggle, mixed fen
 test('dragging one chat card onto another merges images into one tabbed card; reset restores',async()=>{
   const built=await build({entryPoints:['src/client/media-fence-enhancer.mjs'],bundle:true,write:false,format:'cjs',platform:'node',external:['react','react-dom','react/jsx-runtime'],jsx:'automatic'});
   const dom=new JSDOM(`<div id="root"></div>
-    <div class="genui-dom-fence"><div><figure class="x_media"><img class="x_mediaPlayer" src="http://h/u/a.png"><span class="x_mediaLabel">vendor</span></figure></div></div>
-    <div class="genui-dom-fence"><div><figure class="x_media"><img class="x_mediaPlayer" src="http://h/u/b.png"><span class="x_mediaLabel">AILab</span></figure></div></div>`,{url:'http://localhost:3080'});
+    <div class="msg"><div class="genui-dom-fence"><div><figure class="x_media"><img class="x_mediaPlayer" src="http://h/u/a.png"><span class="x_mediaLabel">vendor</span></figure></div></div></div>
+    <div class="msg"><div class="genui-dom-fence"><div><figure class="x_media"><img class="x_mediaPlayer" src="http://h/u/b.png"><span class="x_mediaLabel">AILab</span></figure></div></div></div>`,{url:'http://localhost:3080'});
   globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true;
   const module={exports:{}};
   vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:createRequire(import.meta.url),document:dom.window.document,MutationObserver:dom.window.MutationObserver,setTimeout:globalThis.setTimeout,clearTimeout:globalThis.clearTimeout,WeakMap,Set,React:globalThis.React??React});
@@ -148,5 +148,28 @@ test('dragging one chat card onto another merges images into one tabbed card; re
   await act(()=>reset.click());
   assert.equal(cardA.querySelector('.dsh-fence-tabs'),null); // back to the single original image
   assert.ok(cardB.isConnected); // source card untouched
+  cleanup();await act(async()=>{});dom.window.close();delete globalThis.window;delete globalThis.document;
+});
+
+test('three consecutive one-image fences auto-group into one three-tab card; reset splits back',async()=>{
+  const built=await build({entryPoints:['src/client/media-fence-enhancer.mjs'],bundle:true,write:false,format:'cjs',platform:'node',external:['react','react-dom','react/jsx-runtime'],jsx:'automatic'});
+  const dom=new JSDOM(`<div id="root"></div><div class="msg">
+    <div class="genui-dom-fence"><div><figure class="x_media"><img class="x_mediaPlayer" src="http://h/u/orig.png"><span class="x_mediaLabel">original</span></figure></div></div>
+    <div class="genui-dom-fence"><div><figure class="x_media"><img class="x_mediaPlayer" src="http://h/u/v1.png"><span class="x_mediaLabel">Real-ESRGAN</span></figure></div></div>
+    <div class="genui-dom-fence"><div><figure class="x_media"><img class="x_mediaPlayer" src="http://h/u/v2.png"><span class="x_mediaLabel">4x-UltraSharp</span></figure></div></div>
+  </div>`,{url:'http://localhost:3080'});
+  globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+  const module={exports:{}};
+  vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:createRequire(import.meta.url),document:dom.window.document,MutationObserver:dom.window.MutationObserver,setTimeout:globalThis.setTimeout,clearTimeout:globalThis.clearTimeout,WeakMap,Set,React:globalThis.React??React});
+  const {startMediaFenceTakeover}=module.exports;
+  const cleanup=startMediaFenceTakeover(dom.window.document);
+  await act(async()=>{});
+  const cards=()=>[...dom.window.document.querySelectorAll('.dsh-fence-card')];
+  assert.equal(cards().length,1); // the agent split it; the plugin re-joined it
+  assert.deepEqual([...cards()[0].querySelectorAll('.dsh-fence-tabs button')].map((b)=>b.textContent),['original','Real-ESRGAN','4x-UltraSharp']);
+  assert.ok(cards()[0].querySelector('.dsh-fence-mode')); // compare available across the group
+  await act(()=>cards()[0].querySelector('.dsh-fence-reset').click());
+  assert.equal(cards().length,3); // reset restores the fence's own cards
+  assert.deepEqual(cards().map((c)=>c.querySelector('.dsh-fence-title').textContent),['original','Real-ESRGAN','4x-UltraSharp']);
   cleanup();await act(async()=>{});dom.window.close();delete globalThis.window;delete globalThis.document;
 });
