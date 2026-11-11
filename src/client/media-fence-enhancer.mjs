@@ -46,7 +46,15 @@ function takeover(root) {
   const reactRoot = createRoot(mount);
   cardRoots.set(root, reactRoot);
   liveRoots.add(reactRoot);
-  reactRoot.render(React.createElement(ChatMediaCard, { items }));
+  // Merges are live-state only (dropped cards union in); reload restores each fence's own media.
+  let current = items;
+  const rerender = () => reactRoot.render(React.createElement(ChatMediaCard, {
+    items: current,
+    merged: current !== items,
+    onMerge: (incoming) => { const seen = new Set(current.map((i) => i.src)); current = [...current, ...(Array.isArray(incoming) ? incoming : []).filter((i) => i?.src && !seen.has(i.src))]; rerender(); },
+    onReset: () => { current = items; rerender(); },
+  }));
+  rerender();
 }
 
 export function startMediaFenceTakeover(doc) {

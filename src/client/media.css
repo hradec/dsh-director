@@ -135,3 +135,8 @@ button[data-director-send-paused]{opacity:.4;cursor:not-allowed;pointer-events:n
 .dsh-fence-card .image-canvas img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform-origin:0 0}
 .dsh-fence-videos{display:flex;flex-direction:column;gap:8px}
 .dsh-fence-videos video{width:100%;max-height:60vh;border-radius:10px}
+/* 0.2.32: drag a card onto another → merged tabs+wipe card; ↺ original restores this fence's own media. */
+.dsh-fence-card{cursor:grab}.dsh-fence-card.dragging{opacity:.55}
+.dsh-fence-card.drop-over{outline:2px dashed var(--dsw-alias-label-link,#245fd0);outline-offset:2px}
+.dsh-fence-reset{padding:2px 9px;font-size:12px;border:1px solid var(--dsw-alias-border-l2,#bbb);border-radius:7px;background:transparent;color:inherit;cursor:pointer}
+.dsh-fence-card .image-canvas,.dsh-fence-card .image-compare-stage{cursor:grab}

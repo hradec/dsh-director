@@ -117,3 +117,36 @@ test('GenUI media fence takeover: tabs per image, compare wipe toggle, mixed fen
   assert.equal(dom.window.document.querySelector('.dsh-fence-card .image-compare-stage'),null); // back to viewer
   cleanup();await act(async()=>{});dom.window.close();delete globalThis.window;delete globalThis.document;
 });
+
+test('dragging one chat card onto another merges images into one tabbed card; reset restores',async()=>{
+  const built=await build({entryPoints:['src/client/media-fence-enhancer.mjs'],bundle:true,write:false,format:'cjs',platform:'node',external:['react','react-dom','react/jsx-runtime'],jsx:'automatic'});
+  const dom=new JSDOM(`<div id="root"></div>
+    <div class="genui-dom-fence"><div><figure class="x_media"><img class="x_mediaPlayer" src="http://h/u/a.png"><span class="x_mediaLabel">vendor</span></figure></div></div>
+    <div class="genui-dom-fence"><div><figure class="x_media"><img class="x_mediaPlayer" src="http://h/u/b.png"><span class="x_mediaLabel">AILab</span></figure></div></div>`,{url:'http://localhost:3080'});
+  globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+  const module={exports:{}};
+  vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:createRequire(import.meta.url),document:dom.window.document,MutationObserver:dom.window.MutationObserver,setTimeout:globalThis.setTimeout,clearTimeout:globalThis.clearTimeout,WeakMap,Set,React:globalThis.React??React});
+  const {startMediaFenceTakeover}=module.exports;
+  const cleanup=startMediaFenceTakeover(dom.window.document);
+  await act(async()=>{});
+  const [cardA,cardB]=dom.window.document.querySelectorAll('.dsh-fence-card');
+  const payload={};
+  const dragStart=new dom.window.Event('dragstart',{bubbles:true,cancelable:true});
+  dragStart.dataTransfer={clearData(){},setData:(t,v)=>{payload[t]=v;},effectAllowed:''};
+  await act(()=>cardB.dispatchEvent(dragStart));
+  assert.ok(JSON.parse(payload['application/x-director-media'])[0].src.endsWith('/b.png'));
+  const drop=new dom.window.Event('drop',{bubbles:true,cancelable:true});
+  drop.dataTransfer={getData:(t)=>payload[t]??''};
+  await act(()=>cardA.dispatchEvent(drop));
+  const tabs=()=>[...cardA.querySelectorAll('.dsh-fence-tabs button')].map((b)=>b.textContent);
+  assert.deepEqual(tabs(),['vendor','AILab']);
+  const again=new dom.window.Event('drop',{bubbles:true,cancelable:true});
+  again.dataTransfer={getData:(t)=>payload[t]??''};
+  await act(()=>cardA.dispatchEvent(again));
+  assert.deepEqual(tabs(),['vendor','AILab']); // dedupe by src: dropped twice stays one tab
+  const reset=cardA.querySelector('.dsh-fence-reset');assert.ok(reset);
+  await act(()=>reset.click());
+  assert.equal(cardA.querySelector('.dsh-fence-tabs'),null); // back to the single original image
+  assert.ok(cardB.isConnected); // source card untouched
+  cleanup();await act(async()=>{});dom.window.close();delete globalThis.window;delete globalThis.document;
+});
