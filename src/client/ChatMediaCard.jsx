@@ -10,6 +10,7 @@ export const MEDIA_TRANSFER = "application/x-director-media";
 export function ChatMediaCard({items, onMerge, onReset, merged}) {
   const images = items.filter((i) => i.type === "image");
   const videos = items.filter((i) => i.type === "video");
+  const notes = items.filter((i) => i.type === "note");
   const [active, setActive] = useState(0);
   const [compare, setCompare] = useState(false);
   const [over, setOver] = useState(false);
@@ -51,6 +52,7 @@ export function ChatMediaCard({items, onMerge, onReset, merged}) {
         ? <CompareWipe tabs images={images.map((i) => ({src: i.src, label: label(i)}))} />
         : <ZoomPanImage src={images[active]?.src} alt={label(images[active] ?? {})} className="dsh-fence-canvas" />) : null}
       {videos.length ? <div className="dsh-fence-videos">{videos.map((v, n) => <video key={n} src={v.src} controls preload="metadata" draggable={false} />)}</div> : null}
+      {notes.length ? <div className="dsh-fence-notes">{notes.map((n, k) => <p key={k}>{n.text}</p>)}</div> : null}
     </div>
   );
 }

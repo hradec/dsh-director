@@ -16,7 +16,7 @@ function parseFence(root) {
   const container = root.querySelector(":scope > div") ?? root;
   const items = [];
   for (const b of [...container.children]) {
-    if (!mediaFigure(b)) return null; // mixed-content fence: leave it to GenUI
+    if (!mediaFigure(b)) return null; // mixed-content fence: maybe still convertible from its source JSON
     const video = b.querySelector("video"), img = b.querySelector("img");
     const el = video ?? img;
     if (!el || !el.getAttribute("src")) return null;
@@ -24,6 +24,63 @@ function parseFence(root) {
     items.push({type: video ? "video" : "image", src: el.src, label: caption?.textContent?.trim() || el.getAttribute("alt") || ""});
   }
   return items.length ? items : null;
+}
+
+// GenUI renders each fence from a code-block element that keeps the fence's raw JSON
+// ([data-code-block-content] inside .md-code-block/.code-block — the very selectors GenUI
+// depends on, so this ages exactly as fast as GenUI upgrades). Needed because a tabs-flip
+// fence keeps only the ACTIVE tab's image in the DOM; the source JSON has all of them.
+function rawSpec(root) {
+  const code = root.closest(".md-code-block, .code-block, .code-block-small");
+  if (!code) return null;
+  const holder = code.querySelector("[data-code-block-content]");
+  const raw = holder?.getAttribute("data-code-block-content") || holder?.textContent || "";
+  try {
+    const spec = JSON.parse(raw);
+    if (Array.isArray(spec)) return {items: spec};
+    return spec && typeof spec === "object" ? spec : null;
+  } catch { return null; }
+}
+
+function specItems(spec) {
+  const list = Array.isArray(spec.items) ? spec.items : Array.isArray(spec) ? spec : null;
+  if (!list) return null;
+  const out = [];
+  let media = 0;
+  for (const it of list) {
+    if (!it || typeof it !== "object") return null;
+    if (it.type === "image" || it.type === "video") {
+      const src = it.src || it.url;
+      if (!src) return null;
+      media++;
+      out.push({type: it.type, src, label: it.alt || it.title || it.caption || ""});
+    } else if (it.type === "tabs") {
+      for (const tab of Array.isArray(it.tabs) ? it.tabs : []) {
+        let found = false;
+        for (const k of Array.isArray(tab.items) ? tab.items : []) {
+          if (k && (k.type === "image" || k.type === "video")) {
+            const src = k.src || k.url;
+            if (!src) return null;
+            media++;
+            found = true;
+            out.push({type: k.type, src, label: tab.label || k.alt || ""});
+          } else if (k && k.type !== "text" && k.type !== "caption") return null;
+        }
+        if (!found) return null; // a tab without media: not a media flip
+      }
+    } else if (it.type === "text" || it.type === "caption") {
+      const text = String(it.content ?? it.text ?? "").trim();
+      if (text) out.push({type: "note", text});
+    } else return null; // unknown block types: leave the fence to GenUI
+  }
+  return media ? out : null;
+}
+
+function fenceItems(root) {
+  const dom = parseFence(root);
+  if (dom) return dom;
+  const spec = rawSpec(root);
+  return spec ? specItems(spec) : null;
 }
 
 const liveRoots = new Set();
@@ -36,7 +93,7 @@ function collectGroups(doc) {
   const parsed = new Map();
   for (const f of doc.querySelectorAll(fenceRoot)) {
     if (f.dataset.directorFence === "skip") continue;
-    const items = parseFence(f);
+    const items = fenceItems(f);
     if (!items) { f.dataset.directorFence = "skip"; continue; }
     parsed.set(f, items);
   }

@@ -173,3 +173,27 @@ test('three consecutive one-image fences auto-group into one three-tab card; res
   assert.deepEqual(cards().map((c)=>c.querySelector('.dsh-fence-title').textContent),['original','Real-ESRGAN','4x-UltraSharp']);
   cleanup();await act(async()=>{});dom.window.close();delete globalThis.window;delete globalThis.document;
 });
+
+test('tabs-flip GenUI fence converted via its raw source JSON into one wipe card with notes',async()=>{
+  const built=await build({entryPoints:['src/client/media-fence-enhancer.mjs'],bundle:true,write:false,format:'cjs',platform:'node',external:['react','react-dom','react/jsx-runtime'],jsx:'automatic'});
+  const spec=JSON.stringify({items:[
+    {type:'tabs',tabs:[
+      {label:'Original v97a',items:[{type:'image',src:'http://h/u/orig.png'}]},
+      {label:'SeedVR2 v98a',items:[{type:'image',src:'http://h/u/v98.png'}]},
+      {label:'FLUX.3 v99a',items:[{type:'image',src:'http://h/u/v99.png'}]}]},
+    {type:'text',content:'Model: FLUX.3 Image Klein int8. Workflow: workflows/gutup_flux3_v99a.api.json'}]});
+  const dom=new JSDOM(`<div id="root"></div><div class="code-block"><pre data-code-block-content="${spec.replace(/"/g,'&quot;')}">dsh-ui fence source</pre><div class="genui-dom-fence"><div><div class="x_tabs"><div class="x_tabBar" role="tablist"><button role="tab">Original v97a</button></div><figure class="x_media"><img class="x_mediaPlayer" src="http://h/u/orig.png"></figure></div></div></div></div>`,{url:'http://localhost:3080'});
+  globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+  const module={exports:{}};
+  vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:createRequire(import.meta.url),document:dom.window.document,MutationObserver:dom.window.MutationObserver,setTimeout:globalThis.setTimeout,clearTimeout:globalThis.clearTimeout,WeakMap,Set,React:globalThis.React??React});
+  const {startMediaFenceTakeover}=module.exports;
+  const cleanup=startMediaFenceTakeover(dom.window.document);
+  await act(async()=>{});
+  const cards=[...dom.window.document.querySelectorAll('.dsh-fence-card')];
+  assert.equal(cards.length,1);
+  assert.deepEqual([...cards[0].querySelectorAll('.dsh-fence-tabs button')].map((b)=>b.textContent),['Original v97a','SeedVR2 v98a','FLUX.3 v99a']); // all 3 tabs recovered from source JSON, DOM only had 1
+  await act(()=>cards[0].querySelector('.dsh-fence-mode').click());
+  assert.ok(cards[0].querySelector('.dsh-fence-card .image-compare-bar input[type="range"]') || cards[0].querySelector('.image-compare-bar input[type="range"]')); // wipe available
+  assert.match(cards[0].querySelector('.dsh-fence-notes p').textContent,/workflows\/gutup_flux3_v99a\.api\.json/);
+  cleanup();await act(async()=>{});dom.window.close();delete globalThis.window;delete globalThis.document;
+});
