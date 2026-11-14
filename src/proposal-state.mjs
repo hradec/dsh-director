@@ -198,9 +198,13 @@ export function proposalState(entries,version,card,authorization={}){
       if(confirmationMatches){
         const showingCurrent=equivalentCards.some(card=>displayed===card||card.value.card_id&&displayed?.value.card_id===card.value.card_id);
         const displayedAlias=equivalentCards.find(card=>displayed===card||card.value.card_id&&displayed?.value.card_id===card.value.card_id);
-        const explicitlyNamed=equivalentCards.find(card=>card.value.card_id&&confirmationNormalized(entry.text)===`确认卡片 ${card.value.card_id}`.toLowerCase());
-        const wasPresented=explicitlyNamed?presentedAt(explicitlyNamed.value,entry.time):displayedAlias?presentedAt(displayedAlias.value,entry.time):equivalentCards.some(card=>presentedAt(card.value,entry.time));
-        if((showingCurrent||equivalentCards.some(card=>explicitConfirmation(entry.text,card.value.proposal.version,card.value.card_id)))&&wasPresented){approvedSeq=entry.seq;status='confirmed';}
+        const explicitlyConfirmed=equivalentCards.some(card=>explicitConfirmation(entry.text,card.value.proposal.version,card.value.card_id));
+        // The exact "Confirm <version>/<card-id>" phrase is the human's own recorded words: it can
+        // approve even when the client render-ack was lost (stuck/missing Confirm button). A bare
+        // "ok/yes" still requires the ack. ponytail: the model may coach the phrase to someone who
+        // never saw the card — the human owns what they type; generic words stay gated.
+        const wasPresented=explicitlyConfirmed||(displayedAlias?presentedAt(displayedAlias.value,entry.time):equivalentCards.some(card=>presentedAt(card.value,entry.time)));
+        if((showingCurrent||explicitlyConfirmed)&&wasPresented){approvedSeq=entry.seq;status='confirmed';}
       }else if(latest&&!readOnlyReply(entry.text)){approvedSeq=undefined;status='changes_requested';}
     }else if(entry.kind==='proposal'){
       displayed=entry;
@@ -219,6 +223,18 @@ export function proposalState(entries,version,card,authorization={}){
         let hashes=latestHashes;
         if(requests[i].clipId)try{hashes=boundHashes(entry.value,requests[i].clipId);}catch{hashes=null;}
         if(Array.isArray(hashes)&&fulfilled(requests[i],hashes))requests.splice(i,1);
+      }
+      // A request recorded against different bytes than every reference this card binds belongs
+      // to another production lineage (cards share clip ids like c1 across videos) and can never
+      // be fulfilled here — keeping it would gate unrelated work forever. ponytail: requests
+      // whose baseline overlaps even one bound image survive, so the same-lineage dodge guard
+      // (agent re-shows the old bytes after being told to change them) stays intact.
+      if(Array.isArray(latestHashes))for(let i=requests.length-1;i>=0;i--){
+        const request=requests[i];
+        if(!applies(request,entry.value)||!Array.isArray(request.baseline))continue;
+        const staleBytes=request.baseline.length>0&&!request.baseline.some(hash=>latestHashes.includes(hash));
+        const stalePrelude=request.baseline.length===0&&!request.operations.includes('add');
+        if(staleBytes||stalePrelude)requests.splice(i,1);
       }
     }
   }

@@ -384,17 +384,32 @@ test('legacy copied no-list inference is recomputed but declared missing assets 
   assert.throws(()=>assertProposalSubmission(entries,[{sha256:face},{sha256:layout}]),/pending/);
 });
 
-test("normal approval needs a rendered card before the user's confirmation timestamp",async()=>{
+test('generic approval needs the rendered ack; the exact typed phrase also works without it',async()=>{
   const {proposalState,assertProposalSubmission}=await api();
   const card=proposal(1,'v1');card.value.session_id='s';card.value.card_id='card-1';
-  const reply=user(2,'Confirm v1');reply.time=99;
+  const generic=user(2,'ok');generic.time=99;
   const authorization={requirePresentation:true,isPresented:(sessionId,cardId,time)=>sessionId==='s'&&cardId==='card-1'&&Number.isFinite(time)&&time>=100};
   assert.equal(proposalState([card],'v1',undefined,authorization).status,'awaiting_display');
-  assert.equal(proposalState([card,reply],'v1',undefined,authorization).status,'awaiting_display','a pre-display reply cannot become approval later');
+  assert.equal(proposalState([card,generic],'v1',undefined,authorization).status,'awaiting_display','a bare ok still needs the rendered card');
   assert.throws(()=>assertProposalSubmission([card], [{sha256:face}],undefined,undefined,undefined,authorization),/not been acknowledged as rendered/i);
-  reply.time=101;
-  assert.equal(proposalState([card,reply],'v1',undefined,authorization).status,'confirmed');
-  assert.doesNotThrow(()=>assertProposalSubmission([card,reply],[{sha256:face}],undefined,undefined,undefined,authorization));
+  // Stuck-button fallback: the exact confirmation phrase is the human's own words.
+  const phrase=user(3,'Confirm v1');phrase.time=99;
+  assert.equal(proposalState([card,phrase],'v1',undefined,authorization).status,'confirmed');
+  assert.doesNotThrow(()=>assertProposalSubmission([card,phrase],[{sha256:face}],undefined,undefined,undefined,authorization));
+  generic.time=101;
+  assert.equal(proposalState([card,generic],'v1',undefined,authorization).status,'confirmed','after the ack a generic approval is enough');
+});
+
+test('reference notes from an unrelated older video expire when a card binds none of their bytes',async()=>{
+  const {proposalState,assertProposalSubmission}=await api();
+  const old=proposal(1,'v1',[face,layout]);
+  const entries=[old,user(2,'Remove reference #2.'),proposal(3,'v2',[alternate,'d'.repeat(64)])];
+  // Same clip ids are shared across videos, but the new card binds none of the old bytes:
+  // the stale note can never be fulfilled here and must not gate the new production.
+  assert.equal(proposalState(entries,'v2').status,'awaiting_confirmation','the stale note expired with the old bytes');
+  entries.push(user(4,'Confirm v2'));
+  assert.equal(proposalState(entries,'v2').status,'confirmed');
+  assert.doesNotThrow(()=>assertProposalSubmission(entries,[{sha256:alternate},{sha256:'d'.repeat(64)}]));
 });
 
 test('only an armed active goal or a clear current-task instruction authorizes unattended review',async()=>{
