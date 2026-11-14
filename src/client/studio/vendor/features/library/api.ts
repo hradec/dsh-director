@@ -1,4 +1,5 @@
 import { parseError } from "../../shared/api/client";
+import type { RefMetaEntry } from "../../shared/api/assets";
 
 export type LibraryKind =
   | "actors"
@@ -21,6 +22,11 @@ export interface LibraryAsset {
   meta: Record<string, unknown>;
   urls: Record<string, string>;
   project_id: string | null;
+  /** Filesystem-first references: story text, workspace folder, attached sources, per-file tags/notes. */
+  description?: string;
+  folder?: string | null;
+  sources?: string[];
+  ref_meta?: Record<string, RefMetaEntry>;
 }
 
 export async function listLibraryAssets(

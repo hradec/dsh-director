@@ -1,4 +1,5 @@
 import { parseError } from "../../shared/api/client";
+import { deleteAssetFile, type RefMetaEntry } from "../../shared/api/assets";
 import type { JobStatus, OutputSlot } from "../../shared/api/types";
 
 export type { JobStatus, OutputSlot };
@@ -40,6 +41,11 @@ export interface SceneRecord {
   files: Record<string, string | null>;
   urls: Record<string, string>;
   meta?: Record<string, unknown>;
+  /** Filesystem-first references: attached workspace folders and per-file tag/note metadata. */
+  description?: string;
+  folder?: string | null;
+  sources?: string[];
+  ref_meta?: Record<string, RefMetaEntry>;
   /** Plugin: inputs of the generation job that produced this scene, for the edit picker. */
   form?: { angle_prompts: string; prepend_text: string; append_text: string; negative_prompt: string; seed: number | null; fixed_seed: boolean; ref_labels?: Record<string, string> } | null;
   /** Plugin: stored reference images of that job, refilled into the upload slots on edit. */
@@ -79,9 +85,9 @@ export async function getSceneJob(jobId: string): Promise<SceneJobRecord> {
 }
 
 // Plugin: remove one stored render (file key) from a saved scene without deleting the scene.
+// Generalized to every kind in shared/api/assets — this is the scenes alias.
 export async function deleteSceneFile(assetId: string, key: string): Promise<void> {
-  const res = await fetch(`/api/library/scenes/${assetId}/files/${key}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(await parseError(res));
+  await deleteAssetFile("scenes", assetId, key);
 }
 
 // Plugin: per-kind instructions the DSH agent follows when generating (gear panel).

@@ -1,4 +1,5 @@
 import { parseError } from "../../shared/api/client";
+import type { RefMetaEntry } from "../../shared/api/assets";
 import type { JobStatus, OutputSlot } from "../../shared/api/types";
 
 export type { JobStatus, OutputSlot };
@@ -32,6 +33,11 @@ export interface PropRecord {
   files: Record<string, string | null>;
   urls: Record<string, string>;
   meta?: Record<string, unknown>;
+  /** Filesystem-first references: attached workspace folders and per-file tag/note metadata. */
+  description?: string;
+  folder?: string | null;
+  sources?: string[];
+  ref_meta?: Record<string, RefMetaEntry>;
   /** Plugin: inputs of the generation job that produced this prop, for the edit picker. */
   form?: { seed: number | null; fixed_seed: boolean; negative_prompt: string; ref_labels?: Record<string, string> } | null;
   /** Plugin: stored reference images of that job, refilled into the upload slots on edit. */

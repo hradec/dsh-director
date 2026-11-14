@@ -251,8 +251,14 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})$/.exec(path);
       if(match&&req.method==='PATCH'){const item=await store.updateAsset(match[1],match[2],await readJson(req,controller.signal));sendJson(res,200,presentAsset(item,sessionId));return;}
       if(match&&req.method==='DELETE'){sendJson(res,200,await store.deleteAsset(match[1],match[2]));return;}
-      match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})\/files\/([A-Za-z0-9_-]{1,64})$/.exec(path);
+      match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})\/files\/([A-Za-z0-9_-]{1,100})$/.exec(path);
       if(match&&req.method==='DELETE'){sendJson(res,200,await store.deleteAssetFile(match[1],match[2],match[3]));return;}
+      match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})\/source$/.exec(path);
+      if(match&&req.method==='POST'){const out=await store.attachAssetSource(match[1],match[2],await readJson(req,controller.signal));sendJson(res,200,{added:out.added,asset:presentAsset(out.asset,sessionId)});return;}
+      match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})\/scan$/.exec(path);
+      if(match&&req.method==='POST'){const out=await store.scanAsset(match[1],match[2]);sendJson(res,200,{added:out.added,asset:presentAsset(out.asset,sessionId)});return;}
+      match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})\/refs\/([A-Za-z0-9_-]{1,100})$/.exec(path);
+      if(match&&req.method==='PUT'){sendJson(res,200,await store.setAssetRef(match[1],match[2],{key:match[3],...(await readJson(req,controller.signal))}));return;}
       match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})\/project$/.exec(path);
       if(match&&req.method==='PATCH'){await readJson(req,controller.signal);sendJson(res,200,presentAsset(await store.assignAsset(match[1],match[2],project.id),sessionId));return;}
       if(path==='/api/library/assign-project'&&req.method==='POST'){

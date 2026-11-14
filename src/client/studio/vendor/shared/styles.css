@@ -7235,3 +7235,101 @@ select {
 .media-rail-viewer{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.72);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.6rem;padding:1rem}
 .media-rail-viewer .lightbox-body{width:min(92vw,1100px);height:min(82vh,1100px)}
 .media-rail-viewer video{max-width:92vw;max-height:82vh;border-radius:10px}
+
+/* Filesystem-first asset references: shared ReferenceBoard on the actor/scene/prop pages. */
+.reference-board { display: grid; gap: 1rem; min-width: 0; }
+.reference-board-section {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel, #121820);
+}
+.reference-board-title { margin: 0; font-size: 0.95rem; font-weight: 700; }
+.reference-board-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.reference-board-toggle:hover { color: var(--accent); }
+.reference-tile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.85rem; }
+.reference-tile { position: relative; display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
+.reference-delete {
+  position: absolute;
+  top: -0.5rem;
+  right: -0.4rem;
+  z-index: 2;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  line-height: 1;
+}
+.reference-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
+.reference-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.55rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-soft, #6ea8ff) 25%, transparent);
+  color: var(--text);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+.reference-chip.approved { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 22%, transparent); }
+.reference-chip-x {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.reference-chip-x:hover:not(:disabled) { color: var(--danger); }
+.reference-tag-add,
+.reference-filter-input,
+.reference-source-input {
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--text);
+  background: var(--bg-elev, #0d1117);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 0.25rem 0.45rem;
+}
+.reference-tag-add { width: 6.5rem; }
+.reference-filter-input { width: min(22rem, 100%); }
+.reference-note {
+  width: 100%;
+  font-size: 0.8rem;
+  background: var(--bg-elev, #0d1117);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 0.3rem 0.45rem;
+  resize: vertical;
+}
+.reference-sources {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.75rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+.reference-source-list { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.2rem; }
+.reference-source-list code { font-size: 0.78rem; overflow-wrap: anywhere; }
+.reference-source-actions { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; }
+.reference-source-input { flex: 1 1 12rem; min-width: 8rem; }

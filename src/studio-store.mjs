@@ -1,6 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
-import {mkdir,open,readFile,rename,unlink} from 'node:fs/promises';
-import {basename,extname,join,resolve} from 'node:path';
+import {mkdir,open,readFile,readdir,rename,rm,unlink,writeFile} from 'node:fs/promises';
+import {basename,dirname,extname,isAbsolute,join,resolve} from 'node:path';
 
 const ASSET_KINDS=new Set(['actors','costumes','scenes','props','layouts','voices']);
 const MEDIA_TYPES={
@@ -116,9 +116,60 @@ function presentGenerationJob(job,s){
   const inputs=refAsset?Object.entries(refAsset.files??{}).map(([key,path])=>{const file=s.files.find(value=>value.path===path);return file?{key,filename:file.filename,path}:null;}).filter(Boolean):[];
   return {...job,status:asset&&(job.status==='queued'||job.status==='running')?'succeeded':job.status,asset_id:asset?asset.id:job.asset_id||null,ref_names:refAsset?.file_names??{},ref_labels:job.ref_labels??{},outputs,inputs};
 }
-export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}={}){
+export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot,now=Date.now}={}){
   if(!root||typeof root!=='string')throw new TypeError('A persistent Studio data root is required.');
   root=resolve(root);const statePath=join(root,'studio.json'),mediaRoot=join(root,'media');let state,tail=Promise.resolve();
+  // The filesystem is the database for asset content: every asset lives in <workspace>/assets/<slug>/ as
+  // real files plus asset.json (story description, model notes, source folders, per-file tags+note).
+  // studio.json keeps ids/relations only; asset.json wins for description/notes/sources/ref tags on every read.
+  const workspace=resolve(workspaceRoot??root),assetsRoot=join(workspace,'assets');
+  const slugify=value=>String(value??'').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,64)||'asset';
+  const assetDir=item=>join(assetsRoot,item.folder);
+  const refTagsOf=(meta={})=>{const tags=Array.isArray(meta.tags)?[...new Set(meta.tags.map(tag=>String(tag).trim()).filter(Boolean))]:[];return tags;};
+  // ponytail: approved and brainstorming are mutually exclusive by definition — the human approving an
+  // image retires it from the brainstorm pile. Last operation wins.
+  const exclusiveTags=(tags,added)=>{const win=added.includes('approved')?'approved':added.includes('brainstorming')?'brainstorming':null;return win?tags.filter(tag=>tag==='approved'||tag==='brainstorming'?tag===win:true):tags;};
+  async function readAssetJson(item){if(!item.folder)return null;try{return JSON.parse(await readFile(join(assetDir(item),'asset.json'),'utf8'));}catch{return null;}}
+  function applyAssetJson(item,json){if(!json)return item;if(typeof json.description==='string')item.description=json.description;if(typeof json.notes==='string')item.notes=json.notes;if(Array.isArray(json.sources))item.sources=json.sources;if(json.files&&typeof json.files==='object'&&!Array.isArray(json.files))item.ref_meta=json.files;return item;}
+  async function overlayAssets(items){for(const item of items)applyAssetJson(item,await readAssetJson(item));return items;}
+  async function writeAssetJson(item){if(!item.folder)return;await mkdir(assetDir(item),{recursive:true});
+    await writeFile(join(assetDir(item),'asset.json'),JSON.stringify({id:item.id,kind:item.kind,name:item.name,description:item.description??'',notes:item.notes??'',sources:item.sources??[],files:item.ref_meta??{}},null,1));}
+  async function ensureFolder(s,item){if(item.folder)return;let slug=slugify(item.name),n=2;while(s.assets.some(other=>other.id!==item.id&&other.folder===slug))slug=`${slugify(item.name)}-${n++}`;item.folder=slug;await mkdir(assetDir(item),{recursive:true});}
+  const cleanBase=value=>basename(String(value??'').replaceAll('\\','/')).replace(/[\u0000-\u001f\u007f]/g,'').slice(0,200);
+  async function putAssetFile(s,item,filename,bytes,fileKey){
+    const [type,mime]=mediaType(filename,bytes);
+    const base=cleanBase(filename);if(!base)throw new StudioStoreError('Media filename is required.');
+    const stem=base.replace(/\.[^.]+$/,'').replace(/[^A-Za-z0-9_-]/g,'_').slice(0,64)||'ref';
+    // A named file_key (master, wardrobe_ref…) overwrites its slot; filename-derived keys get a unique slug.
+    let key,overwrite=null;
+    if(fileKey){key=String(fileKey);overwrite=item.files?.[key]??null;}
+    else{const slot=stem;key=slot;let n=2;while(item.files&&Object.hasOwn(item.files,key))key=`${slot}-${n++}`;}
+    if(!key)key=stem;
+    await mkdir(assetDir(item),{recursive:true});
+    const path=overwrite??join(assetDir(item),key+extname(base).toLowerCase());
+    await writeFile(path,bytes);
+    item.files={...item.files,[key]:path};item.file_names={...item.file_names,[key]:base};
+    const previous=item.ref_meta?.[key],tags=refTagsOf(previous??{});
+    item.ref_meta={...(item.ref_meta??{}),[key]:{tags:tags.length?tags:['brainstorming'],note:previous?.note??''}};
+    return {id:id(),kind:item.kind,filename:base,path,type,mime,size:bytes.length,sha256:hash(bytes),created_at:stamp()};
+  }
+  async function scanSourceFolder(item,existingHashes){
+    const added=[];
+    for(const source of item.sources??[]){
+      const dir=isAbsolute(source)?resolve(source):join(workspace,source);
+      let entries;try{entries=await readdir(dir,{recursive:true,withFileTypes:true});}catch{continue;}
+      for(const entry of entries){
+        if(!entry.isFile())continue;
+        const full=join(dir,entry.name),ext=extname(entry.name).toLowerCase();
+        if(!MEDIA_TYPES[ext])continue;
+        let bytes;try{bytes=await readFile(full);}catch{continue;}
+        let kind;try{[kind]=mediaType(entry.name,bytes);}catch{continue;}
+        const digest=hash(bytes);if(existingHashes.has(digest))continue;existingHashes.add(digest);
+        added.push(await putAssetFile(null,item,entry.name,bytes));
+      }
+    }
+    return added;
+  }
   async function load(){
     if(state)return state;
     await mkdir(root,{recursive:true,mode:0o700});
@@ -158,27 +209,32 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
     root,
     async listProjects(){return clone((await load()).projects);},
     async createProject(input={}){return change(s=>{const item={id:id(),name:validName(input.name,'Project name'),script_text:safeText(input.script_text,100000),mode:['director','mv','json_production'].includes(input.mode)?input.mode:'director',created_at:stamp(),updated_at:stamp()};s.projects.push(item);return clone(item);});},
-    async getProject(projectId){const s=await load();const p=await project(projectId,s);const shotOrder=(a,b)=>((a.order??0)-(b.order??0))||String(a.created_at).localeCompare(String(b.created_at));return {...clone(p),shots:clone(s.shots.filter(item=>item.project_id===projectId).sort(shotOrder)),assets:clone(s.assets.filter(item=>item.project_id===projectId)),sequences:clone(s.sequences.filter(item=>item.project_id===projectId)),takes:clone(s.takes.filter(item=>item.project_id===projectId))};},
+    async getProject(projectId){const s=await load();const p=await project(projectId,s);const shotOrder=(a,b)=>((a.order??0)-(b.order??0))||String(a.created_at).localeCompare(String(b.created_at));return {...clone(p),shots:clone(s.shots.filter(item=>item.project_id===projectId).sort(shotOrder)),assets:clone(await overlayAssets(s.assets.filter(item=>item.project_id===projectId))),sequences:clone(s.sequences.filter(item=>item.project_id===projectId)),takes:clone(s.takes.filter(item=>item.project_id===projectId))};},
     async patchProject(projectId,input={}){return change(async s=>{const item=await project(projectId,s);if(input.name!==undefined)item.name=validName(input.name,'Project name');if(input.script_text!==undefined)item.script_text=safeText(input.script_text,100000);if(input.mode!==undefined){if(!['director','mv','json_production'].includes(input.mode))throw new StudioStoreError('Unsupported project mode.');item.mode=input.mode;}item.updated_at=stamp();return clone(item);});},
-    async listAssets({kind,project_id,include_unassigned=false}={}){const s=await load();return clone(s.assets.filter(item=>(!kind||item.kind===canonicalKind(kind))&&(!project_id||item.project_id===project_id||include_unassigned&&!item.project_id)));},
+    async listAssets({kind,project_id,include_unassigned=false}={}){const s=await load();return clone(await overlayAssets(s.assets.filter(item=>(!kind||item.kind===canonicalKind(kind))&&(!project_id||item.project_id===project_id||include_unassigned&&!item.project_id))));},
     async saveAsset(input={}){
       const kind=canonicalKind(input.kind),name=input.asset_id&&input.name===undefined?null:validName(input.name,'Asset name'),projectId=input.project_id||null,fileKey=safeText(input.file_key,100)||'master';
       if(!/^[A-Za-z0-9_-]{1,100}$/.test(fileKey))throw new StudioStoreError('file_key may contain only letters, numbers, underscore and hyphen.');
-      let replaced=[];
       return change(async s=>{
         if(projectId)await project(projectId,s);
-        const file=input.bytes?await putMedia({filename:input.filename,bytes:input.bytes,kind}):null;
         if(input.asset_id){
           // Regenerate path: swap the file_key media on the existing asset so Production refs keep pointing at it.
           const item=s.assets.find(value=>value.id===input.asset_id&&value.kind===kind);
           if(!item)throw new StudioStoreError('Asset not found.',404);
-          if(file){const previous=item.files?.[fileKey];if(previous&&previous!==file.path)replaced.push(previous);item.files={...item.files,[fileKey]:file.path};item.file_names={...item.file_names,[fileKey]:file.filename};s.files=s.files.filter(value=>value.path!==previous);s.files.push(file);}
-          if(name)item.name=name;if(input.notes!==undefined)item.notes=safeText(input.notes,10000);if(input.job_id!==undefined)item.job_id=safeText(input.job_id,200);if(Number.isSafeInteger(input.seed))item.seed=input.seed;
-          item.updated_at=stamp();return clone(item);
+          if(name)item.name=name;if(input.notes!==undefined)item.notes=safeText(input.notes,10000);if(input.description!==undefined)item.description=safeText(input.description,20000);if(input.job_id!==undefined)item.job_id=safeText(input.job_id,200);
+          if(input.bytes){
+            await ensureFolder(s,item);const previous=item.files?.[fileKey];
+            const file=await putAssetFile(s,item,input.filename,input.bytes,fileKey);
+            if(previous)s.files=s.files.filter(value=>value.path!==previous&&value.id!==file.id);
+            s.files.push(file);
+          }
+          item.updated_at=stamp();await writeAssetJson(item);return clone(item);
         }
-        const item={id:id(),kind,name,notes:safeText(input.notes,10000),pipeline_id:safeText(input.pipeline_id,200),job_id:safeText(input.job_id,200),seed:Number.isSafeInteger(input.seed)?input.seed:null,created_at:stamp(),files:file?{[fileKey]:file.path}:{},file_names:file?{[fileKey]:file.filename}:{},meta:input.meta&&typeof input.meta==='object'&&!Array.isArray(input.meta)?input.meta:{},urls:{},project_id:projectId};
-        s.assets.push(item);if(file)s.files.push(file);return clone(item);
-      }).finally(()=>Promise.all(replaced.map(path=>unlink(path).catch(()=>{}))));
+        const item={id:id(),kind,name,description:safeText(input.description,20000),notes:safeText(input.notes,10000),pipeline_id:safeText(input.pipeline_id,200),job_id:safeText(input.job_id,200),seed:Number.isSafeInteger(input.seed)?input.seed:null,created_at:stamp(),folder:null,files:{},file_names:{},ref_meta:{},sources:[],meta:input.meta&&typeof input.meta==='object'&&!Array.isArray(input.meta)?input.meta:{},urls:{},project_id:projectId};
+        s.assets.push(item);
+        if(input.bytes){await ensureFolder(s,item);const file=await putAssetFile(s,item,input.filename,input.bytes,fileKey);s.files.push(file);}
+        item.updated_at=stamp();await writeAssetJson(item);return clone(item);
+      });
     },
     // Generation jobs back the Assets tab Casting/Set/Props pages; DSH performs the ComfyUI run and imports an asset carrying job_id=<token>, which flips the job to succeeded.
     // ponytail: job state is derived on read (asset with matching job token wins), so a lost update can never strand a page; ref media lives in a temporary layouts asset the agent reads by source_path.
@@ -217,18 +273,61 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
         if(input.error!==undefined)job.error=safeText(input.error,2000)||null;
         job.updated_at=stamp();return clone(job);});
     },
-    async updateAsset(kind,assetId,input={}){canonicalKind(kind);return change(s=>{const item=s.assets.find(value=>value.id===assetId&&value.kind===kind);if(!item)throw new StudioStoreError('Asset not found.',404);if(input.name!==undefined)item.name=validName(input.name,'Asset name');if(input.notes!==undefined)item.notes=safeText(input.notes,10000);item.updated_at=stamp();return clone(item);});},
+    async updateAsset(kind,assetId,input={}){canonicalKind(kind);return change(async s=>{const item=s.assets.find(value=>value.id===assetId&&value.kind===kind);if(!item)throw new StudioStoreError('Asset not found.',404);if(input.name!==undefined)item.name=validName(input.name,'Asset name');if(input.notes!==undefined)item.notes=safeText(input.notes,10000);if(input.description!==undefined)item.description=safeText(input.description,20000);item.updated_at=stamp();await writeAssetJson(item);return clone(item);});},
+    // Source folders are ordinary workspace folders (e.g. nelare-designs): attaching one copies every
+    // not-yet-known image/audio into the asset folder as a brainstorming reference, deduped by content.
+    async attachAssetSource(kind,assetId,input={}){
+      canonicalKind(kind);const path=String(input.path??'').trim();if(!path)throw new StudioStoreError('A source folder path is required.');
+      return change(async s=>{
+        const item=s.assets.find(value=>value.id===assetId&&value.kind===kind);if(!item)throw new StudioStoreError('Asset not found.',404);
+        const dir=isAbsolute(path)?resolve(path):join(workspace,path);
+        const info=await readdir(dir).then(()=>dir,()=>null);if(!info)throw new StudioStoreError('Source folder does not exist.',404);
+        await ensureFolder(s,item);
+        if(!(item.sources??[]).includes(dir))item.sources=[...(item.sources??[]),dir];
+        const hashes=new Set(s.files.filter(file=>Object.values(item.files??{}).includes(file.path)).map(file=>file.sha256));
+        const added=await scanSourceFolder(item,hashes);s.files.push(...added);
+        item.updated_at=stamp();await writeAssetJson(item);return {asset:clone(item),added:added.length};
+      });
+    },
+    async scanAsset(kind,assetId){
+      canonicalKind(kind);
+      return change(async s=>{
+        const item=s.assets.find(value=>value.id===assetId&&value.kind===kind);if(!item)throw new StudioStoreError('Asset not found.',404);
+        await ensureFolder(s,item);
+        const hashes=new Set(s.files.filter(file=>Object.values(item.files??{}).includes(file.path)).map(file=>file.sha256));
+        const added=await scanSourceFolder(item,hashes);s.files.push(...added);
+        item.updated_at=stamp();await writeAssetJson(item);return {asset:clone(item),added:added.length};
+      });
+    },
+    // Free-text tags (roaring, head, frontal…) plus the two exclusive trust tags: approved ↔ brainstorming.
+    async setAssetRef(kind,assetId,input={}){
+      canonicalKind(kind);const key=String(input.key??'');if(!/^[A-Za-z0-9_-]{1,100}$/.test(key))throw new StudioStoreError('Unsupported reference key.');
+      return change(async s=>{
+        const item=s.assets.find(value=>value.id===assetId&&value.kind===kind);if(!item)throw new StudioStoreError('Asset not found.',404);
+        if(!item.files?.[key])throw new StudioStoreError('No such reference on this asset.',404);
+        await ensureFolder(s,item);
+        const meta=item.ref_meta?.[key]??{tags:[],note:''};
+        const add=Array.isArray(input.tags_add)?input.tags_add.map(tag=>String(tag).trim()).filter(Boolean):[];
+        const remove=new Set(Array.isArray(input.tags_remove)?input.tags_remove.map(tag=>String(tag).trim()).filter(Boolean):[]);
+        const tags=exclusiveTags([...refTagsOf(meta),...add],add).filter(tag=>!remove.has(tag));
+        const next={tags,note:input.note!==undefined?safeText(input.note,4000):meta.note??''};
+        item.ref_meta={...(item.ref_meta??{}),[key]:next};item.updated_at=stamp();await writeAssetJson(item);return {key,...next};
+      });
+    },
     async deleteAsset(kind,assetId){
       canonicalKind(kind);
-      const result=await change(s=>{const index=s.assets.findIndex(value=>value.id===assetId&&value.kind===kind);if(index<0)throw new StudioStoreError('Asset not found.',404);if(s.shots.some(shot=>shot.layout_asset_id===assetId||shot.video_asset_id===assetId||shot.video_context?.upload_id===assetId||(shot.refs??[]).some(ref=>ref.asset_id===assetId)||(shot.voice_refs??[]).some(ref=>ref.asset_id===assetId)))throw new StudioStoreError('Cannot delete an asset referenced by a Production shot.');const [item]=s.assets.splice(index,1),paths=Object.values(item.files??{});s.files=s.files.filter(file=>!paths.includes(file.path));return {deleted:true,id:item.id,paths};});
-      await Promise.all(result.paths.map(path=>unlink(path).catch(()=>{})));delete result.paths;return result;
+      const result=await change(s=>{const index=s.assets.findIndex(value=>value.id===assetId&&value.kind===kind);if(index<0)throw new StudioStoreError('Asset not found.',404);if(s.shots.some(shot=>shot.layout_asset_id===assetId||shot.video_asset_id===assetId||shot.video_context?.upload_id===assetId||(shot.refs??[]).some(ref=>ref.asset_id===assetId)||(shot.voice_refs??[]).some(ref=>ref.asset_id===assetId)))throw new StudioStoreError('Cannot delete an asset referenced by a Production shot.');const [item]=s.assets.splice(index,1),paths=Object.values(item.files??{});s.files=s.files.filter(file=>!paths.includes(file.path));return {deleted:true,id:item.id,paths,folder:item.folder??null};});
+      await Promise.all(result.paths.map(path=>unlink(path).catch(()=>{})));
+      // The asset folder (its copies + asset.json) belongs to the asset; the human's own source folders are never touched.
+      if(result.folder)await rm(join(assetsRoot,result.folder),{recursive:true,force:true}).catch(()=>{});
+      delete result.paths;delete result.folder;return result;
     },
     async deleteAssetFile(kind,assetId,key){
-      canonicalKind(kind);if(!/^[A-Za-z0-9_-]{1,64}$/.test(String(key)))throw new StudioStoreError('Unsupported file key.');
-      const result=await change(s=>{const item=s.assets.find(value=>value.id===assetId&&value.kind===kind);if(!item)throw new StudioStoreError('Asset not found.',404);const path=item.files?.[key];if(path===undefined)throw new StudioStoreError('No such file on this asset.',404);
-        delete item.files[key];if(item.file_names)delete item.file_names[key];const remaining=Object.values(item.files??{});
+      canonicalKind(kind);if(!/^[A-Za-z0-9_-]{1,100}$/.test(String(key)))throw new StudioStoreError('Unsupported file key.');
+      const result=await change(async s=>{const item=s.assets.find(value=>value.id===assetId&&value.kind===kind);if(!item)throw new StudioStoreError('Asset not found.',404);const path=item.files?.[key];if(path===undefined)throw new StudioStoreError('No such file on this asset.',404);
+        delete item.files[key];if(item.file_names)delete item.file_names[key];if(item.ref_meta)delete item.ref_meta[key];const remaining=Object.values(item.files??{});
         // Keep the shared media row when another surviving key still points at the same bytes.
-        s.files=s.files.filter(file=>file.path!==path||remaining.includes(file.path));item.updated_at=stamp();return {deleted:true,id:item.id,key,path};});
+        s.files=s.files.filter(file=>file.path!==path||remaining.includes(file.path));item.updated_at=stamp();await writeAssetJson(item);return {deleted:true,id:item.id,key,path};});
       await unlink(result.path).catch(()=>{});delete result.path;return result;
     },
     async assignAsset(kind,assetId,projectId){
@@ -366,7 +465,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
     },
     async approveShot(shotId){return change(s=>{const shot=s.shots.find(value=>value.id===shotId);if(!shot)throw new StudioStoreError('Shot not found.',404);shot.status='approved';shot.updated_at=stamp();return clone(shot);});},
     async getMedia(path){const s=await load(),file=s.files.find(item=>item.path===path);if(!file)throw new StudioStoreError('Media not found.',404);return clone(file);},
-    async readMedia(file){if(!file||!file.path.startsWith(mediaRoot+'/'))throw new StudioStoreError('Media not found.',404);return readFile(file.path);},
+    async readMedia(file){if(!file||(!file.path.startsWith(mediaRoot+'/')&&!file.path.startsWith(assetsRoot+'/')))throw new StudioStoreError('Media not found.',404);return readFile(file.path);},
     async snapshot(){return clone(await load());},
     async close(){await tail;},
   };
@@ -375,16 +474,17 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,now=Date.now}
 export const studioStoreConstants=Object.freeze({assetKinds:[...ASSET_KINDS],maxAssetBytes:64*1024*1024});
 
 // ponytail: the DSH session workspace IS the project; each workspace keeps its single project database and media in a hidden .director-studio folder.
+// Asset content is filesystem-first in visible <workspace>/assets/<slug>/ folders (files + asset.json) the human can browse and edit.
 // One store per workspace path is cached in-process. Known ceiling: projects[0] wins if the folder already held a legacy multi-project file; revisit with a picker only if that ever matters.
 export function createStudioRegistry({dotFolder='.director-studio'}={}){
   const entries=new Map();
   return async function studioFor(cwd){
     if(!cwd||typeof cwd!=='string')throw new StudioStoreError('The active DSH session has no workspace folder.',409);
-    const root=resolve(join(resolve(cwd),dotFolder));
+    const workspace=resolve(cwd),root=join(workspace,dotFolder);
     let entry=entries.get(root);
     if(!entry){
       entry=(async()=>{
-        const store=createStudioStore({root});
+        const store=createStudioStore({root,workspaceRoot:workspace});
         const projects=await store.listProjects();
         const project=projects[0]??await store.createProject({name:basename(resolve(cwd))||'Session workspace'});
         return {store,project};

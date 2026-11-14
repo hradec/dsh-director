@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {mkdtemp,rm,writeFile,stat} from 'node:fs/promises';
+import {mkdir,mkdtemp,rm,writeFile,stat} from 'node:fs/promises';
 import {realpathSync} from 'node:fs';
 import {join,resolve as pathResolve,basename} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
@@ -260,3 +260,42 @@ test('agent imports only Comfy output artifacts from its configured origin',asyn
 });
 
 // ponytail: these routes intentionally expose the stable subset used by Assets/Production first; unported managed generation endpoints return explicit errors instead of silently simulating a ComfyUI job.
+
+test('reference routes: source folders, scan, approved/brainstorming tags, story description patch',async t=>{
+  const {base,root,store,project}=await setup(t);
+  const asset=await store.saveAsset({kind:'actors',name:'Nelare',project_id:project.id,filename:'sheet.png',bytes:png});
+  await mkdir(join(root,'designs'),{recursive:true});
+  await writeFile(join(root,'designs','roar.png'),Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),Buffer.alloc(11)]));
+  const attached=await (await json(base,`/api/library/actors/${asset.id}/source`,{method:'POST',body:JSON.stringify({path:'designs'})})).json();
+  assert.equal(attached.added,1);
+  const key=Object.keys(attached.asset.files).find(k=>k!=='master');
+  const tagged=await (await json(base,`/api/library/actors/${asset.id}/refs/${key}`,{method:'PUT',body:JSON.stringify({tags_add:['approved','roaring']})})).json();
+  assert.deepEqual(tagged.tags.slice().sort(),['approved','roaring']);
+  const back=await (await json(base,`/api/library/actors/${asset.id}/refs/${key}`,{method:'PUT',body:JSON.stringify({tags_add:['brainstorming']})})).json();
+  assert.ok(!back.tags.includes('approved'),'approval retires when the image goes back to the brainstorm pile');
+  const patched=await (await json(base,`/api/library/actors/${asset.id}`,{method:'PATCH',body:JSON.stringify({description:'a dragon whose arms are wings'})})).json();
+  assert.equal(patched.description,'a dragon whose arms are wings');
+  const scanned=await (await json(base,`/api/library/actors/${asset.id}/scan`,{method:'POST'})).json();
+  assert.equal(scanned.added,0);
+  const listed=await (await json(base,'/api/library?kind=actors')).json();
+  assert.equal(listed[0].description,'a dragon whose arms are wings');
+  assert.ok(listed[0].ref_meta[key].tags.includes('brainstorming'));
+});
+
+test('director_studio asset.folder, asset.scan and asset.tag give the agent the same reference model',async t=>{
+  const {store,project,root}=await setup(t);
+  const tools=createStudioTools({registry:()=>Promise.resolve({store,project}),comfyBaseUrl:'http://comfy.test'});
+  const exec={agent:{session:{header:{cwd:root}}}};
+  const asset=await store.saveAsset({kind:'actors',name:'Nelare',project_id:project.id,filename:'sheet.png',bytes:png});
+  await mkdir(join(root,'designs'),{recursive:true});
+  await writeFile(join(root,'designs','roar.png'),Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),Buffer.alloc(11)]));
+  const folder=await tools.execute({action:'asset.folder',kind:'actors',asset_id:asset.id,path:join(root,'designs')},exec);
+  assert.equal(folder.added,1);
+  const key=folder.asset.files.map(f=>f.key).find(k=>k!=='master');
+  const tagged=await tools.execute({action:'asset.tag',kind:'actors',asset_id:asset.id,file_key:key,tags_add:['roaring','frontal']},exec);
+  assert.ok(tagged.ref.tags.includes('brainstorming'),'descriptive tags never retire the default pile tag');
+  const approved=await tools.execute({action:'asset.tag',kind:'actors',asset_id:asset.id,file_key:key,tags_add:['approved']},exec);
+  assert.ok(approved.ref.tags.includes('approved')&&!approved.ref.tags.includes('brainstorming'));
+  const scanned=await tools.execute({action:'asset.scan',kind:'actors',asset_id:asset.id},exec);
+  assert.equal(scanned.added,0);
+});

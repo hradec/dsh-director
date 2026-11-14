@@ -1,4 +1,5 @@
 import { parseError } from "../../shared/api/client";
+import { deleteAssetFile, type RefMetaEntry } from "../../shared/api/assets";
 import type { JobStatus, OutputSlot } from "../../shared/api/types";
 
 export type { JobStatus, OutputSlot };
@@ -74,6 +75,10 @@ export interface ActorRecord {
   files: Record<string, string | null>;
   urls: Record<string, string>;
   project_id?: string | null;
+  /** Filesystem-first references: attached workspace folders and per-file tag/note metadata. */
+  folder?: string | null;
+  sources?: string[];
+  ref_meta?: Record<string, RefMetaEntry>;
 }
 
 export interface MetaDefaults {
@@ -163,7 +168,7 @@ export async function saveGenerationSettings(kind: string, instructions: string)
 
 // Plugin: remove one stored file from an asset. The editor's remove/purge actions call this;
 // without it a removed reference is only local and the stored image reappears on next open.
+// Generalized to every kind in shared/api/assets — this is the actors alias.
 export async function deleteActorFile(assetId: string, key: string): Promise<void> {
-  const res = await fetch(`/api/library/actors/${assetId}/files/${encodeURIComponent(key)}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(await parseError(res));
+  await deleteAssetFile("actors", assetId, key);
 }

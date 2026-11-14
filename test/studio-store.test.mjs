@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm,stat} from 'node:fs/promises';
+import {mkdir,mkdtemp,readFile,rm,stat,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createStudioStore,createStudioRegistry,StudioStoreError,studioAssetDigest,studioMediaMetadata} from '../src/studio-store.mjs';
@@ -108,7 +108,9 @@ test('asset regeneration replaces media in place without changing the asset id',
   assert.equal(replaced.id,asset.id);assert.equal(replaced.file_names.master,'b.png');assert.equal(replaced.job_id,'tok-1');
   assert.deepEqual(await store.readMedia(await store.getMedia(replaced.files.master)),png);
   await new Promise(resolve=>setImmediate(resolve));
-  await assert.rejects(stat(previousPath),{code:'ENOENT'});
+  // Filesystem-first assets: regeneration overwrites the slot file in place inside <workspace>/assets/<slug>/.
+  assert.equal(replaced.files.master,previousPath);
+  await stat(previousPath);
   await assert.rejects(store.saveAsset({kind:'scenes',project_id:project.id,asset_id:asset.id,filename:'x.png',bytes:png}),/Asset not found/);
 });
 
@@ -125,3 +127,33 @@ test('the workspace registry auto-creates one hidden-folder project and caches i
 });
 
 // ponytail: the first store keeps a single JSON index; tests lock in stable IDs, serialized writes, and strict media identity checks before a sharded backend is justified.
+
+test('asset folders are the database: import tags brainstorming, attach scans sources deduped by bytes, approved beats brainstorming',async t=>{
+  const cwd=await fixture(t),registry=createStudioRegistry();
+  const {store,project}=await registry(cwd);
+  const asset=await store.saveAsset({kind:'actors',name:'Nelare',project_id:project.id,filename:'sheet.png',bytes:png});
+  assert.equal(asset.folder,'nelare');
+  await stat(join(cwd,'assets','nelare','master.png'));await stat(join(cwd,'assets','nelare','asset.json'));
+  assert.deepEqual((await store.listAssets({kind:'actors',project_id:project.id}))[0].ref_meta.master.tags,['brainstorming']);
+  const jsonPath=join(cwd,'assets','nelare','asset.json');
+  const raw=JSON.parse(await readFile(jsonPath,'utf8'));raw.description='A dragon whose arms are wings.';await writeFile(jsonPath,JSON.stringify(raw));
+  assert.equal((await store.listAssets({kind:'actors',project_id:project.id}))[0].description,'A dragon whose arms are wings.','an external asset.json edit is the database of record');
+  await mkdir(join(cwd,'nelare-designs'),{recursive:true});
+  await writeFile(join(cwd,'nelare-designs','one.png'),png);
+  await writeFile(join(cwd,'nelare-designs','two.png'),Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),Buffer.alloc(9)]));
+  const attached=await store.attachAssetSource('actors',asset.id,{path:'nelare-designs'});
+  assert.equal(attached.added,1,'identical bytes are never imported twice');
+  const keyed=Object.keys(attached.asset.files).find(key=>key!=='master');
+  const tagged=await store.setAssetRef('actors',asset.id,{key:keyed,tags_add:['approved','roaring','head']});
+  assert.deepEqual(tagged.tags.slice().sort(),['approved','head','roaring']);
+  const back=await store.setAssetRef('actors',asset.id,{key:keyed,tags_add:['brainstorming']});
+  assert.ok(!back.tags.includes('approved'),'approval retires when the image goes back to the pile');
+  await stat(join(cwd,'nelare-designs','one.png'),'source folders are never modified');
+  const noted=await store.setAssetRef('actors',asset.id,{key:'master',note:'arms are wings; never draw separate arms'});
+  assert.equal(noted.note,'arms are wings; never draw separate arms');
+  const rescan=await store.scanAsset('actors',asset.id);
+  assert.equal(rescan.added,0,'rescan adds nothing new');
+  const removed=await store.deleteAssetFile('actors',asset.id,keyed);
+  assert.equal(removed.deleted,true);
+  await assert.rejects(stat(join(cwd,'assets','nelare',keyed+'.png')),{code:'ENOENT'});
+});

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { OutputSlot } from "../../shared/api/types";
+import { refTagsOf } from "../../shared/api/assets";
 import { Lightbox } from "../../shared/components/Lightbox";
 import { CompareWipe } from "../../shared/components/ImageCanvas";
 import type { LibraryAsset } from "./api";
@@ -82,6 +83,15 @@ export function AssetDetailDialog({
   onFilesChanged?: () => void;
 }) {
   const slots = useMemo(() => assetSlots(asset), [asset]);
+  // Filesystem-first: the library dialog shows only approved references. With nothing
+  // approved yet it falls back to the master file so the dialog is never empty.
+  const shownSlots = useMemo(() => {
+    if (asset.kind === "voices") return slots;
+    const approved = slots.filter((slot) => refTagsOf(asset, slot.key).includes("approved"));
+    if (approved.length) return approved;
+    const master = slots.filter((slot) => slot.key === "master");
+    return master.length ? master : slots;
+  }, [asset, slots]);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   // Plugin: delete ONE stored file (agents can pile hundreds of test renders onto an asset).
@@ -129,11 +139,11 @@ export function AssetDetailDialog({
             </div>
           </div>
 
-          {slots.length === 0 ? (
+          {shownSlots.length === 0 ? (
             <p className="empty-copy">No files in this asset.</p>
           ) : (
             <div className="folder-file-grid">
-              {slots.map((slot, index) =>
+              {shownSlots.map((slot, index) =>
                 asset.kind === "voices" ? (
                   <div key={slot.key} className="folder-file-card voice-file-card">
                     <div className="folder-file-label">{slot.label}</div>
@@ -172,10 +182,10 @@ export function AssetDetailDialog({
                )}
              </div>
            )}
-           {asset.kind !== "voices" && slots.filter((slot) => slot.url).length >= 2 ? (
+           {asset.kind !== "voices" && shownSlots.filter((slot) => slot.url).length >= 2 ? (
              <div className="asset-compare">
                <div className="muted tiny">Compare files — pick A and B, drag the slider to wipe</div>
-               <CompareWipe images={slots.filter((slot) => slot.url).map((slot) => ({ src: slot.url!, label: slot.label || slot.key }))} />
+               <CompareWipe images={shownSlots.filter((slot) => slot.url).map((slot) => ({ src: slot.url!, label: slot.label || slot.key }))} />
              </div>
            ) : null}
          </div>
@@ -183,7 +193,7 @@ export function AssetDetailDialog({
 
       {lightboxIndex != null ? (
         <Lightbox
-          slots={slots}
+          slots={shownSlots}
           index={lightboxIndex}
           onClose={() => setLightboxIndex(null)}
           onIndex={setLightboxIndex}
