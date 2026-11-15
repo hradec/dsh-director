@@ -79,7 +79,7 @@ export function FootageBoard(){
     onClick={()=>{if(menu){setMenu(null);return;}setPlaying(f);}}
     onKeyDown={(e)=>{if(e.key==='Enter')setPlaying(f);}}
     onContextMenu={(e)=>{e.preventDefault();setMenu({x:e.clientX,y:e.clientY,file:f});}}>
-    <video src={f.url} muted playsInline preload="metadata"/>
+    <img src={f.thumb??f.url} alt="" loading="lazy" draggable="false"/>
     <div className="footage-card-foot">
       <span className="footage-path" title={f.path}>{f.path}</span>
       <div className="footage-chips" onClick={(e)=>{e.stopPropagation();setMenu(null);}}>
@@ -119,7 +119,7 @@ export function FootageBoard(){
     </div>:null}
     {playing?<div className="footage-viewer" role="dialog" onClick={()=>setPlaying(null)}>
       <div className="footage-viewer-body" onClick={(e)=>e.stopPropagation()}>
-        <video src={playing.url} controls autoPlay playsInline/>
+        <video src={playing.url} poster={playing.thumb??undefined} controls autoPlay playsInline/>
       </div>
       <button type="button" className="btn ghost sm footage-viewer-close" aria-label="Close player" onClick={()=>setPlaying(null)}>✕</button>
     </div>:null}

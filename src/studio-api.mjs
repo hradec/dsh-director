@@ -1,15 +1,16 @@
 import {StudioStoreError,isStudioAssetKind,studioStoreConstants} from './studio-store.mjs';
 import {storyStoreFor} from './story-store.mjs';
 import {Readable} from 'node:stream';
-import {createReadStream,statSync,realpathSync,readdirSync,readFileSync,rmSync,existsSync,mkdirSync,writeFileSync} from 'node:fs';
+import {createReadStream,statSync,fstatSync,realpathSync,readdirSync,readFileSync,rmSync,existsSync,mkdirSync,writeFileSync,openSync,closeSync,readSync} from 'node:fs';
 import {execFile} from 'node:child_process';
 import {isAbsolute,join,sep,extname} from 'node:path';
 import {homedir,tmpdir} from 'node:os';
+import {createHash} from 'node:crypto';
 
 // ponytail: browsers cannot open server filesystem paths, so dsh-ui media srcs must be URLs; this route streams local media through the GUI origin.
-// Ceiling: single Range only (seeks re-stream tail), media extensions only, roots = homedir + /tmp + session workspace; secret dot-folders denied except director-media/attachments.
+// Ceiling: single Range only incl. suffix (seeks re-stream tail), media extensions only, roots = homedir + /tmp + session workspace; secret dot-folders denied except director-media/attachments.
+// No size cap here on purpose (2026-11-14: the old 512 MB gate 413-blocked real footage; streaming uses createReadStream, memory is constant).
 const FILE_MIME={'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.bmp':'image/bmp','.mp4':'video/mp4','.m4v':'video/mp4','.webm':'video/webm','.mov':'video/quicktime','.mkv':'video/x-matroska','.mp3':'audio/mpeg','.m4a':'audio/mp4','.wav':'audio/wav','.flac':'audio/flac','.ogg':'audio/ogg','.aac':'audio/aac','.pdf':'application/pdf'};
-const FILE_MAX_BYTES=512*1024*1024;
 
 const jsonHeaders={'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
 function sendJson(res,status,value){const body=JSON.stringify(value);res.writeHead(status,{...jsonHeaders,'Content-Length':String(Buffer.byteLength(body))});res.end(body);}
@@ -64,22 +65,66 @@ const AV_CACHE_TTL=7*24*3600*1000;
 let transcodeLock=null;
 function ffprobeInfo(file){return new Promise(resolve=>{execFile('ffprobe',['-v','error','-select_streams','v:0','-show_entries','stream=codec_name,pix_fmt','-of','csv=p=0',file],{timeout:20000},(error,stdout)=>resolve(error?'':String(stdout).trim()));});}
 const deviceFriendly=info=>/h264/.test(info)&&!/yuv4(22|44)/.test(info);
-function ensureTranscode(source,resolved){
+function ensureTranscode(source,resolved,mode='reencode'){
   if(!transcodeLock||Date.now()-transcodeLock.at>3600000)transcodeLock={at:Date.now(),files:new Set()};
-  const key=resolved.replace(/[^A-Za-z0-9._-]/g,'_');
+  const key=resolved.replace(/[^A-Za-z0-9._-]/g,'_')+(mode==='copy'?'.faststart':'');
+  const lockKey=resolved+'#'+mode;
   const target=join(TRANSCODE_CACHE,key+'.mp4');
   // Safari will not retry 503: concurrent waiters poll for the finished copy (up to 10 min) and then stream it.
-  if(transcodeLock.files.has(resolved))return new Promise((resolve,reject)=>{const started=Date.now();const poll=setInterval(()=>{if(existsSync(target+'.done')){clearInterval(poll);resolve(target);}else if(Date.now()-started>600000){clearInterval(poll);reject(new StudioStoreError('Transcode did not finish in time.',504));}},2000);});
-  transcodeLock.files.add(resolved);
+  if(transcodeLock.files.has(lockKey))return new Promise((resolve,reject)=>{const started=Date.now();const poll=setInterval(()=>{if(existsSync(target+'.done')){clearInterval(poll);resolve(target);}else if(Date.now()-started>600000){clearInterval(poll);reject(new StudioStoreError('Transcode did not finish in time.',504));}},2000);});
+  transcodeLock.files.add(lockKey);
   try{for(const entry of readdirSync(TRANSCODE_CACHE)){if(!entry.startsWith(key))continue;const full=join(TRANSCODE_CACHE,entry);if(statSync(full).mtimeMs<Date.now()-AV_CACHE_TTL)rmSync(full,{force:true});}}catch{}
   if(existsSync(target+'.done'))return Promise.resolve(target);
-  process.stdout.write(`[dsh-director transcode] ffmpeg starting for ${source}\n`);
+  process.stdout.write(`[dsh-director transcode] ffmpeg ${mode} starting for ${source}\n`);
   mkdirSync(TRANSCODE_CACHE,{recursive:true});
-  return new Promise((resolve,reject)=>{execFile('ffmpeg',['-y','-v','error','-threads','4','-i',source,'-c:v','libx264','-preset','veryfast','-crf','22','-pix_fmt','yuv420p','-movflags','+faststart','-c:a','copy',target],{timeout:3600000},(error,stdout,stderr)=>{process.stdout.write(`[dsh-director transcode] ffmpeg done err=${String(error?.message??'').slice(0,120)} stderr=${String(stderr).slice(0,160)}\n`);transcodeLock?.files.delete(resolved);if(error){try{rmSync(target,{force:true});}catch{}reject(new StudioStoreError('Server transcode failed: '+String(stderr||error?.message).slice(0,160),502));return;}try{writeFileSync(target+'.done','');}catch{}resolve(target);});});
+  const args=mode==='copy'?['-y','-v','error','-i',source,'-c','copy','-movflags','+faststart',target]:['-y','-v','error','-threads','4','-i',source,'-c:v','libx264','-preset','veryfast','-crf','22','-pix_fmt','yuv420p','-movflags','+faststart','-c:a','copy',target];
+  return new Promise((resolve,reject)=>{execFile('ffmpeg',args,{timeout:3600000},(error,stdout,stderr)=>{process.stdout.write(`[dsh-director transcode] ffmpeg done err=${String(error?.message??'').slice(0,120)} stderr=${String(stderr).slice(0,160)}\n`);transcodeLock?.files.delete(lockKey);if(error){try{rmSync(target,{force:true});}catch{}reject(new StudioStoreError('Server transcode failed: '+String(stderr||error?.message).slice(0,160),502));return;}try{writeFileSync(target+'.done','');}catch{}resolve(target);});});
+}
+// moov-at-end mp4s are unplayable until the browser downloads the whole file (black tiles, dead players on every device).
+// Scan top-level atoms; if moov follows mdat, remux lossless (-c copy +faststart) into the transcode cache and serve that copy.
+function mp4Faststart(file){
+  let fd;try{
+    fd=openSync(file,'r');const size=fstatSync(fd).size;let pos=0,mdat=-1;const buf=Buffer.alloc(16);
+    while(pos<size-7){
+      if(readSync(fd,buf,0,8,pos)!==8)return null;
+      let sz=buf.readUInt32BE(0);const type=buf.toString('latin1',4,8);
+      if(sz===1){if(readSync(fd,buf,0,8,pos+8)!==8)return null;sz=Number(buf.readBigUInt64BE(0));pos+=8;}
+      if(sz===0)sz=size-pos;
+      if(sz<8)return null;
+      if(type==='moov')return mdat<0;
+      if(type==='mdat')mdat=pos;
+      pos+=sz;
+    }
+    return null;
+  }catch{return null;}finally{if(fd!==undefined)try{closeSync(fd);}catch{}}
+}
+// Footage grid posters: one ffmpeg frame per video, cached under <store.root>/footage-thumbs keyed by path+mtime+size,
+// so a re-encode of the same file gets a fresh poster and stale ones age out (30-day sweep).
+const THUMB_INFLIGHT=new Map();
+function videoDuration(file){return new Promise(resolve=>{execFile('ffprobe',['-v','error','-show_entries','format=duration','-of','csv=p=0',file],{timeout:20000},(error,stdout)=>resolve(error?0:Number(String(stdout).trim())||0));});}
+function ensureFootageThumb(store,source){
+  const info=statSync(source);
+  const key=createHash('sha1').update(`${source}|${info.mtimeMs}|${info.size}`).digest('hex');
+  const root=join(store.root,'footage-thumbs');
+  const target=join(root,`${key}.jpg`);
+  if(existsSync(target))return Promise.resolve(target);
+  if(THUMB_INFLIGHT.has(target))return THUMB_INFLIGHT.get(target);
+  mkdirSync(root,{recursive:true});
+  try{for(const entry of readdirSync(root)){const full=join(root,entry);if(statSync(full).mtimeMs<Date.now()-30*24*3600*1000)rmSync(full,{force:true});}}catch{}
+  const work=videoDuration(source).then((dur)=>new Promise((resolve,reject)=>{
+    const ss=dur>0?Math.min(2,dur*0.1):0;
+    execFile('ffmpeg',['-y','-v','error','-ss',String(ss),'-i',source,'-frames:v','1','-vf','scale=480:-2','-q:v','3',target],{timeout:120000},(error,stdout,stderr)=>{
+      THUMB_INFLIGHT.delete(target);
+      if(error){try{rmSync(target,{force:true});}catch{}reject(new StudioStoreError('Thumbnail generation failed: '+String(stderr||error?.message).slice(0,160),502));return;}
+      resolve(target);
+    });
+  }));
+  THUMB_INFLIGHT.set(target,work);return work;
 }
 // Media request diary: one line per served answer so device-side failures (iPad Safari!) can be traced from the server journal.
 const mediaLog=(req,status,extra)=>{try{process.stdout.write(`[dsh-director media] ${req.socket?.remoteAddress??'?'} ${req.method} ${String(req.headers.range??'-')} -> ${status} ${extra}\n`);}catch{}};
-async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSessionIndex}){
+// Shared path gate for /api/file and /api/footage/thumb: roots, secret dot-folders deny, media extensions.
+function resolveMediaPath(url,workspace,sessionIndex=defaultSessionIndex){
   const raw=url.searchParams.get('path')??'';
   if(!raw||raw.length>2000)throw new StudioStoreError('A path query parameter is required.');
   const candidate=isAbsolute(raw)?raw:(workspace?join(workspace,raw):'');
@@ -99,16 +144,33 @@ async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSession
   const mime=FILE_MIME[extname(resolved).toLowerCase()];
   if(!mime)throw new StudioStoreError('Only media and PDF files are served here.');
   const info=statSync(resolved);
-  if(!info.isFile()||info.size>FILE_MAX_BYTES)throw new StudioStoreError('Not a servable file (size or type).',413);
+  if(!info.isFile())throw new StudioStoreError('Not a servable file (type).',400);
+  return {resolved,info,mime};
+}
+async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSessionIndex}){
+  const {resolved,info,mime}=resolveMediaPath(url,workspace,sessionIndex);
   let served=resolved,stat=info;
   if(mime.startsWith('video/')&&/iPhone|iPad|iPod/.test(String(req.headers['user-agent']??''))){
     mediaLog(req,'probing',mime);
     const probe=await ffprobeInfo(resolved);mediaLog(req,'probe',probe||'unknown');
     if(probe&&!deviceFriendly(probe)){served=await ensureTranscode(resolved,resolved);stat=statSync(served);mediaLog(req,'transcode',mime+' -> h264');}
   }
-  const range=/^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range??''));
+  // moov-at-end mp4/mov: lossless faststart remux so browsers (and iOS) can read metadata from the file head.
+  if(served===resolved&&['video/mp4','video/quicktime'].includes(mime)&&mp4Faststart(served)===false){
+    mediaLog(req,'remuxing',mime+' faststart');
+    served=await ensureTranscode(resolved,resolved,'copy');stat=statSync(served);mediaLog(req,'remux',mime+' -> faststart');
+  }
+  const m=/^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range??''));
   const base={'Content-Type':mime,'X-Content-Type-Options':'nosniff','Accept-Ranges':'bytes','Cache-Control':'private, max-age=300'};
-  if(range){if(Number(range[1])>stat.size-1){res.writeHead(416,{...base,'Content-Range':`bytes */${stat.size}`});mediaLog(req,416,mime);res.end();return;}const start=Number(range[1]),end=range[2]?Math.min(Number(range[2]),stat.size-1):stat.size-1;res.writeHead(206,{...base,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${stat.size}`});mediaLog(req,206,`${mime} ${String(req.headers['range'])}`);if(req.method==='HEAD'){res.end();return;}createReadStream(served,{start,end}).pipe(res);return;}
+  if(m&&(m[1]!==''||m[2]!=='')){
+    let start,end;
+    if(m[1]!==''){start=Number(m[1]);end=m[2]!==''?Math.min(Number(m[2]),stat.size-1):stat.size-1;}
+    else{const n=Number(m[2]);start=Math.max(0,stat.size-n);end=stat.size-1;}
+    if(start>stat.size-1||end<start){res.writeHead(416,{...base,'Content-Range':`bytes */${stat.size}`});mediaLog(req,416,mime);res.end();return;}
+    res.writeHead(206,{...base,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${stat.size}`});mediaLog(req,206,`${mime} ${String(req.headers['range'])}`);
+    if(req.method==='HEAD'){res.end();return;}
+    createReadStream(served,{start,end}).pipe(res);return;
+  }
   res.writeHead(200,{...base,'Content-Length':String(stat.size)});mediaLog(req,200,mime);
   if(req.method==='HEAD'){res.end();return;}
   createReadStream(served).pipe(res);
@@ -211,8 +273,17 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       // Footage library: every video under <workspace>/media/ (recursive); tags+groups live in media/footage.json.
       if(path==='/api/footage'&&req.method==='GET'){
         const [library,root,assets]=await Promise.all([store.footageList(),store.footageRoot(),store.listAssets({project_id:project.id,include_unassigned:true})]);
-        const files=library.files.map(item=>({...item,url:`/director-studio/api/file?path=${encodeURIComponent(join(root,item.path))}&session=${encodeURIComponent(sessionId)}`}));
+        const files=library.files.map(item=>{const abs=encodeURIComponent(join(root,item.path));return {...item,url:`/director-studio/api/file?path=${abs}&session=${encodeURIComponent(sessionId)}`,thumb:`/director-studio/api/footage/thumb?path=${abs}&session=${encodeURIComponent(sessionId)}`};});
         sendJson(res,200,{files,groups:library.groups,assets:assets.filter(item=>item.kind!=='voices').map(item=>({name:item.name}))});return;}
+      // Poster for a footage video: one ffmpeg frame, cached in .director-studio/footage-thumbs (streamed here, never via /api/file).
+      if(path==='/api/footage/thumb'&&['GET','HEAD'].includes(req.method)){
+        const {resolved,mime}=resolveMediaPath(url,join(store.root,'..'),sessionIndex);
+        if(!mime.startsWith('video/'))throw new StudioStoreError('Thumbnails are generated for videos only.',400);
+        const target=await ensureFootageThumb(store,resolved);const tinfo=statSync(target);
+        res.writeHead(200,{'Content-Type':'image/jpeg','X-Content-Type-Options':'nosniff','Cache-Control':'private, max-age=3600','Content-Length':String(tinfo.size)});mediaLog(req,200,'thumb '+extname(resolved));
+        if(req.method==='HEAD'){res.end();return;}
+        createReadStream(target).pipe(res);return;
+      }
       if(path==='/api/footage'&&req.method==='POST'){sendJson(res,201,await store.addFootage(await readJson(req,controller.signal)));return;}
       if(path==='/api/footage/folder'&&req.method==='POST'){sendJson(res,200,await store.attachFootageFolder(await readJson(req,controller.signal)));return;}
       if(path==='/api/footage/refs'&&req.method==='PUT'){sendJson(res,200,await store.tagFootage(await readJson(req,controller.signal)));return;}

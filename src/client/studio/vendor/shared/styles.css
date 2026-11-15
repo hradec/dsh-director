@@ -7359,3 +7359,4 @@ select {
 .footage-viewer-body{display:flex;align-items:center;justify-content:center;min-width:0;min-height:0}
 .footage-viewer video{max-width:92vw;max-height:82vh;border-radius:10px;background:#000}
 .footage-viewer-close{position:absolute;top:1rem;right:1rem}
+.footage-card img{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;background:#000;pointer-events:none}

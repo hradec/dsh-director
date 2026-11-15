@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {mkdir,mkdtemp,rm,writeFile,stat} from 'node:fs/promises';
 import {realpathSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
 import {join,resolve as pathResolve,basename} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {createStudioRegistry} from '../src/studio-store.mjs';
@@ -59,6 +60,29 @@ test('footage routes: auto-library, play urls, single add, recursive folder impo
   assert.equal(folder.added,1);
   board=await (await json(base,'/api/footage')).json();
   assert.ok(board.files.some(f=>f.path==='episodes/episode1/c1.mp4'&&f.tags.includes('speardrive-episode-1')),'recursive import mirrors the tree');
+});
+
+test('footage playback: suffix Range 206, moov-at-end served faststart, ffmpeg poster thumb',async t=>{
+  const {base,root}=await setup(t);
+  await mkdir(join(root,'media','ep1'),{recursive:true});
+  // Real one-second h264 clips; default mp4 muxing puts moov at the END — exactly what makes browser tiles black and players stall.
+  execFileSync('ffmpeg',['-y','-v','error','-f','lavfi','-i','color=c=red:s=64x64:d=1:r=10','-c:v','libx264','-pix_fmt','yuv420p',join(root,'media','ep1','late.mp4')]);
+  execFileSync('ffmpeg',['-y','-v','error','-f','lavfi','-i','color=c=blue:s=64x64:d=1:r=10','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart',join(root,'media','ep1','fast.mp4')]);
+  const lateAbs=encodeURIComponent(join(root,'media','ep1','late.mp4')),fastAbs=encodeURIComponent(join(root,'media','ep1','fast.mp4'));
+  const suffix=await fetch(`${base}/api/file?path=${fastAbs}&session=session-a`,{headers:{range:'bytes=-100'}});
+  assert.equal(suffix.status,206);
+  const fastSize=(await stat(join(root,'media','ep1','fast.mp4'))).size;
+  assert.equal(suffix.headers.get('content-range'),`bytes ${fastSize-100}-${fastSize-1}/${fastSize}`);
+  assert.equal((await suffix.arrayBuffer()).byteLength,100);
+  const remuxed=Buffer.from(await (await fetch(`${base}/api/file?path=${lateAbs}&session=session-a`)).arrayBuffer());
+  assert.ok(remuxed.indexOf('moov')>=0&&remuxed.indexOf('mdat')>=0&&remuxed.indexOf('moov')<remuxed.indexOf('mdat'),'moov-at-end served as faststart remux');
+  const thumbUrl=`${base}/api/footage/thumb?path=${lateAbs}&session=session-a`;
+  const first=await fetch(thumbUrl);
+  assert.equal(first.status,200);assert.equal(first.headers.get('content-type'),'image/jpeg');
+  assert.equal(Buffer.from(await first.arrayBuffer()).subarray(0,3).toString('hex'),'ffd8ff','jpeg magic');
+  assert.equal((await fetch(thumbUrl)).status,200,'second call served from cache');
+  const board=await (await json(base,'/api/footage')).json();
+  assert.ok(board.files.find(f=>f.path==='ep1/late.mp4')?.thumb?.startsWith('/director-studio/api/footage/thumb?path='),'listing exposes per-file poster url');
 });
 
 test('story wall routes round-trip decisions, drag rules and chronology lint',async t=>{
