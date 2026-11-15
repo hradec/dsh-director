@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {mkdir,mkdtemp,rm,writeFile,stat} from 'node:fs/promises';
-import {realpathSync} from 'node:fs';
+import {realpathSync,readdirSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {join,resolve as pathResolve,basename} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
@@ -76,6 +76,7 @@ test('footage playback: suffix Range 206, moov-at-end served faststart, ffmpeg p
   assert.equal((await suffix.arrayBuffer()).byteLength,100);
   const remuxed=Buffer.from(await (await fetch(`${base}/api/file?path=${lateAbs}&session=session-a`)).arrayBuffer());
   assert.ok(remuxed.indexOf('moov')>=0&&remuxed.indexOf('mdat')>=0&&remuxed.indexOf('moov')<remuxed.indexOf('mdat'),'moov-at-end served as faststart remux');
+  assert.ok(readdirSync(join(root,'.director-studio','transcode-cache')).some(n=>n.includes('late.mp4.faststart.mp4')),'remux cache lives in the workspace (.director-studio), never RAM /tmp');
   const thumbUrl=`${base}/api/footage/thumb?path=${lateAbs}&session=session-a`;
   const first=await fetch(thumbUrl);
   assert.equal(first.status,200);assert.equal(first.headers.get('content-type'),'image/jpeg');

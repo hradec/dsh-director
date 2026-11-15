@@ -1,7 +1,7 @@
 import {StudioStoreError,isStudioAssetKind,studioStoreConstants} from './studio-store.mjs';
 import {storyStoreFor} from './story-store.mjs';
 import {Readable} from 'node:stream';
-import {createReadStream,statSync,fstatSync,realpathSync,readdirSync,readFileSync,rmSync,existsSync,mkdirSync,writeFileSync,openSync,closeSync,readSync} from 'node:fs';
+import {createReadStream,statSync,fstatSync,realpathSync,readdirSync,readFileSync,rmSync,existsSync,mkdirSync,writeFileSync,openSync,closeSync,readSync,utimesSync} from 'node:fs';
 import {execFile} from 'node:child_process';
 import {isAbsolute,join,sep,extname} from 'node:path';
 import {homedir,tmpdir} from 'node:os';
@@ -59,24 +59,26 @@ function defaultSessionIndex(){
   sessionIndexCache={at:Date.now(),rows};return rows;
 }
 // iPad Safari cannot decode AV1 and other exotic encodings Chrome handles; transcode once, cache, then stream normally.
-const TRANSCODE_CACHE=join(tmpdir(),'dsh-director-transcode');
+// Everything is strictly on demand (a device requesting a video triggers its own remux/transcode — never preemptive).
+// Cache lives in the workspace (.director-studio/transcode-cache), NOT /tmp which is RAM-backed tmpfs; entries age out 7 days after LAST USE.
 const AV_CACHE_TTL=7*24*3600*1000;
+const transcodeCacheFor=workspace=>workspace?join(workspace,'.director-studio','transcode-cache'):join(homedir(),'.dsh','director-media','transcode-cache');
 // ponytail: ceiling = one global transcode at a time (1-hour lock safety), cache 7 days; upgrade path = per-file locks + queue.
 let transcodeLock=null;
 function ffprobeInfo(file){return new Promise(resolve=>{execFile('ffprobe',['-v','error','-select_streams','v:0','-show_entries','stream=codec_name,pix_fmt','-of','csv=p=0',file],{timeout:20000},(error,stdout)=>resolve(error?'':String(stdout).trim()));});}
 const deviceFriendly=info=>/h264/.test(info)&&!/yuv4(22|44)/.test(info);
-function ensureTranscode(source,resolved,mode='reencode'){
+function ensureTranscode(source,resolved,mode='reencode',cacheDir=transcodeCacheFor(null)){
   if(!transcodeLock||Date.now()-transcodeLock.at>3600000)transcodeLock={at:Date.now(),files:new Set()};
   const key=resolved.replace(/[^A-Za-z0-9._-]/g,'_')+(mode==='copy'?'.faststart':'');
   const lockKey=resolved+'#'+mode;
-  const target=join(TRANSCODE_CACHE,key+'.mp4');
+  const target=join(cacheDir,key+'.mp4');
   // Safari will not retry 503: concurrent waiters poll for the finished copy (up to 10 min) and then stream it.
   if(transcodeLock.files.has(lockKey))return new Promise((resolve,reject)=>{const started=Date.now();const poll=setInterval(()=>{if(existsSync(target+'.done')){clearInterval(poll);resolve(target);}else if(Date.now()-started>600000){clearInterval(poll);reject(new StudioStoreError('Transcode did not finish in time.',504));}},2000);});
   transcodeLock.files.add(lockKey);
-  try{for(const entry of readdirSync(TRANSCODE_CACHE)){if(!entry.startsWith(key))continue;const full=join(TRANSCODE_CACHE,entry);if(statSync(full).mtimeMs<Date.now()-AV_CACHE_TTL)rmSync(full,{force:true});}}catch{}
-  if(existsSync(target+'.done'))return Promise.resolve(target);
+  try{for(const entry of readdirSync(cacheDir)){const full=join(cacheDir,entry);if(statSync(full).mtimeMs<Date.now()-AV_CACHE_TTL)rmSync(full,{force:true});}}catch{}
+  if(existsSync(target+'.done')){const now=new Date();try{utimesSync(target,now,now);utimesSync(target+'.done',now,now);}catch{}return Promise.resolve(target);}
   process.stdout.write(`[dsh-director transcode] ffmpeg ${mode} starting for ${source}\n`);
-  mkdirSync(TRANSCODE_CACHE,{recursive:true});
+  mkdirSync(cacheDir,{recursive:true});
   const args=mode==='copy'?['-y','-v','error','-i',source,'-c','copy','-movflags','+faststart',target]:['-y','-v','error','-threads','4','-i',source,'-c:v','libx264','-preset','veryfast','-crf','22','-pix_fmt','yuv420p','-movflags','+faststart','-c:a','copy',target];
   return new Promise((resolve,reject)=>{execFile('ffmpeg',args,{timeout:3600000},(error,stdout,stderr)=>{process.stdout.write(`[dsh-director transcode] ffmpeg done err=${String(error?.message??'').slice(0,120)} stderr=${String(stderr).slice(0,160)}\n`);transcodeLock?.files.delete(lockKey);if(error){try{rmSync(target,{force:true});}catch{}reject(new StudioStoreError('Server transcode failed: '+String(stderr||error?.message).slice(0,160),502));return;}try{writeFileSync(target+'.done','');}catch{}resolve(target);});});
 }
@@ -154,16 +156,16 @@ async function resolveMediaPath(url,workspace,sessionIndex=defaultSessionIndex){
 }
 async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSessionIndex}){
   const {resolved,info,mime}=await resolveMediaPath(url,workspace,sessionIndex);
-  let served=resolved,stat=info;
+  let served=resolved,stat=info;const cacheDir=transcodeCacheFor(workspace);
   if(mime.startsWith('video/')&&/iPhone|iPad|iPod/.test(String(req.headers['user-agent']??''))){
     mediaLog(req,'probing',mime);
     const probe=await ffprobeInfo(resolved);mediaLog(req,'probe',probe||'unknown');
-    if(probe&&!deviceFriendly(probe)){served=await ensureTranscode(resolved,resolved);stat=statSync(served);mediaLog(req,'transcode',mime+' -> h264');}
+    if(probe&&!deviceFriendly(probe)){served=await ensureTranscode(resolved,resolved,'reencode',cacheDir);stat=statSync(served);mediaLog(req,'transcode',mime+' -> h264');}
   }
   // moov-at-end mp4/mov: lossless faststart remux so browsers (and iOS) can read metadata from the file head.
   if(served===resolved&&['video/mp4','video/quicktime'].includes(mime)&&mp4Faststart(served)===false){
     mediaLog(req,'remuxing',mime+' faststart');
-    served=await ensureTranscode(resolved,resolved,'copy');stat=statSync(served);mediaLog(req,'remux',mime+' -> faststart');
+    served=await ensureTranscode(resolved,resolved,'copy',cacheDir);stat=statSync(served);mediaLog(req,'remux',mime+' -> faststart');
   }
   const m=/^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range??''));
   const base={'Content-Type':mime,'X-Content-Type-Options':'nosniff','Accept-Ranges':'bytes','Cache-Control':'private, max-age=300'};
