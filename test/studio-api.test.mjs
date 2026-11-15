@@ -83,6 +83,10 @@ test('footage playback: suffix Range 206, moov-at-end served faststart, ffmpeg p
   assert.equal((await fetch(thumbUrl)).status,200,'second call served from cache');
   const board=await (await json(base,'/api/footage')).json();
   assert.ok(board.files.find(f=>f.path==='ep1/late.mp4')?.thumb?.startsWith('/director-studio/api/footage/thumb?path='),'listing exposes per-file poster url');
+  await writeFile(join(root,'media','ep1','empty.mp4'),Buffer.alloc(0));
+  const board2=await (await json(base,'/api/footage')).json();
+  const zero=board2.files.find(f=>f.path==='ep1/empty.mp4');
+  assert.equal(zero?.size,0);assert.equal(zero?.empty,true);assert.equal(zero?.thumb,null,'0-byte clip: flagged, no poster request');
 });
 
 test('story wall routes round-trip decisions, drag rules and chronology lint',async t=>{

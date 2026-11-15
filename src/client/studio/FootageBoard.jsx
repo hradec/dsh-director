@@ -79,7 +79,7 @@ export function FootageBoard(){
     onClick={()=>{if(menu){setMenu(null);return;}setPlaying(f);}}
     onKeyDown={(e)=>{if(e.key==='Enter')setPlaying(f);}}
     onContextMenu={(e)=>{e.preventDefault();setMenu({x:e.clientX,y:e.clientY,file:f});}}>
-    <img src={f.thumb??f.url} alt="" loading="lazy" draggable="false"/>
+    {f.empty?<div className="footage-empty" title="The file on disk has no content — nothing to play.">0-byte file</div>:<img src={f.thumb??f.url} alt="" loading="lazy" draggable="false"/>}
     <div className="footage-card-foot">
       <span className="footage-path" title={f.path}>{f.path}</span>
       <div className="footage-chips" onClick={(e)=>{e.stopPropagation();setMenu(null);}}>

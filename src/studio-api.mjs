@@ -124,12 +124,17 @@ function ensureFootageThumb(store,source){
 // Media request diary: one line per served answer so device-side failures (iPad Safari!) can be traced from the server journal.
 const mediaLog=(req,status,extra)=>{try{process.stdout.write(`[dsh-director media] ${req.socket?.remoteAddress??'?'} ${req.method} ${String(req.headers.range??'-')} -> ${status} ${extra}\n`);}catch{}};
 // Shared path gate for /api/file and /api/footage/thumb: roots, secret dot-folders deny, media extensions.
-function resolveMediaPath(url,workspace,sessionIndex=defaultSessionIndex){
+const realpathOrNull=p=>{try{return realpathSync(p);}catch{return null;}};
+const nap=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function resolveMediaPath(url,workspace,sessionIndex=defaultSessionIndex){
   const raw=url.searchParams.get('path')??'';
   if(!raw||raw.length>2000)throw new StudioStoreError('A path query parameter is required.');
   const candidate=isAbsolute(raw)?raw:(workspace?join(workspace,raw):'');
   if(!candidate)throw new StudioStoreError('Relative paths need the session parameter.',400);
-  let resolved;try{resolved=realpathSync(candidate);}catch{throw new StudioStoreError('File not found.',404);}
+  // Cold autofs/NFS mounts (workspaces on /net/…) transiently ENOENT while mounting — proven live 2026-11-14; retry once.
+  let resolved=realpathOrNull(candidate);
+  if(resolved===null){await nap(250);resolved=realpathOrNull(candidate);}
+  if(resolved===null)throw new StudioStoreError('File not found.',404);
   const inside=(file,root)=>file===root||file.startsWith(root.endsWith(sep)?root:root+sep);
   let roots=[homedir(),tmpdir(),...(workspace?[workspace]:[])].filter(Boolean);
   if(!roots.some(root=>inside(resolved,root))&&isAbsolute(candidate)){for(const entry of sessionIndex()){if(entry.cwd&&(candidate.startsWith(entry.cwd+sep)||resolved.startsWith(entry.cwd+sep))){roots=[...roots,entry.cwd];break;}}}
@@ -148,7 +153,7 @@ function resolveMediaPath(url,workspace,sessionIndex=defaultSessionIndex){
   return {resolved,info,mime};
 }
 async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSessionIndex}){
-  const {resolved,info,mime}=resolveMediaPath(url,workspace,sessionIndex);
+  const {resolved,info,mime}=await resolveMediaPath(url,workspace,sessionIndex);
   let served=resolved,stat=info;
   if(mime.startsWith('video/')&&/iPhone|iPad|iPod/.test(String(req.headers['user-agent']??''))){
     mediaLog(req,'probing',mime);
@@ -273,11 +278,11 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       // Footage library: every video under <workspace>/media/ (recursive); tags+groups live in media/footage.json.
       if(path==='/api/footage'&&req.method==='GET'){
         const [library,root,assets]=await Promise.all([store.footageList(),store.footageRoot(),store.listAssets({project_id:project.id,include_unassigned:true})]);
-        const files=library.files.map(item=>{const abs=encodeURIComponent(join(root,item.path));return {...item,url:`/director-studio/api/file?path=${abs}&session=${encodeURIComponent(sessionId)}`,thumb:`/director-studio/api/footage/thumb?path=${abs}&session=${encodeURIComponent(sessionId)}`};});
+        const files=library.files.map(item=>{const abs=join(root,item.path),enc=encodeURIComponent(abs);let size=null;try{size=statSync(abs).size;}catch{}const empty=size===0;return {...item,size,empty,url:`/director-studio/api/file?path=${enc}&session=${encodeURIComponent(sessionId)}`,thumb:empty?null:`/director-studio/api/footage/thumb?path=${enc}&session=${encodeURIComponent(sessionId)}`};});
         sendJson(res,200,{files,groups:library.groups,assets:assets.filter(item=>item.kind!=='voices').map(item=>({name:item.name}))});return;}
       // Poster for a footage video: one ffmpeg frame, cached in .director-studio/footage-thumbs (streamed here, never via /api/file).
       if(path==='/api/footage/thumb'&&['GET','HEAD'].includes(req.method)){
-        const {resolved,mime}=resolveMediaPath(url,join(store.root,'..'),sessionIndex);
+        const {resolved,mime}=await resolveMediaPath(url,join(store.root,'..'),sessionIndex);
         if(!mime.startsWith('video/'))throw new StudioStoreError('Thumbnails are generated for videos only.',400);
         const target=await ensureFootageThumb(store,resolved);const tinfo=statSync(target);
         res.writeHead(200,{'Content-Type':'image/jpeg','X-Content-Type-Options':'nosniff','Cache-Control':'private, max-age=3600','Content-Length':String(tinfo.size)});mediaLog(req,200,'thumb '+extname(resolved));
