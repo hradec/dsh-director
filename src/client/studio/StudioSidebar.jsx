@@ -19,6 +19,7 @@ export function AssetsTab({sessionId,sendDshRequest}={}){return <StudioTab area=
 export function ProductionTab({sessionId,sendDshRequest}={}){return <StudioTab area="production" label="Production" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
 export function StoryTab({sessionId,sendDshRequest}={}){return <StudioTab area="story" label="Story" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
 export function TimelineTab({sessionId,sendDshRequest}={}){return <StudioTab area="timeline" label="Timeline" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
+export function FootageTab({sessionId,sendDshRequest}={}){return <StudioTab area="footage" label="Footage" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
 // The media rail as its own sidebar tab: visible in the Start launcher, no Studio area needed.
 export function MediaTab({sessionId}={}){
   useEffect(()=>{globalThis.__DSH_DIRECTOR_SESSION__=sessionId??'';},[sessionId]);

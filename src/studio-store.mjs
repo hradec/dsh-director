@@ -1,5 +1,5 @@
 import {createHash,randomUUID} from 'node:crypto';
-import {mkdir,open,readFile,readdir,rename,rm,unlink,writeFile} from 'node:fs/promises';
+import {mkdir,open,readFile,readdir,rename,rm,stat,unlink,writeFile} from 'node:fs/promises';
 import {basename,dirname,extname,isAbsolute,join,resolve} from 'node:path';
 
 const ASSET_KINDS=new Set(['actors','costumes','scenes','props','layouts','voices']);
@@ -170,6 +170,34 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
     }
     return added;
   }
+  // Footage library (0.2.39): <workspace>/media/ recursively holds every video clip; media/footage.json
+  // ({files:{rel:{tags,added_at}},groups:[…]}) is the hand-editable tag/group index — same overlay-wins-on-read
+  // rule as asset.json. The human organizes media/ into subfolders (season/episode); the catalog follows the tree.
+  const mediaLibraryRoot=join(workspace,'media');
+  const normFootageRel=value=>String(value??'').replaceAll('\\','/').split('/').map(part=>safeText(part,120)).filter(part=>part&&!part.startsWith('.')).join('/');
+  const normFootageTags=value=>Array.isArray(value)?[...new Set(value.map(tag=>safeText(tag,80).toLowerCase()).filter(Boolean))]:[];
+  async function readFootageJson(){try{const parsed=JSON.parse(await readFile(join(mediaLibraryRoot,'footage.json'),'utf8'));
+    if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))return {files:parsed.files&&typeof parsed.files==='object'&&!Array.isArray(parsed.files)?parsed.files:{},groups:Array.isArray(parsed.groups)?parsed.groups.map(group=>safeText(group,80)).filter(Boolean):[]};}catch{}
+    return {files:{},groups:[]};}
+  async function writeFootageJson(data){await mkdir(mediaLibraryRoot,{recursive:true});await writeFile(join(mediaLibraryRoot,'footage.json'),JSON.stringify(data,null,1));}
+  // ponytail: extension gate on scan (no byte read per file); signatures verified only at copy-in time.
+  async function listLibraryVideos(){const out=[];
+    async function walk(dir,prefix){let entries;try{entries=await readdir(dir,{withFileTypes:true});}catch{return;}
+      for(const entry of entries){if(entry.name.startsWith('.'))continue;const rel=prefix?`${prefix}/${entry.name}`:entry.name;
+        if(entry.isDirectory()){await walk(join(dir,entry.name),rel);continue;}
+        if(MEDIA_TYPES[extname(entry.name).toLowerCase()]?.[0]==='video')out.push(rel);}}
+    await walk(mediaLibraryRoot,'');return out;}
+  // Dedupe by bytes against same-size library files; collision gets <stem>-2.ext… names. Returns {path,tags} or {skipped,path}.
+  async function copyIntoLibrary(filename,bytes,tags,sub=''){
+    const digest=hash(bytes),rels=await listLibraryVideos();
+    for(const rel of rels){try{const full=join(mediaLibraryRoot,rel);if((await stat(full)).size!==bytes.length)continue;if(hash(await readFile(full))===digest)return {skipped:'same bytes',path:rel};}catch{continue;}}
+    const base=cleanBase(filename);if(!base)throw new StudioStoreError('Video filename is required.');
+    const ext=extname(base).toLowerCase(),stem=base.slice(0,base.length-ext.length)||'clip',dir=normFootageRel(sub);
+    let rel,name,n=1;do{name=n===1?`${stem}${ext}`:`${stem}-${n}${ext}`;rel=[dir,name].filter(Boolean).join('/');n++;}while(rels.includes(rel));
+    await mkdir(dirname(join(mediaLibraryRoot,rel)),{recursive:true});
+    await writeFile(join(mediaLibraryRoot,rel),bytes);
+    const stored=await readFootageJson();stored.files[rel]={tags:normFootageTags(tags),added_at:stamp()};await writeFootageJson(stored);
+    return {path:rel,tags:stored.files[rel].tags};}
   async function load(){
     if(state)return state;
     await mkdir(root,{recursive:true,mode:0o700});
@@ -227,12 +255,15 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
             const file=await putAssetFile(s,item,input.filename,input.bytes,fileKey);
             if(previous)s.files=s.files.filter(value=>value.path!==previous&&value.id!==file.id);
             s.files.push(file);
+            // Every stored video is also cataloged into the media/ footage library under the asset folder.
+            if(file.type==='video')await copyIntoLibrary(input.filename,input.bytes,[String(item.name).trim().toLowerCase()],[item.folder]);
           }
           item.updated_at=stamp();await writeAssetJson(item);return clone(item);
         }
         const item={id:id(),kind,name,description:safeText(input.description,20000),notes:safeText(input.notes,10000),pipeline_id:safeText(input.pipeline_id,200),job_id:safeText(input.job_id,200),seed:Number.isSafeInteger(input.seed)?input.seed:null,created_at:stamp(),folder:null,files:{},file_names:{},ref_meta:{},sources:[],meta:input.meta&&typeof input.meta==='object'&&!Array.isArray(input.meta)?input.meta:{},urls:{},project_id:projectId};
         s.assets.push(item);
-        if(input.bytes){await ensureFolder(s,item);const file=await putAssetFile(s,item,input.filename,input.bytes,fileKey);s.files.push(file);}
+        if(input.bytes){await ensureFolder(s,item);const file=await putAssetFile(s,item,input.filename,input.bytes,fileKey);s.files.push(file);
+          if(file.type==='video')await copyIntoLibrary(input.filename,input.bytes,[String(item.name).trim().toLowerCase()],[item.folder]);}
         item.updated_at=stamp();await writeAssetJson(item);return clone(item);
       });
     },
@@ -314,6 +345,46 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
         item.ref_meta={...(item.ref_meta??{}),[key]:next};item.updated_at=stamp();await writeAssetJson(item);return {key,...next};
       });
     },
+    // Footage library surface: the Footage tab and footage.* tool actions both land here.
+    async footageList(){const stored=await readFootageJson(),rels=await listLibraryVideos(),files=[];
+      for(const rel of rels){let info;try{info=await stat(join(mediaLibraryRoot,rel));}catch{continue;}
+        const meta=stored.files[rel]??{};
+        files.push({path:rel,name:rel.split('/').pop(),tags:normFootageTags(meta.tags),added_at:typeof meta.added_at==='string'?meta.added_at:info.mtime.toISOString(),size:info.size,mtime:info.mtime.toISOString()});}
+      files.sort((a,b)=>b.mtime.localeCompare(a.mtime));return {files,groups:stored.groups};},
+    async footageRoot(){return mediaLibraryRoot;},
+    async addFootage(input={}){const raw=String(input.path??'').trim();if(!raw)throw new StudioStoreError('A source video path is required.');
+      const source=isAbsolute(raw)?resolve(raw):resolve(workspace,raw);
+      return change(async()=>{let bytes;try{bytes=await readFile(source);}catch{throw new StudioStoreError('Source video could not be read.',404);}
+        let type;try{[type]=mediaType(basename(source),bytes);}catch{throw new StudioStoreError('Footage accepts MP4/MOV/WebM video files.',400);}
+        if(type!=='video')throw new StudioStoreError('Footage accepts video files only.',400);
+        return await copyIntoLibrary(basename(source),bytes,normFootageTags(input.tags),normFootageRel(input.subfolder));});},
+    async attachFootageFolder(input={}){const raw=String(input.path??'').trim();if(!raw)throw new StudioStoreError('A source folder path is required.');
+      const dir=isAbsolute(raw)?resolve(raw):resolve(workspace,raw);
+      return change(async()=>{
+        if(!(await readdir(dir).then(()=>true,()=>false)))throw new StudioStoreError('Source folder does not exist.',404);
+        // Mirror the source tree under media/: workspace-relative path inside, else the folder name.
+        const sub=normFootageRel(dir.startsWith(`${workspace}/`)?dir.slice(workspace.length+1):basename(dir));
+        const tags=normFootageTags(input.tags);let added=0;
+        // ponytail: copyIntoLibrary rescans the library per file — fine for hundreds of clips.
+        async function walk(source,prefix){for(const entry of await readdir(source,{withFileTypes:true})){if(entry.name.startsWith('.'))continue;const full=join(source,entry.name);
+          if(entry.isDirectory()){await walk(full,prefix?`${prefix}/${entry.name}`:entry.name);continue;}
+          if(MEDIA_TYPES[extname(entry.name).toLowerCase()]?.[0]!=='video')continue;
+          let bytes;try{bytes=await readFile(full);}catch{continue;}
+          try{mediaType(entry.name,bytes);}catch{continue;}
+          const out=await copyIntoLibrary(entry.name,bytes,tags,[sub,prefix].filter(Boolean).join('/'));
+          if(!out.skipped)added++;}}
+        await walk(dir,'');return {added};});},
+    async tagFootage(input={}){const rel=normFootageRel(input.path);if(!rel)throw new StudioStoreError('A footage file path is required.');
+      return change(async()=>{
+        if(!(await stat(join(mediaLibraryRoot,rel)).then(()=>true,()=>false)))throw new StudioStoreError('Footage file not found.',404);
+        const stored=await readFootageJson(),meta=stored.files[rel]??{tags:[],added_at:stamp()};
+        const add=normFootageTags(input.tags_add),remove=new Set(normFootageTags(input.tags_remove));
+        const tags=[...new Set([...(Array.isArray(meta.tags)?meta.tags.map(tag=>String(tag).trim().toLowerCase()).filter(Boolean):[]),...add])].filter(tag=>!remove.has(tag));
+        stored.files[rel]={...meta,tags};await writeFootageJson(stored);return {path:rel,tags};});},
+    async addFootageGroup(input={}){const name=safeText(input.name,80).toLowerCase();if(!name)throw new StudioStoreError('A group name is required.');
+      return change(async()=>{const stored=await readFootageJson();if(!stored.groups.includes(name))stored.groups=[...stored.groups,name];await writeFootageJson(stored);return {groups:stored.groups};});},
+    async removeFootageGroup(input={}){const name=safeText(input.name,80).toLowerCase();
+      return change(async()=>{const stored=await readFootageJson();stored.groups=stored.groups.filter(group=>group!==name);await writeFootageJson(stored);return {groups:stored.groups};});},
     async deleteAsset(kind,assetId){
       canonicalKind(kind);
       const result=await change(s=>{const index=s.assets.findIndex(value=>value.id===assetId&&value.kind===kind);if(index<0)throw new StudioStoreError('Asset not found.',404);if(s.shots.some(shot=>shot.layout_asset_id===assetId||shot.video_asset_id===assetId||shot.video_context?.upload_id===assetId||(shot.refs??[]).some(ref=>ref.asset_id===assetId)||(shot.voice_refs??[]).some(ref=>ref.asset_id===assetId)))throw new StudioStoreError('Cannot delete an asset referenced by a Production shot.');const [item]=s.assets.splice(index,1),paths=Object.values(item.files??{});s.files=s.files.filter(file=>!paths.includes(file.path));return {deleted:true,id:item.id,paths,folder:item.folder??null};});

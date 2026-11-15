@@ -208,6 +208,16 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         const clips=Object.fromEntries(shots.map(shot=>{const asset=shot.video_asset_id?assets.get(shot.video_asset_id):null,file=asset?.files?.master?files.get(asset.files.master):null;return [shot.id,file?{asset_id:asset.id,path:file.path,filename:file.filename}:null];}));
         sendJson(res,200,{shots,sequences,takes,clips,episodes:(await storyStoreFor(store).story()).episodes});return;
       }
+      // Footage library: every video under <workspace>/media/ (recursive); tags+groups live in media/footage.json.
+      if(path==='/api/footage'&&req.method==='GET'){
+        const [library,root,assets]=await Promise.all([store.footageList(),store.footageRoot(),store.listAssets({project_id:project.id,include_unassigned:true})]);
+        const files=library.files.map(item=>({...item,url:`/director-studio/api/file?path=${encodeURIComponent(join(root,item.path))}&session=${encodeURIComponent(sessionId)}`}));
+        sendJson(res,200,{files,groups:library.groups,assets:assets.filter(item=>item.kind!=='voices').map(item=>({name:item.name}))});return;}
+      if(path==='/api/footage'&&req.method==='POST'){sendJson(res,201,await store.addFootage(await readJson(req,controller.signal)));return;}
+      if(path==='/api/footage/folder'&&req.method==='POST'){sendJson(res,200,await store.attachFootageFolder(await readJson(req,controller.signal)));return;}
+      if(path==='/api/footage/refs'&&req.method==='PUT'){sendJson(res,200,await store.tagFootage(await readJson(req,controller.signal)));return;}
+      if(path==='/api/footage/group'&&req.method==='POST'){sendJson(res,200,await store.addFootageGroup(await readJson(req,controller.signal)));return;}
+      if(path==='/api/footage/group'&&req.method==='DELETE'){const b=await readJson(req,controller.signal).catch(()=>({}));sendJson(res,200,await store.removeFootageGroup({name:String(b.name??url.searchParams.get('name')??'')}));return;}
       match=/^\/api\/(actors|scenes|props)(?:\/(generate|jobs)(?:\/([A-Za-z0-9_-]{1,128})(?:\/(cancel|save))?)?)?$/.exec(path);
       if(match){
         const [,kind,section,jobId,action]=match;

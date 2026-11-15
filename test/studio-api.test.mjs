@@ -34,6 +34,33 @@ test('timeline board routes serve sequences, arc tags and story episodes for the
   assert.equal((await store.getShot(shot.id)).sequence_id,'');
 });
 
+test('footage routes: auto-library, play urls, single add, recursive folder import, tag, group create/delete',async t=>{
+  const {base,root,store,project}=await setup(t);
+  await store.saveAsset({kind:'actors',name:'Nelare',project_id:project.id,filename:'sheet.png',bytes:png});
+  const mp4=Buffer.concat([Buffer.alloc(4),Buffer.from('ftyp'),Buffer.from('major')]);
+  await store.saveAsset({kind:'layouts',name:'Flight',project_id:project.id,filename:'fly.mp4',bytes:mp4});
+  let board=await (await json(base,'/api/footage')).json();
+  assert.deepEqual(board.files.map(f=>f.path),['flight/fly.mp4'],'asset videos auto-land in the footage library');
+  assert.ok(board.files[0].url.startsWith('/director-studio/api/file?path='),'browser-reachable play url');
+  assert.ok(board.assets.some(a=>a.name==='Nelare'));
+  assert.equal((await json(base,'/api/footage/group',{method:'POST',body:JSON.stringify({name:'chicken'})})).status,200);
+  const ungroup=await (await json(base,'/api/footage/group',{method:'DELETE',body:JSON.stringify({name:'chicken'})})).json();
+  assert.deepEqual(ungroup.groups,[]);
+  const tagged=await (await json(base,'/api/footage/refs',{method:'PUT',body:JSON.stringify({path:'flight/fly.mp4',tags_add:['nelare','flying']})})).json();
+  assert.deepEqual(tagged.tags.slice().sort(),['flight','flying','nelare']);
+  await writeFile(join(root,'outside.mp4'),Buffer.concat([Buffer.alloc(4),Buffer.from('ftyp'),Buffer.from('outside-clip')]));
+  const added=await (await json(base,'/api/footage',{method:'POST',body:JSON.stringify({path:'outside.mp4',tags:['extra']})})).json();
+  assert.equal(added.path,'outside.mp4');
+  const dup=await (await json(base,'/api/footage',{method:'POST',body:JSON.stringify({path:'outside.mp4'})})).json();
+  assert.equal(dup.skipped,'same bytes');
+  await mkdir(join(root,'episodes','episode1'),{recursive:true});
+  await writeFile(join(root,'episodes','episode1','c1.mp4'),Buffer.concat([Buffer.alloc(4),Buffer.from('ftyp'),Buffer.from('crowd')]));
+  const folder=await (await json(base,'/api/footage/folder',{method:'POST',body:JSON.stringify({path:'episodes',tags:['speardrive-episode-1']})})).json();
+  assert.equal(folder.added,1);
+  board=await (await json(base,'/api/footage')).json();
+  assert.ok(board.files.some(f=>f.path==='episodes/episode1/c1.mp4'&&f.tags.includes('speardrive-episode-1')),'recursive import mirrors the tree');
+});
+
 test('story wall routes round-trip decisions, drag rules and chronology lint',async t=>{
   const {base}=await setup(t);
   const logged=await (await json(base,'/api/story/decision',{method:'POST',body:JSON.stringify({handle:'Catten dies in act 1',kind:'decided',arc:'Act 1',body:'ngokang kills him'})})).json();

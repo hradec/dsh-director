@@ -3,6 +3,7 @@ import {AssetWorkspace} from './vendor/features/assets/AssetWorkspace.tsx';
 import {ProductionPage} from './vendor/features/production/ProductionPage.tsx';
 import {StoryWall} from './StoryWall.jsx';
 import {TimelineBoard} from './TimelineBoard.jsx';
+import {FootageBoard} from './FootageBoard.jsx';
 import {ProjectProvider,useProject} from './vendor/shared/project/ProjectContext.tsx';
 import {MediaRail} from './MediaRail.jsx';
 import {fetch as apiFetch} from './fetch-inject.mjs';
@@ -127,7 +128,7 @@ function StudioContent({area,sendDshRequest}){
     <button className="btn ghost corner-settings" title="Studio settings" aria-label="Studio settings" onClick={()=>setSettingsOpen(true)}>⚙</button>
     {settingsOpen?<AppSettingsPanel onClose={()=>setSettingsOpen(false)}/>:null}
     <WorkspaceHeader/>
-    {area==='story'?<StoryWall/>:area==='timeline'?<TimelineBoard/>:area==='assets'?<AssetWorkspace sendAssetRequest={sendDshRequest}/>:<ProductionPage requestProduction={sendDshRequest}/>}
+    {area==='story'?<StoryWall/>:area==='timeline'?<TimelineBoard/>:area==='footage'?<FootageBoard/>:area==='assets'?<AssetWorkspace sendAssetRequest={sendDshRequest}/>:<ProductionPage requestProduction={sendDshRequest}/>}
     {railOpen?<MediaRail onClose={()=>setRailOpen(false)}/>:null}
   </div>;
 }

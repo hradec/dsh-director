@@ -157,3 +157,41 @@ test('asset folders are the database: import tags brainstorming, attach scans so
   assert.equal(removed.deleted,true);
   await assert.rejects(stat(join(cwd,'assets','nelare',keyed+'.png')),{code:'ENOENT'});
 });
+
+test('footage library: asset videos auto-copy into media/ recursively, tags/groups persist, bytes deduped',async t=>{
+  const cwd=await fixture(t),registry=createStudioRegistry();
+  const {store,project}=await registry(cwd);
+  const mp4=Buffer.concat([Buffer.alloc(4),Buffer.from('ftyp'),Buffer.from('major-brand')]);
+  await store.saveAsset({kind:'layouts',name:'H3 result',project_id:project.id,filename:'result.mp4',bytes:mp4});
+  let library=await store.footageList();
+  assert.deepEqual(library.files.map(f=>f.path),['h3-result/result.mp4'],'every stored video is cataloged under the asset folder');
+  assert.deepEqual(library.files[0].tags,['h3 result']);
+  // Recursive import: episodes/episode1 tree mirrors under media/, one bulk tag set.
+  await mkdir(join(cwd,'episodes','episode1'),{recursive:true});
+  const crowd=Buffer.concat([Buffer.alloc(4),Buffer.from('ftyp'),Buffer.from('crowd-chickens')]);
+  await writeFile(join(cwd,'episodes','episode1','c1.mp4'),crowd);
+  const attached=await store.attachFootageFolder({path:'episodes',tags:['speardrive-episode-1','c1']});
+  assert.equal(attached.added,1);
+  library=await store.footageList();
+  assert.ok(library.files.some(f=>f.path==='episodes/episode1/c1.mp4'&&f.tags.includes('speardrive-episode-1')),'subfolder tree survives');
+  assert.equal((await store.attachFootageFolder({path:'episodes'})).added,0,'identical bytes never copy twice');
+  const dup=await store.addFootage({path:join(cwd,'episodes','episode1','c1.mp4'),tags:['dup']});
+  assert.equal(dup.skipped,'same bytes');
+  // Single add into a chosen subfolder, then tagging enriches.
+  const flying=Buffer.concat([Buffer.alloc(4),Buffer.from('ftyp'),Buffer.from('flying-data')]);
+  await writeFile(join(cwd,'src-clip.mp4'),flying);
+  const added=await store.addFootage({path:'src-clip.mp4',tags:['nelare','Flying'],subfolder:'season1/episode2'});
+  assert.equal(added.path,'season1/episode2/src-clip.mp4');assert.deepEqual(added.tags,['nelare','flying'],'tags normalize to lowercase');
+  const tagged=await store.tagFootage({path:'episodes/episode1/c1.mp4',tags_add:['crowd','chickens']});
+  assert.deepEqual(tagged.tags.slice().sort(),['c1','chickens','crowd','speardrive-episode-1']);
+  // Groups persist; hand-edited footage.json is the database of record.
+  await store.addFootageGroup({name:'Chicken'});
+  assert.deepEqual((await store.footageList()).groups,['chicken']);
+  const raw=JSON.parse(await readFile(join(cwd,'media','footage.json'),'utf8'));raw.groups=['chicken','flight'];await writeFile(join(cwd,'media','footage.json'),JSON.stringify(raw));
+  assert.deepEqual((await store.footageList()).groups,['chicken','flight'],'external footage.json edits win');
+  await store.removeFootageGroup({name:'chicken'});
+  assert.deepEqual((await store.footageList()).groups,['flight']);
+  // A PNG is not footage.
+  await writeFile(join(cwd,'not-video.png'),png);
+  await assert.rejects(store.addFootage({path:'not-video.png'}),StudioStoreError);
+});
