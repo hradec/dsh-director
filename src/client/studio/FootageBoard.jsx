@@ -29,6 +29,8 @@ export function FootageBoard(){
   };
   const addTag=async(path)=>{const tag=(tagDrafts[path]??'').trim();if(!tag)return;setTagDrafts((d)=>({...d,[path]:''}));await setTags(path,{tags_add:[tag]});};
   const removeTag=(path,tag)=>void setTags(path,{tags_remove:[tag]});
+  // Expand/collapse persists to footage.json — survives refresh and closing/reopening the tab.
+  const toggleOpen=(id,expanded)=>{setOpen((o)=>({...o,[id]:expanded}));post('/api/footage/open','PUT',{id,expanded}).catch((e)=>setError(String(e.message||e)));};
   const addGroup=async()=>{
     const name=filter.trim();if(!name)return;
     try{const v=await post('/api/footage/group','POST',{name});if(v?.groups)setData((d)=>({...d,groups:v.groups}));setOpen((o)=>({...o,[`g:${name}`]:true}));setNotice(`Group “${name}” created — every video tagged ${name} is in it.`);}
@@ -168,25 +170,25 @@ export function FootageBoard(){
     </div>
     {!data&&!error?<div className="muted">Loading footage…</div>:null}
     {data&&!data.files.length?<p className="empty-copy">No videos in media/ yet — generated videos land here automatically.</p>:null}
-    {groups.map((g)=>{
+    {groups.length?<div className="footage-groups">{groups.map((g)=>{
       const shown=g.members.filter(matches);
       if(parsed.text&&!shown.length)return null;
-      const expanded=open[g.id]??Boolean(parsed.text&&shown.length);
+      const expanded=open[g.id]??data?.open?.[g.id]??Boolean(parsed.text&&shown.length);
       const marked=drag&&drag.overId===g.id&&drag.id!==g.id;
-      return <section key={g.id} className={`footage-group${marked?(drag.after?' footage-drop-after':' footage-drop-before'):''}${drag&&drag.id===g.id?' footage-dragging':''}`}
-        onDragOver={(e)=>{if(!drag||drag.id===g.id)return;e.preventDefault();const r=e.currentTarget.getBoundingClientRect();setDrag((d)=>d?{...d,overId:g.id,after:e.clientY>r.top+r.height/2}:d);}}
+      return <section key={g.id} className={`footage-group${expanded?' footage-group-wide':''}${marked?(drag.after?' footage-drop-after':' footage-drop-before'):''}${drag&&drag.id===g.id?' footage-dragging':''}`}
+        onDragOver={(e)=>{if(!drag||drag.id===g.id)return;e.preventDefault();const r=e.currentTarget.getBoundingClientRect();setDrag((d)=>d?{...d,overId:g.id,after:e.clientX>r.left+r.width/2}:d);}}
         onDrop={(e)=>{e.preventDefault();void dropGroup(g.id,drag?.after);}}>
         <div className="footage-group-head" draggable={true} title="Drag to reorder groups"
           onDragStart={(e)=>{e.dataTransfer.setData('text/plain',g.id);e.dataTransfer.effectAllowed='move';setDrag({id:g.id});}}
           onDragEnd={()=>setDrag(null)}>
-          <button type="button" className="footage-group-toggle" aria-expanded={expanded} onClick={()=>setOpen((o)=>({...o,[g.id]:!expanded}))}>{expanded?'▾':'▸'} {g.name} <span className="muted tiny">{`(${shown.length})`}</span></button>
+          <button type="button" className="footage-group-toggle" aria-expanded={expanded} onClick={()=>toggleOpen(g.id,!expanded)}>{expanded?'▾':'▸'} {g.name} <span className="muted tiny">{`(${shown.length})`}</span></button>
           {g.custom?<button type="button" className="btn ghost sm" title={`Delete group “${g.name}”`} aria-label={`Delete group ${g.name}`} onClick={()=>void deleteGroup(g.name)}>✕</button>:null}
         </div>
         {expanded?<div className="footage-grid">{shown.map((f)=>card(f))}</div>:<div className="footage-strip" aria-hidden="true">
-          {shown.length?shown.slice(0,4).map((f)=>f.empty?<span key={f.path} className="footage-strip-empty" title="0-byte file">0b</span>:<img key={f.path} src={f.thumb??f.url} alt="" loading="lazy" draggable="false"/>):<span className="footage-strip-empty">EMPTY</span>}
+          {shown.length?<>{shown.slice(0,4).map((f)=>f.empty?<span key={f.path} className="footage-strip-empty" title="0-byte file">0b</span>:<img key={f.path} src={f.thumb??f.url} alt="" loading="lazy" draggable="false"/>)}{shown.length>4?<span className="footage-strip-more" title={`${shown.length-4} more — click the title to open`}>{`+${shown.length-4}`}</span>:null}</>:<span className="footage-strip-empty">EMPTY</span>}
         </div>}
       </section>;
-    })}
+    })}</div>:null}
     {menu?<div className="footage-menu" style={{left:`${menu.x}px`,top:`${menu.y}px`}}>
       <button type="button" onClick={()=>void copyPath(menu.file)}>Copy path to clipboard</button>
       <button type="button" onClick={()=>{const f=menu.file;setMenu(null);void tagAi(f);}}>AI tag / re-tag</button>

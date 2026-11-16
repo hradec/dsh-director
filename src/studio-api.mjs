@@ -309,7 +309,8 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       if(path==='/api/footage'&&req.method==='GET'){
         const [library,root,assets]=await Promise.all([store.footageList(),store.footageRoot(),store.listAssets({project_id:project.id,include_unassigned:true})]);
         const files=library.files.map(item=>{const abs=join(root,item.path),enc=encodeURIComponent(abs);let size=null,mtime=null;try{const st=statSync(abs);size=st.size;mtime=st.mtimeMs;}catch{}const empty=size===0;return {...item,size,mtime,empty,url:`/director-studio/api/file?path=${enc}&session=${encodeURIComponent(sessionId)}`,thumb:empty?null:`/director-studio/api/footage/thumb?path=${enc}&session=${encodeURIComponent(sessionId)}`};});
-        sendJson(res,200,{files,groups:library.groups,order:library.order,assets:assets.filter(item=>['actors','scenes','props'].includes(item.kind)).map(item=>({name:item.name,kind:item.kind,id:item.id}))});return;}
+        sendJson(res,200,{files,groups:library.groups,order:library.order,open:library.open,assets:assets.filter(item=>['actors','scenes','props'].includes(item.kind)).map(item=>({name:item.name,kind:item.kind,id:item.id}))});return;}
+      if(path==='/api/footage/open'&&req.method==='PUT'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.setFootageOpen({id:b.id,expanded:b.expanded}));return;}
       if(path==='/api/footage/order'&&req.method==='PUT'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.setFootageOrder({order:Array.isArray(b.order)?b.order:[]}));return;}
       // Poster for a footage video: one ffmpeg frame, cached in .director-studio/footage-thumbs (streamed here, never via /api/file).
       if(path==='/api/footage/thumb'&&['GET','HEAD'].includes(req.method)){

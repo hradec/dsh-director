@@ -177,8 +177,8 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
   const normFootageRel=value=>String(value??'').replaceAll('\\','/').split('/').map(part=>safeText(part,120)).filter(part=>part&&!part.startsWith('.')).join('/');
   const normFootageTags=value=>Array.isArray(value)?[...new Set(value.map(tag=>safeText(tag,80).toLowerCase()).filter(Boolean))]:[];
   async function readFootageJson(){try{const parsed=JSON.parse(await readFile(join(mediaLibraryRoot,'footage.json'),'utf8'));
-    if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))return {files:parsed.files&&typeof parsed.files==='object'&&!Array.isArray(parsed.files)?parsed.files:{},groups:Array.isArray(parsed.groups)?parsed.groups.map(group=>safeText(group,80)).filter(Boolean):[],order:Array.isArray(parsed.order)?parsed.order.map(row=>safeText(row,140)).filter(Boolean):[]};}catch{}
-    return {files:{},groups:[],order:[]};}
+    if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))return {files:parsed.files&&typeof parsed.files==='object'&&!Array.isArray(parsed.files)?parsed.files:{},groups:Array.isArray(parsed.groups)?parsed.groups.map(group=>safeText(group,80)).filter(Boolean):[],order:Array.isArray(parsed.order)?parsed.order.map(row=>safeText(row,140)).filter(Boolean):[],open:parsed.open&&typeof parsed.open==='object'&&!Array.isArray(parsed.open)?Object.fromEntries(Object.entries(parsed.open).filter(([,v])=>typeof v==='boolean')):{}};}catch{}
+    return {files:{},groups:[],order:[],open:{}};}
   async function writeFootageJson(data){await mkdir(mediaLibraryRoot,{recursive:true});await writeFile(join(mediaLibraryRoot,'footage.json'),JSON.stringify(data,null,1));}
   // ponytail: extension gate on scan (no byte read per file); signatures verified only at copy-in time.
   async function listLibraryVideos(){const out=[];
@@ -361,7 +361,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
       for(const rel of rels){let info;try{info=await stat(join(mediaLibraryRoot,rel));}catch{continue;}
         const meta=stored.files[rel]??{};
         files.push({path:rel,name:rel.split('/').pop(),tags:normFootageTags(meta.tags),added_at:typeof meta.added_at==='string'?meta.added_at:info.mtime.toISOString(),size:info.size,mtime:info.mtime.toISOString()});}
-      files.sort((a,b)=>b.mtime.localeCompare(a.mtime));return {files,groups:stored.groups,order:stored.order};},
+      files.sort((a,b)=>b.mtime.localeCompare(a.mtime));return {files,groups:stored.groups,order:stored.order,open:stored.open};},
     async footageRoot(){return mediaLibraryRoot;},
     async addFootage(input={}){const raw=String(input.path??'').trim();if(!raw)throw new StudioStoreError('A source video path is required.');
       const source=isAbsolute(raw)?resolve(raw):resolve(workspace,raw);
@@ -399,6 +399,9 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
     // Drag-reordered group layout: hand-written order list of group ids (a:<asset>, g:<group>, other); unlisted groups follow in default order.
     async setFootageOrder(input={}){const order=Array.isArray(input.order)?[...new Set(input.order.map(row=>safeText(row,140)).filter(Boolean))]:[];
       return change(async()=>{const stored=await readFootageJson();stored.order=order;await writeFootageJson(stored);return {order};});},
+    // Expand/collapse state of Footage groups survives refresh and tab close/reopen (kept in footage.json, per group id).
+    async setFootageOpen(input={}){const id=safeText(input.id,140);if(!id)throw new StudioStoreError('A group id is required.');const expanded=Boolean(input.expanded);
+      return change(async()=>{const stored=await readFootageJson();if(expanded)stored.open[id]=true;else delete stored.open[id];await writeFootageJson(stored);return {open:stored.open};});},
     async deleteAsset(kind,assetId){
       canonicalKind(kind);
       const result=await change(s=>{const index=s.assets.findIndex(value=>value.id===assetId&&value.kind===kind);if(index<0)throw new StudioStoreError('Asset not found.',404);if(s.shots.some(shot=>shot.layout_asset_id===assetId||shot.video_asset_id===assetId||shot.video_context?.upload_id===assetId||(shot.refs??[]).some(ref=>ref.asset_id===assetId)||(shot.voice_refs??[]).some(ref=>ref.asset_id===assetId)))throw new StudioStoreError('Cannot delete an asset referenced by a Production shot.');const [item]=s.assets.splice(index,1),paths=Object.values(item.files??{});s.files=s.files.filter(file=>!paths.includes(file.path));return {deleted:true,id:item.id,paths,folder:item.folder??null};});

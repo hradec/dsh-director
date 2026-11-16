@@ -51,6 +51,11 @@ test('footage routes: auto-library, play urls, single add, recursive folder impo
   const ordered=await (await json(base,'/api/footage/order',{method:'PUT',body:JSON.stringify({order:['g:chicken','a:Nelare','other','zz extra']})})).json();
   assert.deepEqual(ordered.order,['g:chicken','a:Nelare','other','zz extra'],'the drag-reordered layout round-trips');
   assert.deepEqual((await (await json(base,'/api/footage')).json()).order,['g:chicken','a:Nelare','other','zz extra'],'stored order reaches the Footage board payload');
+  const opened=await (await json(base,'/api/footage/open',{method:'PUT',body:JSON.stringify({id:'a:Nelare',expanded:true})})).json();
+  assert.equal(opened.open['a:Nelare'],true);
+  assert.equal((await (await json(base,'/api/footage')).json()).open['a:Nelare'],true,'expand state survives to the next board load');
+  const closed=await (await json(base,'/api/footage/open',{method:'PUT',body:JSON.stringify({id:'a:Nelare',expanded:false})})).json();
+  assert.ok(!('a:Nelare' in closed.open),'collapse returns the group to the default state');
   const tagged=await (await json(base,'/api/footage/refs',{method:'PUT',body:JSON.stringify({path:'flight/fly.mp4',tags_add:['nelare','flying']})})).json();
   assert.deepEqual(tagged.tags.slice().sort(),['flight','flying','nelare']);
   assert.ok(board.files[0].mtime>0,'file mtimes reach the client for [last hour]-style filters');
