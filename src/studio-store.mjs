@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
-import {mkdir,open,readFile,readdir,rename,rm,stat,unlink,writeFile} from 'node:fs/promises';
+import {copyFile, mkdir,open,readFile,readdir,rename,rm,stat,unlink,writeFile} from 'node:fs/promises';
+import {homedir} from 'node:os';
 import {basename,dirname,extname,isAbsolute,join,resolve} from 'node:path';
 
 const ASSET_KINDS=new Set(['actors','costumes','scenes','props','layouts','voices']);
@@ -180,6 +181,18 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
     if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))return {files:parsed.files&&typeof parsed.files==='object'&&!Array.isArray(parsed.files)?parsed.files:{},groups:Array.isArray(parsed.groups)?parsed.groups.map(group=>safeText(group,80)).filter(Boolean):[],order:Array.isArray(parsed.order)?parsed.order.map(row=>safeText(row,140)).filter(Boolean):[],open:parsed.open&&typeof parsed.open==='object'&&!Array.isArray(parsed.open)?Object.fromEntries(Object.entries(parsed.open).filter(([,v])=>typeof v==='boolean')):{}};}catch{}
     return {files:{},groups:[],order:[],open:{}};}
   async function writeFootageJson(data){await mkdir(mediaLibraryRoot,{recursive:true});await writeFile(join(mediaLibraryRoot,'footage.json'),JSON.stringify(data,null,1));}
+  // Footage delete = real OS trash (freedesktop spec: XDG Trash files/ + info/.trashinfo), never a raw unlink — recoverable from the desktop trash.
+  async function moveToTrash(abs){
+    const trashRoot=join(process.env.XDG_DATA_HOME??join(homedir(),'.local','share'),'Trash');
+    const filesDir=join(trashRoot,'files'),infoDir=join(trashRoot,'info');
+    await mkdir(filesDir,{recursive:true});await mkdir(infoDir,{recursive:true});
+    const base=basename(abs),dot=base.lastIndexOf('.'),stem=dot>0?base.slice(0,dot):base,ext=dot>0?base.slice(dot):'';
+    let name=base;
+    for(let n=2;await stat(join(filesDir,name)).then(()=>true,()=>false);n++)name=`${stem}-${n}${ext}`;
+    try{await rename(abs,join(filesDir,name));}
+    catch(e){if(e.code!=='EXDEV')throw e;await copyFile(abs,join(filesDir,name));await rm(abs);}// cross-device mount: copy+remove keeps the trash promise
+    await writeFile(join(infoDir,`${name}.trashinfo`),`[Trash Info]\nPath=${abs}\nDeleteTime=${stamp()}\n`);
+    return join(filesDir,name);}
   // ponytail: extension gate on scan (no byte read per file); signatures verified only at copy-in time.
   async function listLibraryVideos(){const out=[];
     async function walk(dir,prefix){let entries;try{entries=await readdir(dir,{withFileTypes:true});}catch{return;}
@@ -402,6 +415,14 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
     // Expand/collapse state of Footage groups survives refresh and tab close/reopen (kept in footage.json, per group id).
     async setFootageOpen(input={}){const id=safeText(input.id,140);if(!id)throw new StudioStoreError('A group id is required.');const expanded=Boolean(input.expanded);
       return change(async()=>{const stored=await readFootageJson();if(expanded)stored.open[id]=true;else delete stored.open[id];await writeFootageJson(stored);return {open:stored.open};});},
+    // Delete = move the real file to the OS trash (see moveToTrash) + drop its footage.json entry. Never a bare unlink.
+    async deleteFootage(input={}){const rel=normFootageRel(input.path);if(!rel)throw new StudioStoreError('A footage file path is required.');
+      return change(async()=>{
+        const abs=join(mediaLibraryRoot,rel);
+        if(!(await stat(abs).then(()=>true,()=>false)))throw new StudioStoreError('Footage file not found.',404);
+        const trashed=await moveToTrash(abs);
+        const stored=await readFootageJson();delete stored.files[rel];await writeFootageJson(stored);
+        return {path:rel,trashed_to:trashed};});},
     async deleteAsset(kind,assetId){
       canonicalKind(kind);
       const result=await change(s=>{const index=s.assets.findIndex(value=>value.id===assetId&&value.kind===kind);if(index<0)throw new StudioStoreError('Asset not found.',404);if(s.shots.some(shot=>shot.layout_asset_id===assetId||shot.video_asset_id===assetId||shot.video_context?.upload_id===assetId||(shot.refs??[]).some(ref=>ref.asset_id===assetId)||(shot.voice_refs??[]).some(ref=>ref.asset_id===assetId)))throw new StudioStoreError('Cannot delete an asset referenced by a Production shot.');const [item]=s.assets.splice(index,1),paths=Object.values(item.files??{});s.files=s.files.filter(file=>!paths.includes(file.path));return {deleted:true,id:item.id,paths,folder:item.folder??null};});

@@ -7335,14 +7335,26 @@ select {
 .reference-source-input { flex: 1 1 12rem; min-width: 8rem; }
 
 /* —— Footage board: every video under media/, tag groups, player overlay, context menu —— */
-.footage-board{padding:1rem;display:grid;gap:.9rem}
-.footage-bar{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center}
+/* Fixed toolbar frame: header + toolbar stay put, only .footage-scroll scrolls; group heads stick at its top. */
+#root{height:100%}
+.dsh-director-studio-app:has(.footage-board){height:100%}
+.footage-board{padding:1rem;display:flex;flex-direction:column;gap:.9rem;flex:1 1 auto;min-height:0;overflow:hidden}
+.footage-bar{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center;flex:0 0 auto}
+.footage-scroll{flex:1 1 auto;min-height:0;overflow:auto;padding-bottom:1.5rem}
 .footage-filter{flex:0 1 14rem;max-width:22rem;padding:.3rem .55rem;border:1px solid var(--border-strong);border-radius:6px;font:inherit;background:rgba(255,255,255,.6);color:var(--text)}
 .footage-import-path{flex:1 1 16rem;min-width:10rem;padding:.3rem .55rem;border:1px solid var(--border-strong);border-radius:6px;font:inherit;background:rgba(255,255,255,.6);color:var(--text)}
+.footage-tasks{display:inline-flex;align-items:center;gap:.3rem;padding:.25rem .6rem;border:1px solid var(--border-strong);border-radius:999px;font-size:.78rem;color:var(--text);background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.footage-selbar{flex-basis:100%;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;padding-top:.15rem}
+.footage-pick{position:absolute;top:.4rem;right:.4rem;width:1.15rem;height:1.15rem;padding:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border-strong);border-radius:4px;background:rgba(255,255,255,.85);color:#20242a;font-size:.75rem;line-height:1;cursor:pointer;z-index:2}
+.footage-pick.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.footage-dialog{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.5);display:flex;align-items:flex-start;justify-content:center;padding:2.5rem .8rem}
+.footage-dialog-body{background:var(--bg-panel,#f3ede2);border:1px solid var(--border-strong);border-radius:10px;padding:1rem;display:grid;gap:.7rem;min-width:min(34rem,92vw);box-shadow:0 12px 40px rgba(0,0,0,.45)}
+.footage-dialog-body h3{margin:0;font-size:1rem}
+.footage-dialog-actions{display:flex;gap:.5rem}
 .footage-groups{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.7rem;align-items:start;margin-top:.5rem}
 .footage-group{display:grid;gap:.45rem;border:1px solid var(--border-strong);border-radius:10px;padding:.55rem .7rem;background:color-mix(in srgb,var(--text) 3%,transparent)}
 .footage-group-wide{grid-column:1/-1}
-.footage-group-head{display:flex;align-items:center;gap:.35rem;cursor:grab}
+.footage-group-head{display:flex;align-items:center;gap:.35rem;cursor:grab;position:sticky;top:0;z-index:3;background:color-mix(in srgb,var(--bg-panel,#f3ede2) 94%,transparent);backdrop-filter:blur(6px);border-radius:6px}
 .footage-strip{display:flex;gap:.35rem;align-items:stretch;flex-wrap:nowrap;overflow:hidden}
 .footage-strip img{flex:0 0 auto;height:72px;width:120px;object-fit:cover;border-radius:8px;border:1px solid var(--border-strong);background:color-mix(in srgb,var(--text) 4%,transparent)}
 .footage-strip-empty,.footage-strip-more{flex:0 0 auto;min-width:120px;height:72px;display:inline-flex;align-items:center;justify-content:center;border:1px dashed var(--border-strong);border-radius:8px;color:color-mix(in srgb,var(--text) 55%,transparent);font-size:.75rem;letter-spacing:.06em}

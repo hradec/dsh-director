@@ -20,6 +20,19 @@ export function FootageBoard(){
   const [notice,setNotice]=useState('');
   const [playing,setPlaying]=useState(null);    // card open in the fullscreen player
   const [menu,setMenu]=useState(null);          // right-click menu {x,y,file}
+  const [sel,setSel]=useState(new Set());       // selected clip paths (batch actions)
+  const [importOpen,setImportOpen]=useState(false); // Import dialog
+  // Background task queue: tag/imports/deletes run FIFO in the background; the toolbar shows what is running.
+  const [tasks,setTasks]=useState([]);          // [{id,label,progress}]
+  const queueRef=useRef(Promise.resolve());
+  const taskSeq=useRef(0);
+  const runTask=(label,work)=>{
+    const tid=++taskSeq.current;
+    setTasks((t)=>[...t,{id:tid,label}]);
+    const step=queueRef.current.then(()=>work((progress)=>setTasks((t)=>t.map((k)=>k.id===tid?{...k,progress}:k)))).catch((e)=>{setError(String(e.message||e));}).finally(()=>setTasks((t)=>t.filter((k)=>k.id!==tid)));
+    queueRef.current=step;
+    return step;
+  };
   const load=useCallback(()=>apiFetch('/api/footage').then((r)=>r.ok?r.json():Promise.reject(Error(`footage API ${r.status}`))).then((v)=>{setData(v);setError('');}).catch((e)=>setError(`${e.message} — the running DSH service may need a restart (when idle) to enable it.`)),[]);
   useEffect(()=>{load();},[load]);
   const post=(path,method,body)=>apiFetch(path,{method,headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(async(r)=>{const v=await r.json().catch(()=>null);return r.ok?v:Promise.reject(Error(`${method} ${path} → ${r.status}`));});
@@ -50,30 +63,35 @@ export function FootageBoard(){
       catch(e){setSmart((s)=>{const n={...s};delete n[q];return n;});setError(String(e.message||e));}
     }
   };
-  // AI tagging: untagged clips get the session's model to watch them and produce content tags — sequentially,
-  // one honest call per clip; right-click re-tags any card. seenTag keeps one pass per file per tab session.
-  const [tagging,setTagging]=useState(null);   // {done,total} while a pass runs
+  // AI tagging: untagged clips get the session's model to watch them and produce content tags — one honest call per clip,
+  // queued in the background; right-click re-tags any card. seenTag keeps one pass per file per tab session.
   const seenTag=useRef(new Set());
-  const tagAi=async(f)=>{
-    try{const v=await post('/api/footage/tag-ai','POST',{path:f.path,existing:f.tags??[]});if(v?.tags)setData((d)=>({...d,files:(d?.files??[]).map((x)=>x.path===f.path?{...x,tags:v.tags}:x)}));}
-    catch(e){setError(String(e.message||e));}
-  };
+  const tagAi=(f)=>{const short=f.path.split('/').pop();return runTask(`AI tag ${short}`,()=>post('/api/footage/tag-ai','POST',{path:f.path,existing:f.tags??[]}).then((v)=>{if(v?.tags)setData((d)=>({...d,files:(d?.files??[]).map((x)=>x.path===f.path?{...x,tags:v.tags}:x)}));}));};
   useEffect(()=>{
     if(!data)return;
     const fresh=(data.files??[]).filter((f)=>!f.tags?.length&&!seenTag.current.has(f.path));
-    if(!fresh.length)return;
-    fresh.forEach((f)=>seenTag.current.add(f.path));
-    void (async()=>{setTagging({done:0,total:fresh.length});let done=0;for(const f of fresh){await tagAi(f);done++;setTagging({done,total:fresh.length});}setTagging(null);})();
+    for(const f of fresh){seenTag.current.add(f.path);void tagAi(f);}   // the queue serializes them; the toolbar chip shows progress
   },[data]);
   const importVideo=async()=>{
-    const path=importPath.trim();if(!path)return;
-    try{const v=await post('/api/footage','POST',{path,tags:[]});setNotice(v?.skipped==='same bytes'?'Skipped — identical bytes already in media/.':`Imported ${v?.file?.path??path}`);setImportPath('');load();}
-    catch(e){setError(String(e.message||e));}
+    const path=importPath.trim();if(!path)return;setImportOpen(false);
+    await runTask('import video',()=>post('/api/footage','POST',{path,tags:[]}).then((v)=>{setNotice(v?.skipped==='same bytes'?'Skipped — identical bytes already in media/.':`Imported ${v?.file?.path??path}`);setImportPath('');return load();}));
   };
   const importFolder=async()=>{
-    const path=importPath.trim();if(!path)return;
-    try{const v=await post('/api/footage/folder','POST',{path});setNotice(`Folder import added ${v?.added??0} video(s).`);setImportPath('');load();}
-    catch(e){setError(String(e.message||e));}
+    const path=importPath.trim();if(!path)return;setImportOpen(false);
+    await runTask('import folder',()=>post('/api/footage/folder','POST',{path}).then((v)=>{setNotice(`Folder import added ${v?.added??0} video(s).`);setImportPath('');return load();}));
+  };
+  // Batch selection: checkboxes appear on every card once anything is selected; delete sends files to the OS trash.
+  const toggleSel=(p)=>setSel((s)=>{const n=new Set(s);if(n.has(p))n.delete(p);else n.add(p);return n;});
+  const selectAll=()=>setSel(new Set((data?.files??[]).filter(matches).map((f)=>f.path)));
+  const deleteSelected=()=>{
+    const paths=[...sel];if(!paths.length)return;setSel(new Set());
+    void runTask(`trash ${paths.length} clip${paths.length>1?'s':''}`,async()=>{
+      const v=await post('/api/footage/delete','POST',{paths});
+      const bad=(v?.results??[]).filter((r)=>r.error);
+      if(bad.length)setError(bad.map((r)=>`${r.path}: ${r.error}`).join(' · '));
+      const done=(v?.results??[]).filter((r)=>r.trashed_to);
+      if(done.length){setNotice(`${done.length} clip(s) moved to the OS trash (recoverable).`);setData((d)=>({...d,files:(d?.files??[]).filter((f)=>!(done.some((r)=>r.path===f.path)))}));}
+    });
   };
   const copyPath=async(file)=>{
     try{await navigator.clipboard.writeText(fsPath(file));setNotice('Absolute path copied to clipboard.');}
@@ -144,6 +162,8 @@ export function FootageBoard(){
     onClick={()=>{if(menu){setMenu(null);return;}setPlaying(f);}}
     onKeyDown={(e)=>{if(e.key==='Enter')setPlaying(f);}}
     onContextMenu={(e)=>{e.preventDefault();setMenu({x:e.clientX,y:e.clientY,file:f});}}>
+    <button type="button" className={`footage-pick${sel.has(f.path)?' on':''}`} aria-label={`Select ${f.path}`} aria-pressed={sel.has(f.path)}
+      title={sel.has(f.path)?'Deselect':'Select for batch actions'} onClick={(e)=>{e.stopPropagation();toggleSel(f.path);}}>{sel.has(f.path)?'✓':''}</button>
     {f.empty?<div className="footage-empty" title="The file on disk has no content — nothing to play.">0-byte file</div>:<img src={f.thumb??f.url} alt="" loading="lazy" draggable="false"/>}
     <div className="footage-card-foot">
       <span className="footage-path" title={f.path}>{f.path}</span>
@@ -159,16 +179,22 @@ export function FootageBoard(){
     {error?<div className="banner error" role="alert">{error}</div>:null}
     <div className="footage-bar">
       <input className="footage-filter" type="search" placeholder="Filter: tag nelare+chicken · [last hour] · [today] · [free text]↵" aria-label="Filter footage by tag" value={filter} onChange={(e)=>setFilter(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();void runSmart(parsed.smartQ);}}}/>
-      {tagging?<span className="field-hint">AI tagging {tagging.done}/{tagging.total}…</span>:pending?<span className="field-hint">asking the LLM about [ … ]…</span>:null}
+      {pending?<span className="field-hint">asking the LLM about [ … ]…</span>:null}
       {fname&&(data?.groups??[]).includes(fname)
         ?<button type="button" className="btn ghost sm" title={`Remove the custom group “${fname}” (the videos and their tags stay)`} onClick={()=>{void deleteGroup(fname);}}>✕</button>
         :<button type="button" className="btn primary sm" title={fname&&(data?.assets??[]).some((a)=>a.name.toLowerCase()===fname)?'Asset groups come from the Assets tab — manage them there':`Turn “${fname||'the filter text'}” into a permanent tag group`} disabled={!fname} onClick={()=>void addGroup()}>+</button>}
-      <input className="footage-import-path" placeholder="import path — workspace-relative or absolute (a video file, or a folder for the folder button)" aria-label="Import path" value={importPath} onChange={(e)=>setImportPath(e.target.value)}/>
-      <button type="button" className="btn sm" disabled={!importPath.trim()} onClick={()=>void importVideo()}>Import video</button>
-      <button type="button" className="btn sm" disabled={!importPath.trim()} onClick={()=>void importFolder()}>Import folder</button>
+      <button type="button" className="btn sm" title="Import a video file or folder into media/" onClick={()=>setImportOpen(true)}>Import…</button>
       <button type="button" className="btn sm" title="Reload the board — files, tags, groups and layout" onClick={()=>void load()}>⟳</button>
+      {tasks.length?<span className="footage-tasks" title="Background tasks run one at a time">⏳ {tasks.length>1?`${tasks.length} tasks · `:''}{tasks[0].label}{tasks[0].progress?` (${tasks[0].progress})`:''}{tasks.length>1?'…':''}</span>:null}
       {notice?<span className="field-hint">{notice}</span>:null}
+      {sel.size?<div className="footage-selbar">
+        <b>{`${sel.size} selected`}</b>
+        <button type="button" className="btn sm" onClick={()=>selectAll()}>Select all</button>
+        <button type="button" className="btn ghost sm" onClick={()=>setSel(new Set())}>Deselect</button>
+        <button type="button" className="btn danger sm" title="Move the selected files to the OS trash (recoverable there)" onClick={()=>deleteSelected()}>🗑 Delete selected</button>
+      </div>:null}
     </div>
+    <div className="footage-scroll">
     {!data&&!error?<div className="muted">Loading footage…</div>:null}
     {data&&!data.files.length?<p className="empty-copy">No videos in media/ yet — generated videos land here automatically.</p>:null}
     {groups.length?<div className="footage-groups">{groups.map((g)=>{
@@ -190,6 +216,18 @@ export function FootageBoard(){
         </div>}
       </section>;
     })}</div>:null}
+    </div>
+    {importOpen?<div className="footage-dialog" role="dialog" onClick={()=>setImportOpen(false)}>
+      <div className="footage-dialog-body" onClick={(e)=>e.stopPropagation()}>
+        <h3>Import into media/</h3>
+        <input className="footage-import-path" autoFocus placeholder="path — workspace-relative or absolute (a video file, or a folder)" aria-label="Import path" value={importPath} onChange={(e)=>setImportPath(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();void importVideo();}}}/>
+        <div className="footage-dialog-actions">
+          <button type="button" className="btn primary sm" disabled={!importPath.trim()} onClick={()=>void importVideo()}>Import video</button>
+          <button type="button" className="btn sm" disabled={!importPath.trim()} onClick={()=>void importFolder()}>Import folder</button>
+          <button type="button" className="btn ghost sm" onClick={()=>setImportOpen(false)}>Close</button>
+        </div>
+      </div>
+    </div>:null}
     {menu?<div className="footage-menu" style={{left:`${menu.x}px`,top:`${menu.y}px`}}>
       <button type="button" onClick={()=>void copyPath(menu.file)}>Copy path to clipboard</button>
       <button type="button" onClick={()=>{const f=menu.file;setMenu(null);void tagAi(f);}}>AI tag / re-tag</button>

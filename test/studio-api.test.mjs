@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {mkdir,mkdtemp,rm,writeFile,stat} from 'node:fs/promises';
+import {mkdir,mkdtemp,readFile,rm,writeFile,stat} from 'node:fs/promises';
 import {realpathSync,readdirSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {join,resolve as pathResolve,basename} from 'node:path';
@@ -56,6 +56,18 @@ test('footage routes: auto-library, play urls, single add, recursive folder impo
   assert.equal((await (await json(base,'/api/footage')).json()).open['a:Nelare'],true,'expand state survives to the next board load');
   const closed=await (await json(base,'/api/footage/open',{method:'PUT',body:JSON.stringify({id:'a:Nelare',expanded:false})})).json();
   assert.ok(!('a:Nelare' in closed.open),'collapse returns the group to the default state');
+  // Deletion = OS trash (XDG): file lands in Trash/files with a .trashinfo, vanishes from media/ and footage.json; missing paths report, never throw.
+  process.env.XDG_DATA_HOME=join(root,'trash-home');
+  await mkdir(join(root,'media'),{recursive:true});await writeFile(join(root,'media','gone.mp4'),mp4);
+  await json(base,'/api/footage',{method:'POST',body:JSON.stringify({path:'gone.mp4'})});
+  const del=await (await json(base,'/api/footage/delete',{method:'POST',body:JSON.stringify({paths:['gone.mp4','never-was.mp4']})})).json();
+  assert.equal(del.results[0].path,'gone.mp4');assert.ok(String(del.results[0].trashed_to).includes('trash-home/Trash/files/gone.mp4'));
+  await stat(del.results[0].trashed_to);
+  const info=await readFile(join(root,'trash-home','Trash','info','gone.mp4.trashinfo'),'utf8');
+  assert.ok(info.includes('Path=')&&info.includes('gone.mp4')&&info.includes('DeleteTime='),'trashinfo keeps the original path for restore');
+  await stat(join(root,'media','gone.mp4')).then(()=>assert.fail('file still in media/'),()=>{});
+  assert.ok(!(await store.footageList()).files.some((f)=>f.path==='gone.mp4'),'footage.json entry removed too');
+  assert.match(del.results[1].error,/not found/i,'missing file reports, batch continues');
   const tagged=await (await json(base,'/api/footage/refs',{method:'PUT',body:JSON.stringify({path:'flight/fly.mp4',tags_add:['nelare','flying']})})).json();
   assert.deepEqual(tagged.tags.slice().sort(),['flight','flying','nelare']);
   assert.ok(board.files[0].mtime>0,'file mtimes reach the client for [last hour]-style filters');

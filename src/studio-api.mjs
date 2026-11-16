@@ -314,6 +314,10 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         const files=library.files.map(item=>{const abs=join(root,item.path),enc=encodeURIComponent(abs);let size=null,mtime=null;try{const st=statSync(abs);size=st.size;mtime=st.mtimeMs;}catch{}const empty=size===0;return {...item,size,mtime,empty,url:`/director-studio/api/file?path=${enc}&session=${encodeURIComponent(sessionId)}`,thumb:empty?null:`/director-studio/api/footage/thumb?path=${enc}&session=${encodeURIComponent(sessionId)}`};});
         sendJson(res,200,{files,groups:library.groups,order:library.order,open:library.open,assets:assets.filter(item=>['actors','scenes','props'].includes(item.kind)).map(item=>({name:item.name,kind:item.kind,id:item.id}))});return;}
       if(path==='/api/footage/open'&&req.method==='PUT'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.setFootageOpen({id:b.id,expanded:b.expanded}));return;}
+      // Selected clips leave the library by going to the OS trash (XDG), one result row per file.
+      if(path==='/api/footage/delete'&&req.method==='POST'){const b=await readJson(req,controller.signal);
+        const results=[];for(const p of Array.isArray(b.paths)?b.paths:[]){try{results.push(await store.deleteFootage({path:p}));}catch(e){results.push({path:String(p),error:String(e.message||e)});}}
+        sendJson(res,200,{results});return;}
       if(path==='/api/footage/order'&&req.method==='PUT'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.setFootageOrder({order:Array.isArray(b.order)?b.order:[]}));return;}
       // Poster for a footage video: one ffmpeg frame, cached in .director-studio/footage-thumbs (streamed here, never via /api/file).
       if(path==='/api/footage/thumb'&&['GET','HEAD'].includes(req.method)){
