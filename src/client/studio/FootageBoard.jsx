@@ -158,7 +158,7 @@ export function FootageBoard(){
   const matches=useCallback((f)=>parsed.conds.every((c)=>c(f)),[parsed]);
   const pending=parsed.smartQ.some((q)=>smart[q]==='pending');
   const fname=filter.trim().toLowerCase();
-  const card=(f)=><div key={f.path} className="footage-card" role="button" tabIndex={0} title="Click to play · right-click for the path"
+  const card=(f)=><div key={f.path} className={`footage-card${sel.has(f.path)?' footage-selected':''}`} role="button" tabIndex={0} title="Click to play · right-click for the path"
     onClick={()=>{if(menu){setMenu(null);return;}setPlaying(f);}}
     onKeyDown={(e)=>{if(e.key==='Enter')setPlaying(f);}}
     onContextMenu={(e)=>{e.preventDefault();setMenu({x:e.clientX,y:e.clientY,file:f});}}>
