@@ -86,6 +86,27 @@ test('footage smart filter: unset endpoint answers 400; configured LLM paths are
   assert.deepEqual(out.paths,['fire.mp4'],'hallucinated paths are dropped');
 });
 
+test('footage tag-ai: the model WATCHES a preview clip; with no session model the endpoint qwen is chosen',async t=>{
+  const seen=[];
+  const {base,root,store}=await setup(t,{fetchImpl:async(url,init)=>{
+    if(String(url)==='http://llm.test/v1/models')return new Response(JSON.stringify({data:[{id:'deepseek-flash'},{id:'qwen3.8-flash-next-iq3_s'}]}),{headers:{'content-type':'application/json'}});
+    if(String(url)==='http://llm.test/v1/chat/completions'){seen.push(JSON.parse(init.body));return new Response(JSON.stringify({choices:[{message:{content:'["nelare","flying","night sky","crowd"]'}}]}),{headers:{'content-type':'application/json'}});}
+    return new Response('{}',{status:500});
+  }});
+  const clip=join(root,'tagme.mp4');
+  execFileSync('ffmpeg',['-y','-v','error','-f','lavfi','-i','color=c=red:s=64x64:d=1:r=10','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart',clip]);
+  await store.addFootage({path:'tagme.mp4'});
+  await json(base,'/api/footage/group',{method:'POST',body:JSON.stringify({name:'crowd'})});
+  await json(base,'/api/library/app-settings',{method:'PUT',body:JSON.stringify({smart:{url:'http://llm.test/v1'}})});
+  const out=await (await json(base,'/api/footage/tag-ai',{method:'POST',body:JSON.stringify({path:'tagme.mp4'})})).json();
+  assert.equal(out.model,'qwen3.8-flash-next-iq3_s','no session model on the test route → the endpoint qwen is used');
+  const call=seen[0];
+  assert.equal(call.messages[0].content[1].type,'video_url','the clip travels as a native video part, not a frame strip');
+  assert.ok(call.messages[0].content[1].video_url.url.startsWith('data:video/mp4;base64,')&&call.messages[0].content[1].video_url.url.length>100,'a real preview body was sent');
+  assert.match(call.messages[0].content[0].text,/Library groups \(collapsibles\): \[[^\]]*"crowd"/,'every group name is offered to the tagger so all [] collapsibles update together');
+  assert.ok(out.tags.includes('crowd'),'the group tag lands — the clip joins the collapsible group');
+});
+
 test('temporary [job …] request-references placeholders are garbage-collected when the store opens',async t=>{
   const root=await mkdtemp(join(tmpdir(),'dsh-gc-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const scratch=join(root,'scratch.png');await writeFile(scratch,png);

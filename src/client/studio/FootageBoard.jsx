@@ -1,4 +1,4 @@
-import {useCallback,useEffect,useMemo,useState} from 'react';
+import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {fetch as apiFetch} from './fetch-inject.mjs';
 
 // Footage board: every video under <workspace>/media/ (recursive) as a card. Group order:
@@ -48,6 +48,21 @@ export function FootageBoard(){
       catch(e){setSmart((s)=>{const n={...s};delete n[q];return n;});setError(String(e.message||e));}
     }
   };
+  // AI tagging: untagged clips get the session's model to watch them and produce content tags — sequentially,
+  // one honest call per clip; right-click re-tags any card. seenTag keeps one pass per file per tab session.
+  const [tagging,setTagging]=useState(null);   // {done,total} while a pass runs
+  const seenTag=useRef(new Set());
+  const tagAi=async(f)=>{
+    try{const v=await post('/api/footage/tag-ai','POST',{path:f.path,existing:f.tags??[]});if(v?.tags)setData((d)=>({...d,files:(d?.files??[]).map((x)=>x.path===f.path?{...x,tags:v.tags}:x)}));}
+    catch(e){setError(String(e.message||e));}
+  };
+  useEffect(()=>{
+    if(!data)return;
+    const fresh=(data.files??[]).filter((f)=>!f.tags?.length&&!seenTag.current.has(f.path));
+    if(!fresh.length)return;
+    fresh.forEach((f)=>seenTag.current.add(f.path));
+    void (async()=>{setTagging({done:0,total:fresh.length});let done=0;for(const f of fresh){await tagAi(f);done++;setTagging({done,total:fresh.length});}setTagging(null);})();
+  },[data]);
   const importVideo=async()=>{
     const path=importPath.trim();if(!path)return;
     try{const v=await post('/api/footage','POST',{path,tags:[]});setNotice(v?.skipped==='same bytes'?'Skipped — identical bytes already in media/.':`Imported ${v?.file?.path??path}`);setImportPath('');load();}
@@ -142,7 +157,7 @@ export function FootageBoard(){
     {error?<div className="banner error" role="alert">{error}</div>:null}
     <div className="footage-bar">
       <input className="footage-filter" type="search" placeholder="Filter: tag nelare+chicken · [last hour] · [today] · [free text]↵" aria-label="Filter footage by tag" value={filter} onChange={(e)=>setFilter(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();void runSmart(parsed.smartQ);}}}/>
-      {pending?<span className="field-hint">asking the LLM about [ … ]…</span>:null}
+      {tagging?<span className="field-hint">AI tagging {tagging.done}/{tagging.total}…</span>:pending?<span className="field-hint">asking the LLM about [ … ]…</span>:null}
       {fname&&(data?.groups??[]).includes(fname)
         ?<button type="button" className="btn ghost sm" title={`Remove the custom group “${fname}” (the videos and their tags stay)`} onClick={()=>{void deleteGroup(fname);}}>✕</button>
         :<button type="button" className="btn primary sm" title={fname&&(data?.assets??[]).some((a)=>a.name.toLowerCase()===fname)?'Asset groups come from the Assets tab — manage them there':`Turn “${fname||'the filter text'}” into a permanent tag group`} disabled={!fname} onClick={()=>void addGroup()}>+</button>}
@@ -174,6 +189,7 @@ export function FootageBoard(){
     })}
     {menu?<div className="footage-menu" style={{left:`${menu.x}px`,top:`${menu.y}px`}}>
       <button type="button" onClick={()=>void copyPath(menu.file)}>Copy path to clipboard</button>
+      <button type="button" onClick={()=>{const f=menu.file;setMenu(null);void tagAi(f);}}>AI tag / re-tag</button>
     </div>:null}
     {playing?<div className="footage-viewer" role="dialog" onClick={()=>setPlaying(null)}>
       <div className="footage-viewer-body" onClick={(e)=>e.stopPropagation()}>

@@ -58,6 +58,16 @@ function defaultSessionIndex(){
   }rows.sort((a,b)=>b.mtime-a.mtime);}catch{}
   sessionIndexCache={at:Date.now(),rows};return rows;
 }
+// The model a DSH session is currently running lives in that session's projcache row (modelSelection.lastUsed).
+async function sessionModel(sessionId){
+  if(!/^[A-Za-z0-9_-]{1,80}$/.test(String(sessionId??'')))return {model:'',reasoning:null};
+  try{const used=JSON.parse(readFileSync(join(homedir(),'.dsh','storages','session_projcache','sessions',`${sessionId}.json`),'utf8'))?.record?.rows?.modelSelection?.val?.lastUsed;if(used?.model)return {model:String(used.model),reasoning:used.reasoningEffort?String(used.reasoningEffort):null};}catch{}
+  return {model:'',reasoning:null};
+}
+// No session model resolved (footage the human added by hand): pick the qwen from the endpoint's own model list, per the human's instruction.
+async function qwenFallback(url,fetchImpl,signal){
+  try{const j=await fetchImpl(`${url}/models`,{signal}).then(r=>r.ok?r.json():null);const ids=(j?.data??[]).map(m=>String(m?.id??''));return ids.find(id=>id.toLowerCase().includes('qwen'))??'';}catch{return '';}
+}
 // iPad Safari cannot decode AV1 and other exotic encodings Chrome handles; transcode once, cache, then stream normally.
 // Everything is strictly on demand (a device requesting a video triggers its own remux/transcode — never preemptive).
 // Cache lives in the workspace (.director-studio/transcode-cache), NOT /tmp which is RAM-backed tmpfs; entries age out 7 days after LAST USE.
@@ -121,6 +131,24 @@ function ensureFootageThumb(store,source){
       resolve(target);
     });
   }));
+  THUMB_INFLIGHT.set(target,work);return work;
+}
+// 480p silent preview for AI tagging: same cache dir/key rule as posters; audio stripped (tags are visual+descriptive).
+function ensureFootagePreview(store,source){
+  const info=statSync(source);
+  const key=createHash('sha1').update(`tag|${source}|${info.mtimeMs}|${info.size}`).digest('hex');
+  const root=join(store.root,'footage-thumbs');
+  const target=join(root,`${key}.tag.mp4`);
+  if(existsSync(target))return Promise.resolve(target);
+  if(THUMB_INFLIGHT.has(target))return THUMB_INFLIGHT.get(target);
+  mkdirSync(root,{recursive:true});
+  const work=new Promise((resolveP,reject)=>{
+    execFile('ffmpeg',['-y','-v','error','-i',source,'-an','-vf','scale=480:-2','-c:v','libx264','-crf','30','-preset','veryfast','-movflags','+faststart',target],{timeout:120000},(error,stdout,stderr)=>{
+      THUMB_INFLIGHT.delete(target);
+      if(error){try{rmSync(target,{force:true});}catch{}reject(new StudioStoreError('Tag preview failed: '+String(stderr||error?.message).slice(0,160),502));return;}
+      resolveP(target);
+    });
+  });
   THUMB_INFLIGHT.set(target,work);return work;
 }
 // Media request diary: one line per served answer so device-side failures (iPad Safari!) can be traced from the server journal.
@@ -305,10 +333,10 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         const query=String(b.query??'').trim();
         const smart=(await store.getAppSettings()).smart??{};
         if(!query||!String(smart.url??'').trim()){sendJson(res,400,{detail:'Smart filter needs a query and an LLM endpoint — set the smart-query URL in the gear panel.'});return;}
-        // The model is the requesting session's own current model (DSH keeps it in that session's projcache row);
-        // gear's smart.model is only an explicit override. No local timeout: whatever the model takes, it takes.
-        let model=String(smart.model??'').trim(),reasoning=null;
-        if(!model&&/^[A-Za-z0-9_-]{1,80}$/.test(sessionId)){try{const used=JSON.parse(readFileSync(join(homedir(),'.dsh','storages','session_projcache','sessions',`${sessionId}.json`),'utf8'))?.record?.rows?.modelSelection?.val?.lastUsed;if(used?.model){model=String(used.model);if(used.reasoningEffort)reasoning=String(used.reasoningEffort);}}catch{}}
+        // The model is the requesting session's own current model; gear's smart.model is only an explicit override. No local timeout: whatever the model takes, it takes.
+        const override=String(smart.model??'').trim();
+        const used=override?{model:override,reasoning:null}:await sessionModel(sessionId);
+        const model=used.model,reasoning=used.reasoning;
         const [library,root]=await Promise.all([store.footageList(),store.footageRoot()]);
         const catalog=library.files.map(item=>{let day=null;try{day=new Date(statSync(join(root,item.path)).mtimeMs).toISOString().slice(0,10);}catch{}return {path:item.path,tags:item.tags??[],day};});
         const reply=await fetchImpl(`${String(smart.url).trim().replace(/\/$/,'')}/chat/completions`,{method:'POST',signal:controller.signal,headers:{'content-type':'application/json'},body:JSON.stringify({model:model||undefined,temperature:0,...(reasoning?{reasoning_effort:reasoning}:{}),messages:[{role:'system',content:'You filter a video library. Reply with ONLY a JSON array of matching "path" values taken verbatim from the CATALOG. No prose.'},{role:'user',content:`CATALOG\n${JSON.stringify(catalog)}\n\nShow the videos matching: ${query}`}]})}).then(r=>r.ok?r.json():Promise.reject(Error(`LLM endpoint answered ${r.status}`))).catch(e=>({__err:String(e.message||e)}));
@@ -317,6 +345,34 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         let picked=[];if(found){try{picked=JSON.parse(found[0]);}catch{}}
         const known=new Set(catalog.map(c=>c.path));
         sendJson(res,200,{query,paths:(Array.isArray(picked)?picked:[]).filter(p=>known.has(String(p)))});return;}
+      // AI tagging for footage (0.2.45): the session's own model WATCHES the clip (native video_url data-URI part,
+      // like the watch-video skill) and returns content tags. Preview = 480p re-encode cached next to posters,
+      // which also keeps bodies under the codex-router's big-body limit (verified external limit: ≥~5MB base64 503s;
+      // if a body still fails there, the endpoint's own error is surfaced verbatim — no local size gate).
+      if(path==='/api/footage/tag-ai'&&req.method==='POST'){
+        const b=await readJson(req,controller.signal);
+        const smart=(await store.getAppSettings()).smart??{};
+        const url=String(smart.url??'').trim().replace(/\/$/,'');
+        if(!String(b.path??'').trim()||!url){sendJson(res,400,{detail:'AI tagging needs a clip path and the smart-filter endpoint (gear panel).'});return;}
+        const root=await store.footageRoot();
+        const abs=join(root,String(b.path).replaceAll('\\','/'));// join normalizes ../ so the containment check below is exact
+        if(abs!==root&&!abs.startsWith(root+sep)){sendJson(res,400,{detail:'Path must be inside the media/ library.'});return;}
+        let preview;try{preview=await ensureFootagePreview(store,abs);}catch(e){sendJson(res,e instanceof StudioStoreError?e.status:502,{detail:String(e.message||e)});return;}
+        let model=String(smart.model??'').trim(),reasoning=null;
+        if(!model){const used=await sessionModel(sessionId);model=used.model;reasoning=used.reasoning;}
+        if(!model)model=await qwenFallback(url,fetchImpl,controller.signal);
+        // Group membership is tag equality (Footage collapsibles), so the tagger also gets every group name —
+        // one call per clip therefore updates ALL groups, asset and custom, when the clip belongs there.
+        const [lib,assetsAll]=await Promise.all([store.footageList(),store.listAssets({project_id:project.id,include_unassigned:true})]);
+        const groupNames=[...new Set([...lib.groups,...assetsAll.filter(item=>['actors','scenes','props'].includes(item.kind)).map(item=>item.name.toLowerCase())])];
+        const video=`data:video/mp4;base64,${readFileSync(preview).toString('base64')}`;
+        const text=`You are tagging one clip of an AI film production library. Watch the video. Reply with ONLY a JSON array of 4-10 lowercase tags (1-2 words each): characters/creatures, main actions, setting, camera movement, mood. No prose, no duplicates of the existing tags. Library path: ${abs}. Existing tags: ${JSON.stringify(b.existing??[])}. Library groups (collapsibles): ${JSON.stringify(groupNames)} — if the clip clearly belongs to a group, include that exact group name as a tag so it joins that group.`;
+        const reply=await fetchImpl(`${url}/chat/completions`,{method:'POST',signal:controller.signal,headers:{'content-type':'application/json'},body:JSON.stringify({model:model||undefined,temperature:0,...(reasoning?{reasoning_effort:reasoning}:{}),messages:[{role:'user',content:[{type:'text',text},{type:'video_url',video_url:{url:video}}]}]})}).then(r=>r.ok?r.json():r.text().catch(()=>'').then(t=>Promise.reject(Error(`LLM endpoint answered ${r.status}: ${String(t).slice(0,300)}`)))).catch(e=>({__err:String(e.message||e)}));
+        if(reply.__err){sendJson(res,502,{detail:`AI tagging LLM: ${reply.__err}`});return;}
+        const found=/\[[\s\S]*\]/.exec(reply?.choices?.[0]?.message?.content??'');
+        let tags=[];if(found){try{const arr=JSON.parse(found[0]);if(Array.isArray(arr))tags=arr.map(String);}catch{}}
+        const v=await store.tagFootage({path:String(b.path),tags_add:tags});
+        sendJson(res,200,{path:v.path,tags:v.tags,model:model||'endpoint default'});return;}
       match=/^\/api\/(actors|scenes|props)(?:\/(generate|jobs)(?:\/([A-Za-z0-9_-]{1,128})(?:\/(cancel|save))?)?)?$/.exec(path);
       if(match){
         const [,kind,section,jobId,action]=match;

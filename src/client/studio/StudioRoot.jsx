@@ -107,7 +107,7 @@ function AppSettingsPanel({onClose}){
         {tab==='smart'&&<>
           <label className="field"><span>Smart-filter LLM endpoint (OpenAI-compatible base URL, e.g. http://192.168.10.10:8791/v1)</span><input value={s.smart?.url ?? ''} onChange={setSmart('url')}/></label>
           <label className="field"><span>Model override for the smart filter — blank means the model this session is currently using</span><input value={s.smart?.model ?? ''} onChange={setSmart('model')}/></label>
-          <p className="field-hint">Footage's [free text] filters send the clip catalog (paths, tags, dates) to this endpoint using the session's own model (its reasoning effort included), and show the paths it picks. Time brackets like [last hour] need no LLM.</p>
+          <p className="field-hint">Footage's [free text] filters send the clip catalog (paths, tags, dates) to this endpoint using the session's own model (its reasoning effort included), and show the paths it picks. Time brackets like [last hour] need no LLM. The same endpoint also auto-tags untagged clips by having that model WATCH them (video-capable routes; when no session model applies it picks the endpoint's qwen model).</p>
         </>}
         <div style={{display:'flex',gap:'.5rem',alignItems:'center',marginTop:'.7rem'}}>
           <button className="btn primary" onClick={saveSettings}>Save</button>
