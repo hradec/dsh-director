@@ -280,8 +280,8 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       // Footage library: every video under <workspace>/media/ (recursive); tags+groups live in media/footage.json.
       if(path==='/api/footage'&&req.method==='GET'){
         const [library,root,assets]=await Promise.all([store.footageList(),store.footageRoot(),store.listAssets({project_id:project.id,include_unassigned:true})]);
-        const files=library.files.map(item=>{const abs=join(root,item.path),enc=encodeURIComponent(abs);let size=null;try{size=statSync(abs).size;}catch{}const empty=size===0;return {...item,size,empty,url:`/director-studio/api/file?path=${enc}&session=${encodeURIComponent(sessionId)}`,thumb:empty?null:`/director-studio/api/footage/thumb?path=${enc}&session=${encodeURIComponent(sessionId)}`};});
-        sendJson(res,200,{files,groups:library.groups,assets:assets.filter(item=>item.kind!=='voices').map(item=>({name:item.name}))});return;}
+        const files=library.files.map(item=>{const abs=join(root,item.path),enc=encodeURIComponent(abs);let size=null,mtime=null;try{const st=statSync(abs);size=st.size;mtime=st.mtimeMs;}catch{}const empty=size===0;return {...item,size,mtime,empty,url:`/director-studio/api/file?path=${enc}&session=${encodeURIComponent(sessionId)}`,thumb:empty?null:`/director-studio/api/footage/thumb?path=${enc}&session=${encodeURIComponent(sessionId)}`};});
+        sendJson(res,200,{files,groups:library.groups,assets:assets.filter(item=>['actors','scenes','props'].includes(item.kind)).map(item=>({name:item.name,kind:item.kind,id:item.id}))});return;}
       // Poster for a footage video: one ffmpeg frame, cached in .director-studio/footage-thumbs (streamed here, never via /api/file).
       if(path==='/api/footage/thumb'&&['GET','HEAD'].includes(req.method)){
         const {resolved,mime}=await resolveMediaPath(url,join(store.root,'..'),sessionIndex);
@@ -296,6 +296,22 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       if(path==='/api/footage/refs'&&req.method==='PUT'){sendJson(res,200,await store.tagFootage(await readJson(req,controller.signal)));return;}
       if(path==='/api/footage/group'&&req.method==='POST'){sendJson(res,200,await store.addFootageGroup(await readJson(req,controller.signal)));return;}
       if(path==='/api/footage/group'&&req.method==='DELETE'){const b=await readJson(req,controller.signal).catch(()=>({}));sendJson(res,200,await store.removeFootageGroup({name:String(b.name??url.searchParams.get('name')??'')}));return;}
+      // Smart filter (0.2.43): free-text query → one cheap chat call over the compact catalog → matching paths.
+      // ponytail: naive whole-catalog prompt (fine for thousands of clips); upgrade path = embeddings. Answer is
+      // intersected with real catalog paths so a hallucinated path can never render.
+      if(path==='/api/footage/smart'&&req.method==='POST'){
+        const b=await readJson(req,controller.signal);
+        const query=String(b.query??'').trim();
+        const smart=(await store.getAppSettings()).smart??{};
+        if(!query||!String(smart.url??'').trim()){sendJson(res,400,{detail:'Smart filter needs a query and an LLM endpoint — set the smart-query URL in the gear panel.'});return;}
+        const [library,root]=await Promise.all([store.footageList(),store.footageRoot()]);
+        const catalog=library.files.map(item=>{let day=null;try{day=new Date(statSync(join(root,item.path)).mtimeMs).toISOString().slice(0,10);}catch{}return {path:item.path,tags:item.tags??[],day};});
+        const reply=await fetchImpl(`${String(smart.url).trim().replace(/\/$/,'')}/chat/completions`,{method:'POST',signal:controller.signal,headers:{'content-type':'application/json'},body:JSON.stringify({model:smart.model||undefined,temperature:0,messages:[{role:'system',content:'You filter a video library. Reply with ONLY a JSON array of matching "path" values taken verbatim from the CATALOG. No prose.'},{role:'user',content:`CATALOG\n${JSON.stringify(catalog)}\n\nShow the videos matching: ${query}`}]})}).then(r=>r.ok?r.json():Promise.reject(Error(`LLM endpoint answered ${r.status}`))).catch(e=>({__err:String(e.message||e)}));
+        if(reply.__err){sendJson(res,502,{detail:`Smart filter LLM: ${reply.__err}`});return;}
+        const found=/\[[\s\S]*\]/.exec(reply?.choices?.[0]?.message?.content??'');
+        let picked=[];if(found){try{picked=JSON.parse(found[0]);}catch{}}
+        const known=new Set(catalog.map(c=>c.path));
+        sendJson(res,200,{query,paths:(Array.isArray(picked)?picked:[]).filter(p=>known.has(String(p)))});return;}
       match=/^\/api\/(actors|scenes|props)(?:\/(generate|jobs)(?:\/([A-Za-z0-9_-]{1,128})(?:\/(cancel|save))?)?)?$/.exec(path);
       if(match){
         const [,kind,section,jobId,action]=match;

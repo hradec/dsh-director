@@ -6,7 +6,7 @@ import {realpathSync,readdirSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {join,resolve as pathResolve,basename} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
-import {createStudioRegistry} from '../src/studio-store.mjs';
+import {createStudioRegistry,createStudioStore} from '../src/studio-store.mjs';
 import {createStudioApiHandler} from '../src/studio-api.mjs';
 import {createStudioTools} from '../src/studio-tools.mjs';
 
@@ -44,11 +44,19 @@ test('footage routes: auto-library, play urls, single add, recursive folder impo
   assert.deepEqual(board.files.map(f=>f.path),['flight/fly.mp4'],'asset videos auto-land in the footage library');
   assert.ok(board.files[0].url.startsWith('/director-studio/api/file?path='),'browser-reachable play url');
   assert.ok(board.assets.some(a=>a.name==='Nelare'));
+  assert.ok(!board.assets.some(a=>a.name==='Flight'),'layout/clip assets stay in Production, never as Footage groups');
   assert.equal((await json(base,'/api/footage/group',{method:'POST',body:JSON.stringify({name:'chicken'})})).status,200);
   const ungroup=await (await json(base,'/api/footage/group',{method:'DELETE',body:JSON.stringify({name:'chicken'})})).json();
   assert.deepEqual(ungroup.groups,[]);
   const tagged=await (await json(base,'/api/footage/refs',{method:'PUT',body:JSON.stringify({path:'flight/fly.mp4',tags_add:['nelare','flying']})})).json();
   assert.deepEqual(tagged.tags.slice().sort(),['flight','flying','nelare']);
+  assert.ok(board.files[0].mtime>0,'file mtimes reach the client for [last hour]-style filters');
+  const nelareGroup=(await (await json(base,'/api/footage')).json()).assets.find((a)=>a.name==='Nelare');
+  assert.ok(nelareGroup.id&&nelareGroup.kind==='actors','asset groups carry kind+id so the Footage tab can delete them');
+  assert.equal((await json(base,`/api/library/actors/${nelareGroup.id}`,{method:'DELETE'})).status,200);
+  const afterDelete=await (await json(base,'/api/footage')).json();
+  assert.ok(!afterDelete.assets.some((a)=>a.name==='Nelare'));
+  assert.ok(afterDelete.files.some((f)=>f.path==='flight/fly.mp4'),'asset deletion never removes media/ clips');
   await writeFile(join(root,'outside.mp4'),Buffer.concat([Buffer.alloc(4),Buffer.from('ftyp'),Buffer.from('outside-clip')]));
   const added=await (await json(base,'/api/footage',{method:'POST',body:JSON.stringify({path:'outside.mp4',tags:['extra']})})).json();
   assert.equal(added.path,'outside.mp4');
@@ -60,6 +68,35 @@ test('footage routes: auto-library, play urls, single add, recursive folder impo
   assert.equal(folder.added,1);
   board=await (await json(base,'/api/footage')).json();
   assert.ok(board.files.some(f=>f.path==='episodes/episode1/c1.mp4'&&f.tags.includes('speardrive-episode-1')),'recursive import mirrors the tree');
+});
+
+test('footage smart filter: unset endpoint answers 400; configured LLM paths are validated against the catalog',async t=>{
+  const {base,root,store}=await setup(t,{fetchImpl:async(url,init)=>{
+    if(String(url)==='http://llm.test/v1/chat/completions')return new Response(JSON.stringify({choices:[{message:{content:`["fire.mp4","ghost-not-in-catalog.mp4"]`}}]}),{headers:{'content-type':'application/json'}});
+    return new Response('{}',{status:500});
+  }});
+  await writeFile(join(root,'fire.mp4'),Buffer.concat([Buffer.alloc(4),Buffer.from('ftyp'),Buffer.from('flames')]));
+  await store.addFootage({path:'fire.mp4',tags:['fire','night']});
+  assert.equal((await json(base,'/api/footage/smart',{method:'POST',body:JSON.stringify({query:'burning at night'})})).status,400,'no smart url configured → actionable 400');
+  await json(base,'/api/library/app-settings',{method:'PUT',body:JSON.stringify({smart:{url:'http://llm.test/v1',model:'tester'}})});
+  const out=await (await json(base,'/api/footage/smart',{method:'POST',body:JSON.stringify({query:'burning at night'})})).json();
+  assert.deepEqual(out.paths,['fire.mp4'],'hallucinated paths are dropped');
+});
+
+test('temporary [job …] request-references placeholders are garbage-collected when the store opens',async t=>{
+  const root=await mkdtemp(join(tmpdir(),'dsh-gc-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const scratch=join(root,'scratch.png');await writeFile(scratch,png);
+  const seed={version:1,projects:[],assets:[
+    {id:'a1',kind:'layouts',name:'[job j1] request references',job_id:'j1',files:{front:scratch},project_id:null,meta:{temporary_job_refs:true}},
+    {id:'a2',kind:'actors',name:'Nelare',files:{},project_id:null}],
+    shots:[],files:[{id:'f1',kind:'layouts',filename:'scratch.png',path:scratch,type:'image',mime:'image/png',size:png.length,sha256:'',created_at:'',key:'front'}],
+    jobs:[{id:'j1',kind:'actors',status:'queued',ref_asset_id:'a1',created_at:'',updated_at:''}],sequences:[],takes:[]};
+  await writeFile(join(root,'studio.json'),JSON.stringify(seed));
+  const store=createStudioStore({root,workspaceRoot:root});
+  assert.deepEqual((await store.listAssets({include_unassigned:true})).map((a)=>a.name),['Nelare'],'queued-zombie request scratch is gone on open');
+  await assert.rejects(stat(scratch),{code:'ENOENT'},'its staged file was unlinked too');
+  const jobs=await store.listGenerationJobs({});
+  assert.equal(jobs[0].ref_asset_id,null,'the dead job no longer points at a deleted asset');
 });
 
 test('footage playback: suffix Range 206, moov-at-end served faststart, ffmpeg poster thumb',async t=>{

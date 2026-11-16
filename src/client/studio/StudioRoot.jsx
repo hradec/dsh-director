@@ -61,13 +61,14 @@ function AppSettingsPanel({onClose}){
   const setCrew=(k)=>(e)=>setS((v)=>({...v,crew:{...(v.crew??{}),[k]:e.target.value}}));
   const setComfy=(k)=>(e)=>setS((v)=>({...v,comfy:{...(v.comfy??{}),[k]:e.target.value}}));
   const setWorkflow=(k)=>(e)=>setS((v)=>({...v,workflows:{...(v.workflows??{}),[k]:e.target.value}}));
+  const setSmart=(k)=>(e)=>setS((v)=>({...v,smart:{...(v.smart??{}),[k]:e.target.value}}));
   const saveSettings=()=>apiFetch('/api/library/app-settings',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(s)}).then((r)=>r.json()).then((v)=>{setS(v);setNote('Saved.');}).catch(()=>setNote('Save failed — does the running DSH service know this API (restart needed)?'));
   return <div style={{position:'fixed',inset:0,zIndex:60,background:'rgba(0,0,0,.5)',display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'1.5rem .8rem',overflow:'auto'}} onClick={onClose}>
     <div className="panel" style={{width:'min(46rem,100%)',position:'relative',background:'var(--bg-panel)',border:'1px solid var(--border-strong)',borderRadius:'10px',boxShadow:'0 12px 40px rgba(0,0,0,.45)',color:'var(--text)'}} onClick={(e)=>e.stopPropagation()}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'.6rem'}}><h2 style={{margin:0}}>Studio settings</h2><button className="btn ghost sm" aria-label="Close settings" onClick={onClose}>✕</button></div>
       {s?<>
         <div role="tablist" style={{display:'flex',gap:'.35rem',flexWrap:'wrap',marginBottom:'.9rem'}}>
-          {[['generation','Generation'],['scenes','Scenes'],['actors','Actors'],['crew','Crew'],['comfy','ComfyUI'],['workflows','Workflows']].map(([id,label])=><button key={id} role="tab" aria-selected={tab===id} className={tab===id?'btn primary sm':'btn ghost sm'} onClick={()=>setTab(id)}>{label}</button>)}
+          {[['generation','Generation'],['scenes','Scenes'],['actors','Actors'],['crew','Crew'],['comfy','ComfyUI'],['workflows','Workflows'],['smart','Smart filter']].map(([id,label])=><button key={id} role="tab" aria-selected={tab===id} className={tab===id?'btn primary sm':'btn ghost sm'} onClick={()=>setTab(id)}>{label}</button>)}
         </div>
         {tab==='generation'&&<>
           <label className="field"><span>DSH generation instructions · Actors</span><textarea rows={3} value={s.instructions.actors} onChange={setIn('actors')}/></label>
@@ -102,6 +103,11 @@ function AppSettingsPanel({onClose}){
           <label className="field"><span>First/last-frame-to-video workflow (saved name, or paste API-mode JSON)</span><textarea rows={3} value={s.workflows?.first_last_frame_to_video ?? ''} onChange={setWorkflow('first_last_frame_to_video')}/></label>
           <label className="field"><span>Video-edit workflow (saved name, or paste API-mode JSON)</span><textarea rows={3} value={s.workflows?.video_edit ?? ''} onChange={setWorkflow('video_edit')}/></label>
           <p className="field-hint">A non-empty value is mandatory for that task kind in this project: the agent must inspect that workflow and submit its adapted graph; empty falls back to the plugin defaults. Paste the full API-mode JSON (starts with &quot;&#123;&quot;) to pin a workflow without the ComfyUI workflow store — the agent inspects it via the inline:&lt;kind&gt; label.</p>
+        </>}
+        {tab==='smart'&&<>
+          <label className="field"><span>Smart-filter LLM endpoint (OpenAI-compatible base URL, e.g. http://192.168.10.10:8791/v1)</span><input value={s.smart?.url ?? ''} onChange={setSmart('url')}/></label>
+          <label className="field"><span>Model for the smart filter (blank = endpoint default)</span><input value={s.smart?.model ?? ''} onChange={setSmart('model')}/></label>
+          <p className="field-hint">Footage's [free text] filters send the clip catalog (paths, tags, dates) to this endpoint and show the paths it picks. Time brackets like [last hour] need no LLM.</p>
         </>}
         <div style={{display:'flex',gap:'.5rem',alignItems:'center',marginTop:'.7rem'}}>
           <button className="btn primary" onClick={saveSettings}>Save</button>

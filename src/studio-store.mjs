@@ -26,8 +26,8 @@ storyboard:'You are the Storyboard Artist. Draw the Director\'s approved shot as
 critic:'You are the Critic, a hostile but fair audience of one. Watch the plan or the finished footage and report only what fails: boring beats, unclear geography, unmotivated movement, emotional beats that land flat, pacing dead spots. Every note ends with keep/drop/fix and a one-line reason. No praise padding, no rewrite of the work yourself.',
 continuity:'You are the Script Supervisor. Compare each storyboard and each generated clip against the continuity ledger and all previous approved shots. Report only breaks: objects appearing or disappearing, state jumps (a prop handled before it exists), wardrobe or position changes, screen-direction reversals, objects vanishing mid-movement. For each break name the shot, the frame/time, the object or state, and what the ledger said.'};
 const mergeCrew=(stored={})=>({...DEFAULT_CREW_PROMPTS,...Object.fromEntries(Object.entries(stored).filter(([,v])=>String(v).trim()))});
-const DEFAULT_APP_SETTINGS={instructions:{actors:DEFAULT_GENERATION_INSTRUCTIONS,scenes:DEFAULT_GENERATION_INSTRUCTIONS,props:DEFAULT_GENERATION_INSTRUCTIONS},scene_defaults:{angle_prompts:'front view, eye level\nwide view, eye level\nreverse view, eye level',prepend_text:'',append_text:''},actor_defaults:{description:'A neutral full-body character reference sheet with front, side, and back views.',negative_prompt:''},crew:DEFAULT_CREW_PROMPTS,comfy:{urls:''},workflows:{text_to_image:'',image_edit:'',reference_to_video:'',first_last_frame_to_video:'',video_edit:''}};
-const mergeAppSettings=(a={})=>({instructions:{...DEFAULT_APP_SETTINGS.instructions,...(a.instructions??{})},scene_defaults:{...DEFAULT_APP_SETTINGS.scene_defaults,...(a.scene_defaults??{})},actor_defaults:{...DEFAULT_APP_SETTINGS.actor_defaults,...(a.actor_defaults??{})},crew:mergeCrew(a.crew),comfy:{...DEFAULT_APP_SETTINGS.comfy,...(a.comfy??{})},workflows:{...DEFAULT_APP_SETTINGS.workflows,...(a.workflows??{})}});
+const DEFAULT_APP_SETTINGS={instructions:{actors:DEFAULT_GENERATION_INSTRUCTIONS,scenes:DEFAULT_GENERATION_INSTRUCTIONS,props:DEFAULT_GENERATION_INSTRUCTIONS},scene_defaults:{angle_prompts:'front view, eye level\nwide view, eye level\nreverse view, eye level',prepend_text:'',append_text:''},actor_defaults:{description:'A neutral full-body character reference sheet with front, side, and back views.',negative_prompt:''},crew:DEFAULT_CREW_PROMPTS,comfy:{urls:''},workflows:{text_to_image:'',image_edit:'',reference_to_video:'',first_last_frame_to_video:'',video_edit:''},smart:{url:process.env.DSH_SMART_LLM_URL??'',model:process.env.DSH_SMART_LLM_MODEL??''}};
+const mergeAppSettings=(a={})=>({instructions:{...DEFAULT_APP_SETTINGS.instructions,...(a.instructions??{})},scene_defaults:{...DEFAULT_APP_SETTINGS.scene_defaults,...(a.scene_defaults??{})},actor_defaults:{...DEFAULT_APP_SETTINGS.actor_defaults,...(a.actor_defaults??{})},crew:mergeCrew(a.crew),comfy:{...DEFAULT_APP_SETTINGS.comfy,...(a.comfy??{})},workflows:{...DEFAULT_APP_SETTINGS.workflows,...(a.workflows??{})},smart:{...DEFAULT_APP_SETTINGS.smart,...(a.smart??{})}});
 const realNewlines=(value)=>safeText(value,20000).replaceAll('\\n','\n');
 
 export class StudioStoreError extends Error {
@@ -208,6 +208,17 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
     if(!Array.isArray(state.takes))state.takes=[];// clip versions: one row per generation/upscale so prompts+refs survive.
     // ponytail: one-time backfill for shots written before 0.2.24 — creation array order becomes explicit order; persisted on next write.
     state.shots.forEach((shot,index)=>{if(!Number.isSafeInteger(shot.order))shot.order=index+1;});
+    // Temporary generation-request refs (meta.temporary_job_refs placeholders) are scratch: the request created
+    // them and their files are only that request's inputs. The store opens only at service startup, when no
+    // request can be in flight — so every leftover scratch (queued zombies included) goes right here.
+    const staleRefs=state.assets.filter(item=>item.meta?.temporary_job_refs);
+    if(staleRefs.length){
+      const gone=new Set(staleRefs.map(item=>item.id)),paths=new Set(staleRefs.flatMap(item=>Object.values(item.files??{})));
+      state.assets=state.assets.filter(item=>!gone.has(item.id));
+      state.files=state.files.filter(file=>!paths.has(file.path));
+      state.jobs.forEach(job=>{if(gone.has(job.ref_asset_id))job.ref_asset_id=null;});
+      for(const path of paths)await unlink(path).catch(()=>{});
+    }
     return state;
   }
   async function change(mutator){
@@ -293,7 +304,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
     async setGenerationSettings(kind,instructions){canonicalKind(kind);if(!['actors','scenes','props'].includes(kind))throw new StudioStoreError('Generation settings exist for actors, scenes and props only.');return change(s=>{s.settings={...(s.settings??{}),[kind]:safeText(instructions,4000)};return clone(s.settings);});},
     // Studio-wide settings panel (top-right gear on every page).
     async getAppSettings(){const s=await load();return mergeAppSettings(s.app_settings);},
-    async setAppSettings(patch={}){return change(s=>{const next={instructions:{...(s.app_settings?.instructions??{})},scene_defaults:{...(s.app_settings?.scene_defaults??{})},actor_defaults:{...(s.app_settings?.actor_defaults??{})},crew:{...(s.app_settings?.crew??{})},comfy:{...(s.app_settings?.comfy??{})},workflows:{...(s.app_settings?.workflows??{})}};for(const section of Object.keys(next)){const part=patch[section];if(part&&typeof part==='object'&&!Array.isArray(part))for(const [key,value] of Object.entries(part))next[section][key]=safeText(value,section==='workflows'?900000:4000); /* ponytail: pasted API graphs are large; other settings stay capped. */}s.app_settings=next;return mergeAppSettings(next);});},
+    async setAppSettings(patch={}){return change(s=>{const next={instructions:{...(s.app_settings?.instructions??{})},scene_defaults:{...(s.app_settings?.scene_defaults??{})},actor_defaults:{...(s.app_settings?.actor_defaults??{})},crew:{...(s.app_settings?.crew??{})},comfy:{...(s.app_settings?.comfy??{})},workflows:{...(s.app_settings?.workflows??{})},smart:{...(s.app_settings?.smart??{})}};for(const section of Object.keys(next)){const part=patch[section];if(part&&typeof part==='object'&&!Array.isArray(part))for(const [key,value] of Object.entries(part))next[section][key]=safeText(value,section==='workflows'?900000:4000); /* ponytail: pasted API graphs are large; other settings stay capped. */}s.app_settings=next;return mergeAppSettings(next);});},
     async listGenerationJobs({kind,project_id,limit=20}={}){
       const s=await load(),jobs=s.jobs.filter(item=>(!kind||item.kind===canonicalKind(kind))&&(!project_id||item.project_id===project_id));
       return clone(jobs.sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at))).slice(0,Math.max(1,Math.min(100,Number(limit)||20))).map(job=>presentGenerationJob(job,s)));

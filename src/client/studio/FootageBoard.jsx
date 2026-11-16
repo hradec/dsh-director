@@ -38,6 +38,16 @@ export function FootageBoard(){
     try{const v=await post('/api/footage/group','DELETE',{name});if(v?.groups)setData((d)=>({...d,groups:v.groups}));}
     catch(e){setError(String(e.message||e));}
   };
+  // Asset groups mirror the library and are never deleted from Footage — assets live and die in the Assets tab.
+  const [smart,setSmart]=useState({});         // free-text bracket query → Set(paths) | 'pending'
+  const runSmart=async(queries)=>{
+    for(const q of queries){
+      if(q in smart)continue;
+      setSmart((s)=>({...s,[q]:'pending'}));
+      try{const v=await post('/api/footage/smart','POST',{query:q});setSmart((s)=>({...s,[q]:new Set(v?.paths??[])}));}
+      catch(e){setSmart((s)=>{const n={...s};delete n[q];return n;});setError(String(e.message||e));}
+    }
+  };
   const importVideo=async()=>{
     const path=importPath.trim();if(!path)return;
     try{const v=await post('/api/footage','POST',{path,tags:[]});setNotice(v?.skipped==='same bytes'?'Skipped — identical bytes already in media/.':`Imported ${v?.file?.path??path}`);setImportPath('');load();}
@@ -66,15 +76,39 @@ export function FootageBoard(){
   },[playing]);
   const groups=useMemo(()=>{
     const files=data?.files??[],gs=[];
-    for(const asset of data?.assets??[])gs.push({id:`a:${asset.name}`,name:asset.name,members:files.filter((f)=>hasTag(f,asset.name))});
+    for(const asset of data?.assets??[])gs.push({id:`a:${asset.name}`,name:asset.name,asset,members:files.filter((f)=>hasTag(f,asset.name))});
     for(const name of data?.groups??[])gs.push({id:`g:${name}`,name,members:files.filter((f)=>hasTag(f,name)),custom:true});
     const grouped=new Set();gs.forEach((g)=>g.members.forEach((f)=>grouped.add(f.path)));
     const other=files.filter((f)=>!grouped.has(f.path));
     if(other.length)gs.push({id:'other',name:'Other',members:other});
     return gs;
   },[data]);
-  const needle=filter.trim().toLowerCase();
-  const matches=useCallback((f)=>!needle||(f.tags??[]).some((t)=>String(t).toLowerCase().includes(needle)),[needle]);
+  // Filter grammar: bare words are tag substrings, space ANDs them, nelare+chicken ANDs within one token.
+  // [last hour], [last 3 days], [today], [yesterday] filter by file mtime with zero round-trips;
+  // any other [free text] goes to /api/footage/smart (the configured LLM picks paths from the catalog) on Enter.
+  const TIME_UNITS={minute:6e4,hour:36e5,day:864e5,week:6048e5,month:2592e6,year:31536e6};
+  const parsed=useMemo(()=>{
+    const text=filter.trim();
+    const brackets=[...text.matchAll(/\[([^\]]*)\]/g)].map((m)=>m[1].trim()).filter(Boolean);
+    const conds=[];
+    for(const tok of text.replace(/\[[^\]]*\]/g,' ').split(/\s+/).filter(Boolean))for(const part of tok.split('+').filter(Boolean)){
+      const n=part.toLowerCase();conds.push((f)=>(f.tags??[]).some((t)=>String(t).toLowerCase().includes(n)));
+    }
+    for(const q of brackets){
+      const lm=/^last\s+(\d+)?\s*(minute|hour|day|week|month|year)s?$/.exec(q)??/^past\s+(\d+)?\s*(minute|hour|day|week|month|year)s?$/.exec(q);
+      if(lm){const cut=Date.now()-(lm[1]?Number(lm[1]):1)*TIME_UNITS[lm[2]];conds.push((f)=>(f.mtime??0)>=cut);continue;}
+      if(q==='today'||q==='yesterday'){
+        const now=new Date(),s=new Date(now.getFullYear(),now.getMonth(),now.getDate()-(q==='today'?0:1)).getTime();
+        conds.push((f)=>(f.mtime??0)>=s&&(f.mtime??0)<s+864e5);continue;
+      }
+      const got=smart[q];
+      conds.push((f)=>got instanceof Set&&got.has(f.path));
+    }
+    const smartQ=brackets.filter((q)=>!/^last\s+(\d+)?\s*(minute|hour|day|week|month|year)s?$/.test(q)&&!/^past\s+(\d+)?\s*(minute|hour|day|week|month|year)s?$/.test(q)&&q!=='today'&&q!=='yesterday');
+    return {text,conds,smartQ};
+  },[filter,smart]);
+  const matches=useCallback((f)=>parsed.conds.every((c)=>c(f)),[parsed]);
+  const pending=parsed.smartQ.some((q)=>smart[q]==='pending');
   const card=(f)=><div key={f.path} className="footage-card" role="button" tabIndex={0} title="Click to play · right-click for the path"
     onClick={()=>{if(menu){setMenu(null);return;}setPlaying(f);}}
     onKeyDown={(e)=>{if(e.key==='Enter')setPlaying(f);}}
@@ -93,7 +127,8 @@ export function FootageBoard(){
   return <main className="panel footage-board" aria-label="Footage">
     {error?<div className="banner error" role="alert">{error}</div>:null}
     <div className="footage-bar">
-      <input className="footage-filter" type="search" placeholder="Filter by tag…" aria-label="Filter footage by tag" value={filter} onChange={(e)=>setFilter(e.target.value)}/>
+      <input className="footage-filter" type="search" placeholder="Filter: tag nelare+chicken · [last hour] · [today] · [free text]↵" aria-label="Filter footage by tag" value={filter} onChange={(e)=>setFilter(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();void runSmart(parsed.smartQ);}}}/>
+      {pending?<span className="field-hint">asking the LLM about [ … ]…</span>:null}
       <button type="button" className="btn primary sm" title={`Turn “${filter.trim()||'the filter text'}” into a permanent tag group`} disabled={!filter.trim()} onClick={()=>void addGroup()}>+</button>
       <input className="footage-import-path" placeholder="import path — workspace-relative or absolute (a video file, or a folder for the folder button)" aria-label="Import path" value={importPath} onChange={(e)=>setImportPath(e.target.value)}/>
       <button type="button" className="btn sm" disabled={!importPath.trim()} onClick={()=>void importVideo()}>Import video</button>
@@ -104,8 +139,8 @@ export function FootageBoard(){
     {data&&!data.files.length?<p className="empty-copy">No videos in media/ yet — generated videos land here automatically.</p>:null}
     {groups.map((g)=>{
       const shown=g.members.filter(matches);
-      if(needle&&!shown.length)return null;
-      const expanded=open[g.id]??Boolean(needle&&shown.length);
+      if(parsed.text&&!shown.length)return null;
+      const expanded=open[g.id]??Boolean(parsed.text&&shown.length);
       return <section key={g.id} className="footage-group">
         <div className="footage-group-head">
           <button type="button" className="footage-group-toggle" aria-expanded={expanded} onClick={()=>setOpen((o)=>({...o,[g.id]:!expanded}))}>{expanded?'▾':'▸'} {g.name} <span className="muted tiny">{`(${shown.length})`}</span></button>
