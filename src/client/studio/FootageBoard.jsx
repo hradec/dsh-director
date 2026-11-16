@@ -81,8 +81,21 @@ export function FootageBoard(){
     const grouped=new Set();gs.forEach((g)=>g.members.forEach((f)=>grouped.add(f.path)));
     const other=files.filter((f)=>!grouped.has(f.path));
     if(other.length)gs.push({id:'other',name:'Other',members:other});
-    return gs;
+    // Drag-persisted layout: ids in footage.json order come first, the rest keep their default order.
+    const rank=new Map((data?.order??[]).map((id,i)=>[id,i]));
+    return gs.slice().sort((a,b)=>(rank.has(a.id)?rank.get(a.id):rank.size)-(rank.has(b.id)?rank.get(b.id):rank.size));
   },[data]);
+  // Drag-to-reorder: heads are the handles; a line above/below the hovered group marks where the drop lands.
+  const [drag,setDrag]=useState(null);   // {id, overId?, after?}
+  const dropGroup=async(targetId,after)=>{
+    if(!drag||drag.id===targetId)return;
+    const ids=groups.map((g)=>g.id).filter((id)=>id!==drag.id);
+    const at=ids.indexOf(targetId)+(after?1:0);
+    ids.splice(at,0,drag.id);
+    setData((d)=>({...d,order:ids}));setDrag(null);
+    try{await post('/api/footage/order','PUT',{order:ids});}
+    catch(e){setError(String(e.message||e));load();}
+  };
   // Filter grammar: bare words are tag substrings, space ANDs them, nelare+chicken ANDs within one token.
   // [last hour], [last 3 days], [today], [yesterday] filter by file mtime with zero round-trips;
   // any other [free text] goes to /api/footage/smart (the configured LLM picks paths from the catalog) on Enter.
@@ -109,6 +122,7 @@ export function FootageBoard(){
   },[filter,smart]);
   const matches=useCallback((f)=>parsed.conds.every((c)=>c(f)),[parsed]);
   const pending=parsed.smartQ.some((q)=>smart[q]==='pending');
+  const fname=filter.trim().toLowerCase();
   const card=(f)=><div key={f.path} className="footage-card" role="button" tabIndex={0} title="Click to play · right-click for the path"
     onClick={()=>{if(menu){setMenu(null);return;}setPlaying(f);}}
     onKeyDown={(e)=>{if(e.key==='Enter')setPlaying(f);}}
@@ -129,7 +143,9 @@ export function FootageBoard(){
     <div className="footage-bar">
       <input className="footage-filter" type="search" placeholder="Filter: tag nelare+chicken · [last hour] · [today] · [free text]↵" aria-label="Filter footage by tag" value={filter} onChange={(e)=>setFilter(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();void runSmart(parsed.smartQ);}}}/>
       {pending?<span className="field-hint">asking the LLM about [ … ]…</span>:null}
-      <button type="button" className="btn primary sm" title={`Turn “${filter.trim()||'the filter text'}” into a permanent tag group`} disabled={!filter.trim()} onClick={()=>void addGroup()}>+</button>
+      {fname&&(data?.groups??[]).includes(fname)
+        ?<button type="button" className="btn ghost sm" title={`Remove the custom group “${fname}” (the videos and their tags stay)`} onClick={()=>{void deleteGroup(fname);}}>✕</button>
+        :<button type="button" className="btn primary sm" title={fname&&(data?.assets??[]).some((a)=>a.name.toLowerCase()===fname)?'Asset groups come from the Assets tab — manage them there':`Turn “${fname||'the filter text'}” into a permanent tag group`} disabled={!fname} onClick={()=>void addGroup()}>+</button>}
       <input className="footage-import-path" placeholder="import path — workspace-relative or absolute (a video file, or a folder for the folder button)" aria-label="Import path" value={importPath} onChange={(e)=>setImportPath(e.target.value)}/>
       <button type="button" className="btn sm" disabled={!importPath.trim()} onClick={()=>void importVideo()}>Import video</button>
       <button type="button" className="btn sm" disabled={!importPath.trim()} onClick={()=>void importFolder()}>Import folder</button>
@@ -141,12 +157,19 @@ export function FootageBoard(){
       const shown=g.members.filter(matches);
       if(parsed.text&&!shown.length)return null;
       const expanded=open[g.id]??Boolean(parsed.text&&shown.length);
-      return <section key={g.id} className="footage-group">
-        <div className="footage-group-head">
+      const marked=drag&&drag.overId===g.id&&drag.id!==g.id;
+      return <section key={g.id} className={`footage-group${marked?(drag.after?' footage-drop-after':' footage-drop-before'):''}${drag&&drag.id===g.id?' footage-dragging':''}`}
+        onDragOver={(e)=>{if(!drag||drag.id===g.id)return;e.preventDefault();const r=e.currentTarget.getBoundingClientRect();setDrag((d)=>d?{...d,overId:g.id,after:e.clientY>r.top+r.height/2}:d);}}
+        onDrop={(e)=>{e.preventDefault();void dropGroup(g.id,drag?.after);}}>
+        <div className="footage-group-head" draggable={true} title="Drag to reorder groups"
+          onDragStart={(e)=>{e.dataTransfer.setData('text/plain',g.id);e.dataTransfer.effectAllowed='move';setDrag({id:g.id});}}
+          onDragEnd={()=>setDrag(null)}>
           <button type="button" className="footage-group-toggle" aria-expanded={expanded} onClick={()=>setOpen((o)=>({...o,[g.id]:!expanded}))}>{expanded?'▾':'▸'} {g.name} <span className="muted tiny">{`(${shown.length})`}</span></button>
           {g.custom?<button type="button" className="btn ghost sm" title={`Delete group “${g.name}”`} aria-label={`Delete group ${g.name}`} onClick={()=>void deleteGroup(g.name)}>✕</button>:null}
         </div>
-        {expanded?<div className="footage-grid">{shown.map((f)=>card(f))}</div>:null}
+        {expanded?<div className="footage-grid">{shown.map((f)=>card(f))}</div>:<div className="footage-strip" aria-hidden="true">
+          {shown.length?shown.slice(0,4).map((f)=>f.empty?<span key={f.path} className="footage-strip-empty" title="0-byte file">0b</span>:<img key={f.path} src={f.thumb??f.url} alt="" loading="lazy" draggable="false"/>):<span className="footage-strip-empty">EMPTY</span>}
+        </div>}
       </section>;
     })}
     {menu?<div className="footage-menu" style={{left:`${menu.x}px`,top:`${menu.y}px`}}>

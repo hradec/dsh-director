@@ -48,11 +48,14 @@ test('footage routes: auto-library, play urls, single add, recursive folder impo
   assert.equal((await json(base,'/api/footage/group',{method:'POST',body:JSON.stringify({name:'chicken'})})).status,200);
   const ungroup=await (await json(base,'/api/footage/group',{method:'DELETE',body:JSON.stringify({name:'chicken'})})).json();
   assert.deepEqual(ungroup.groups,[]);
+  const ordered=await (await json(base,'/api/footage/order',{method:'PUT',body:JSON.stringify({order:['g:chicken','a:Nelare','other','zz extra']})})).json();
+  assert.deepEqual(ordered.order,['g:chicken','a:Nelare','other','zz extra'],'the drag-reordered layout round-trips');
+  assert.deepEqual((await (await json(base,'/api/footage')).json()).order,['g:chicken','a:Nelare','other','zz extra'],'stored order reaches the Footage board payload');
   const tagged=await (await json(base,'/api/footage/refs',{method:'PUT',body:JSON.stringify({path:'flight/fly.mp4',tags_add:['nelare','flying']})})).json();
   assert.deepEqual(tagged.tags.slice().sort(),['flight','flying','nelare']);
   assert.ok(board.files[0].mtime>0,'file mtimes reach the client for [last hour]-style filters');
   const nelareGroup=(await (await json(base,'/api/footage')).json()).assets.find((a)=>a.name==='Nelare');
-  assert.ok(nelareGroup.id&&nelareGroup.kind==='actors','asset groups carry kind+id so the Footage tab can delete them');
+  assert.ok(nelareGroup.id&&nelareGroup.kind==='actors','asset groups carry kind+id (agents delete via the library API, never from Footage)');
   assert.equal((await json(base,`/api/library/actors/${nelareGroup.id}`,{method:'DELETE'})).status,200);
   const afterDelete=await (await json(base,'/api/footage')).json();
   assert.ok(!afterDelete.assets.some((a)=>a.name==='Nelare'));
