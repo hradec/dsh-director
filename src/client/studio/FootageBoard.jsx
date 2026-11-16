@@ -211,9 +211,11 @@ export function FootageBoard(){
           <button type="button" className="footage-group-toggle" aria-expanded={expanded} onClick={()=>toggleOpen(g.id,!expanded)}>{expanded?'▾':'▸'} {g.name} <span className="muted tiny">{`(${shown.length})`}</span></button>
           {g.custom?<button type="button" className="btn ghost sm" title={`Delete group “${g.name}”`} aria-label={`Delete group ${g.name}`} onClick={()=>void deleteGroup(g.name)}>✕</button>:null}
         </div>
+        <div className="footage-group-body">
         {expanded?<div className="footage-grid">{shown.map((f)=>card(f))}</div>:<div className="footage-strip" aria-hidden="true">
           {shown.length?<>{shown.slice(0,4).map((f)=>f.empty?<span key={f.path} className="footage-strip-empty" title="0-byte file">0b</span>:<img key={f.path} src={f.thumb??f.url} alt="" loading="lazy" draggable="false"/>)}{shown.length>4?<span className="footage-strip-more" title={`${shown.length-4} more — click the title to open`}>{`+${shown.length-4}`}</span>:null}</>:<span className="footage-strip-empty">EMPTY</span>}
         </div>}
+        </div>
       </section>;
     })}</div>:null}
     </div>
