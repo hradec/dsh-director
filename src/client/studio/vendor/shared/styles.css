@@ -7355,9 +7355,9 @@ select {
 /* The group's rounded box is split head+body so the title keeps the box's top edge (round corners + border) while the body scrolls neatly under it. */
 .footage-group{display:grid;gap:0;border-radius:10px}
 .footage-group-wide{grid-column:1/-1}
-.footage-group-head{display:flex;align-items:center;gap:.35rem;cursor:grab;position:sticky;top:0;z-index:3;padding:.55rem .7rem;border:1px solid var(--border-strong);border-bottom:none;border-radius:10px 10px 0 0;background:color-mix(in srgb,var(--text) 3%,var(--bg))}
-/* underlay fills the rounded-corner notch so the body's side border never peeks out behind the pinned title */
-.footage-group-head::before{content:"";position:absolute;z-index:-1;inset:-1px 0 0 0;background:color-mix(in srgb,var(--text) 3%,var(--bg))}
+/* head paints a square wash (covers the corner notch, so the body's border never peeks); the rounded border is drawn by ::before over it — a real border on head would be painted under the wash and vanish. */
+.footage-group-head{display:flex;align-items:center;gap:.35rem;cursor:grab;position:sticky;top:0;z-index:3;padding:.55rem .7rem;background:color-mix(in srgb,var(--text) 3%,var(--bg))}
+.footage-group-head::before{content:"";position:absolute;inset:0;border:1px solid var(--border-strong);border-bottom:none;border-radius:10px 10px 0 0;pointer-events:none}
 .footage-group-body{border:1px solid var(--border-strong);border-top:none;border-radius:0 0 10px 10px;padding:.5rem .7rem .6rem;background:color-mix(in srgb,var(--text) 3%,var(--bg));display:grid;gap:.45rem}
 .footage-strip{display:flex;gap:.35rem;align-items:stretch;flex-wrap:nowrap;overflow:hidden}
 .footage-strip img{flex:0 0 auto;height:72px;width:120px;object-fit:cover;border-radius:8px;border:1px solid var(--border-strong);background:color-mix(in srgb,var(--text) 4%,transparent)}
