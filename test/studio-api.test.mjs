@@ -110,6 +110,7 @@ test('footage tag-ai: the model WATCHES a preview clip; with no session model th
   assert.ok(call.messages[0].content[1].video_url.url.startsWith('data:video/mp4;base64,')&&call.messages[0].content[1].video_url.url.length>100,'a real preview body was sent');
   assert.match(call.messages[0].content[0].text,/Library groups \(collapsibles\): \[[^\]]*"crowd"/,'every group name is offered to the tagger so all [] collapsibles update together');
   assert.ok(out.tags.includes('crowd'),'the group tag lands — the clip joins the collapsible group');
+  assert.equal(out.resolution,'480p');assert.ok(out.tags.includes('480p'),'the REAL file height is probed, not guessed from the 480p preview');
 });
 
 test('temporary [job …] request-references placeholders are garbage-collected when the store opens',async t=>{

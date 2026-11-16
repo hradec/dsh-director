@@ -114,6 +114,9 @@ function mp4Faststart(file){
 // so a re-encode of the same file gets a fresh poster and stale ones age out (30-day sweep).
 const THUMB_INFLIGHT=new Map();
 function videoDuration(file){return new Promise(resolve=>{execFile('ffprobe',['-v','error','-show_entries','format=duration','-of','csv=p=0',file],{timeout:20000},(error,stdout)=>resolve(error?0:Number(String(stdout).trim())||0));});}
+// Real source height — the 480p preview the LLM watches cannot reveal the true resolution, so we probe it.
+function videoHeight(file){return new Promise(resolve=>{execFile('ffprobe',['-v','error','-select_streams','v:0','-show_entries','stream=height','-of','csv=p=0',file],{timeout:20000},(error,stdout)=>resolve(error?0:Number(String(stdout).trim())||0));});}
+function resolutionTag(height){return height>=2000?'4k':height>=1000?'2k':height>=600?'720p':height>0?'480p':'';}
 function ensureFootageThumb(store,source){
   const info=statSync(source);
   const key=createHash('sha1').update(`${source}|${info.mtimeMs}|${info.size}`).digest('hex');
@@ -372,8 +375,9 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         if(reply.__err){sendJson(res,502,{detail:`AI tagging LLM: ${reply.__err}`});return;}
         const found=/\[[\s\S]*\]/.exec(reply?.choices?.[0]?.message?.content??'');
         let tags=[];if(found){try{const arr=JSON.parse(found[0]);if(Array.isArray(arr))tags=arr.map(String);}catch{}}
-        const v=await store.tagFootage({path:String(b.path),tags_add:tags});
-        sendJson(res,200,{path:v.path,tags:v.tags,model:model||'endpoint default'});return;}
+        const resolution=resolutionTag(await videoHeight(abs));
+        const v=await store.tagFootage({path:String(b.path),tags_add:resolution?[...tags,resolution]:tags});
+        sendJson(res,200,{path:v.path,tags:v.tags,model:model||'endpoint default',resolution});return;}
       match=/^\/api\/(actors|scenes|props)(?:\/(generate|jobs)(?:\/([A-Za-z0-9_-]{1,128})(?:\/(cancel|save))?)?)?$/.exec(path);
       if(match){
         const [,kind,section,jobId,action]=match;
