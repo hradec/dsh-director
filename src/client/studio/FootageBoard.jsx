@@ -166,6 +166,7 @@ export function FootageBoard(){
       <input className="footage-import-path" placeholder="import path — workspace-relative or absolute (a video file, or a folder for the folder button)" aria-label="Import path" value={importPath} onChange={(e)=>setImportPath(e.target.value)}/>
       <button type="button" className="btn sm" disabled={!importPath.trim()} onClick={()=>void importVideo()}>Import video</button>
       <button type="button" className="btn sm" disabled={!importPath.trim()} onClick={()=>void importFolder()}>Import folder</button>
+      <button type="button" className="btn sm" title="Reload the board — files, tags, groups and layout" onClick={()=>void load()}>⟳</button>
       {notice?<span className="field-hint">{notice}</span>:null}
     </div>
     {!data&&!error?<div className="muted">Loading footage…</div>:null}
