@@ -7356,6 +7356,8 @@ select {
 .footage-group{display:grid;gap:0;border-radius:10px}
 .footage-group-wide{grid-column:1/-1}
 .footage-group-head{display:flex;align-items:center;gap:.35rem;cursor:grab;position:sticky;top:0;z-index:3;padding:.55rem .7rem;border:1px solid var(--border-strong);border-bottom:none;border-radius:10px 10px 0 0;background:color-mix(in srgb,var(--text) 3%,var(--bg))}
+/* underlay fills the rounded-corner notch so the body's side border never peeks out behind the pinned title */
+.footage-group-head::before{content:"";position:absolute;inset:-1px 0 0 0;background:color-mix(in srgb,var(--text) 3%,var(--bg))}
 .footage-group-body{border:1px solid var(--border-strong);border-top:none;border-radius:0 0 10px 10px;padding:.5rem .7rem .6rem;background:color-mix(in srgb,var(--text) 3%,var(--bg));display:grid;gap:.45rem}
 .footage-strip{display:flex;gap:.35rem;align-items:stretch;flex-wrap:nowrap;overflow:hidden}
 .footage-strip img{flex:0 0 auto;height:72px;width:120px;object-fit:cover;border-radius:8px;border:1px solid var(--border-strong);background:color-mix(in srgb,var(--text) 4%,transparent)}
