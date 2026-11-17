@@ -120,9 +120,22 @@ function resolutionTag(height){return height>=2000?'4k':height>=1000?'2k':height
 // ComfyUI SaveVideo embeds the graph in container metadata: `workflow` (UI format) preferred, `prompt` (API format) fallback.
 function embeddedComfyWorkflow(file){return new Promise(resolve=>{execFile('ffprobe',['-v','error','-show_entries','format_tags=prompt,workflow','-of','json',file],{timeout:20000},(error,stdout)=>{if(error){resolve(null);return;}
   try{const tags=JSON.parse(String(stdout))?.format?.tags??{};if(String(tags.workflow??'').includes('nodes'))resolve({kind:'workflow',json:tags.workflow});else if(String(tags.prompt??'').includes('class_type'))resolve({kind:'prompt',json:tags.prompt});else resolve(null);}catch{resolve(null);}});});}
-// No server is configured for the studio — try the known instances in order, first that answers wins (human chose this; wrong host only means missing models).
-async function firstOnlineComfy(fetchImpl){const candidates=String(process.env.DSH_DIRECTOR_COMFY_URLS??'http://240.1.0.100:8188,http://240.0.0.242:8188,http://240.0.0.243:8188').split(',').map(entry=>entry.trim()).filter(Boolean);
-  for(const base of candidates){try{const r=await fetchImpl(`${base}/system_stats`,{signal:AbortSignal.timeout(3000)});if(r.ok)return base;}catch{}}return '';}
+// ComfyUI SaveImage embeds the graph as PNG tEXt chunks (`prompt`/`workflow` keywords); ffmpeg/ffprobe cannot see those custom keys, so parse the chunks.
+async function embeddedComfyPng(file){const buf=readFileSync(file);
+  if(buf.length<8||buf.toString('latin1',0,8)!==Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]).toString('latin1'))return null;
+  let off=8,prompt='',workflow='';
+  while(off+8<=buf.length){const len=buf.readUInt32BE(off),type=buf.toString('latin1',off+4,off+8),data=buf.subarray(off+8,off+8+len);
+    if(type==='tEXt'){const zero=data.indexOf(0),keyword=data.toString('latin1',0,zero),value=data.toString('latin1',zero+1);if(keyword==='prompt')prompt=value;else if(keyword==='workflow')workflow=value;}
+    else if(type==='iTXt'){const zero=data.indexOf(0),keyword=data.toString('latin1',0,zero);let end=data.indexOf(0,zero+2);end=data.indexOf(0,end+1);const value=data.subarray(end+1).toString('utf8');if(keyword==='prompt')prompt=value;else if(keyword==='workflow')workflow=value;}
+    else if(type==='IEND')break;
+    if(len===0)break;off+=12+len;}// zero length guard keeps a malformed tail from spinning forever
+  if(workflow.includes('nodes'))return {kind:'workflow',json:workflow};
+  if(prompt.includes('class_type'))return {kind:'prompt',json:prompt};
+  return null;}
+// ComfyUI hosts to try for "Open in ComfyUI": plugin config first, then the gear panel, first that answers wins (human chose this; wrong host only means missing models).
+async function firstOnlineComfy({comfyHosts,store,fetchImpl,signal}){
+  const configured=[...await comfyHosts(),...String((await store.getAppSettings()).comfy?.urls??'').split(/[\n,]+/).map(entry=>entry.trim()).filter(Boolean)];
+  for(const base of configured){try{const r=await fetchImpl(`${base}/system_stats`,{signal:signal??AbortSignal.timeout(3000)});if(r.ok)return base;}catch{}}return '';}
 function ensureFootageThumb(store,source){
   const info=statSync(source);
   const key=createHash('sha1').update(`${source}|${info.mtimeMs}|${info.size}`).digest('hex');
@@ -314,98 +327,111 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         const clips=Object.fromEntries(shots.map(shot=>{const asset=shot.video_asset_id?assets.get(shot.video_asset_id):null,file=asset?.files?.master?files.get(asset.files.master):null;return [shot.id,file?{asset_id:asset.id,path:file.path,filename:file.filename}:null];}));
         sendJson(res,200,{shots,sequences,takes,clips,episodes:(await storyStoreFor(store).story()).episodes});return;
       }
-      // Footage library: every video under <workspace>/media/ (recursive); tags+groups live in media/footage.json.
-      if(path==='/api/footage'&&req.method==='GET'){
-        const [library,root,assets]=await Promise.all([store.footageList(),store.footageRoot(),store.listAssets({project_id:project.id,include_unassigned:true})]);
-        const files=library.files.map(item=>{const abs=join(root,item.path),enc=encodeURIComponent(abs);let size=null,mtime=null;try{const st=statSync(abs);size=st.size;mtime=st.mtimeMs;}catch{}const empty=size===0;return {...item,size,mtime,empty,url:`/director-studio/api/file?path=${enc}&session=${encodeURIComponent(sessionId)}`,thumb:empty?null:`/director-studio/api/footage/thumb?path=${enc}&session=${encodeURIComponent(sessionId)}`};});
-        sendJson(res,200,{files,groups:library.groups,order:library.order,open:library.open,assets:assets.filter(item=>['actors','scenes','props'].includes(item.kind)).map(item=>({name:item.name,kind:item.kind,id:item.id}))});return;}
-      if(path==='/api/footage/open'&&req.method==='PUT'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.setFootageOpen({id:b.id,expanded:b.expanded}));return;}
-      // Selected clips leave the library by going to the OS trash (XDG), one result row per file.
-      if(path==='/api/footage/delete'&&req.method==='POST'){const b=await readJson(req,controller.signal);
-        const results=[];for(const p of Array.isArray(b.paths)?b.paths:[]){try{results.push(await store.deleteFootage({path:p}));}catch(e){results.push({path:String(p),error:String(e.message||e)});}}
-        sendJson(res,200,{results});return;}
-      // "Open in ComfyUI": ComfyUI's SaveVideo embeds the whole graph in the file's metadata (UI `workflow` tag, else API `prompt` tag).
-      // probe:true → just presence (the menu greys the item out). Full call → extract, hand JSON to the browser, push it into the first ComfyUI that answers.
-      if(path==='/api/footage/comfy'&&req.method==='POST'){
-        const b=await readJson(req,controller.signal);
-        const rel=String(b.path??''),root=await store.footageRoot(),abs=join(root,rel);
-        if(!rel||!abs.startsWith(root+sep)||!existsSync(abs)){sendJson(res,404,{detail:'Footage file not found.'});return;}
-        const wf=await embeddedComfyWorkflow(abs);
-        if(b.probe){sendJson(res,200,{has:Boolean(wf)});return;}
-        if(!wf){sendJson(res,404,{detail:'No embedded ComfyUI workflow in this file.'});return;}
-        const base=await firstOnlineComfy(fetchImpl);
-        let uploaded='';
-        if(base){
-          const name=`workflows/dsh/${rel.replace(/\.mp4$/i,'')}.json`;
-          const v2=await fetchImpl(`${base}/api/userdata/v2/${name.split('/').map(encodeURIComponent).join('/')}`,{method:'PUT',signal:controller.signal,headers:{'content-type':'application/json'},body:JSON.stringify({content:wf.json})}).catch(()=>null);
-          if(v2?.ok)uploaded=name;
-          else{const v1=await fetchImpl(`${base}/api/userdata?path=${encodeURIComponent(name)}`,{method:'PUT',signal:controller.signal,headers:{'content-type':'application/json'},body:wf.json}).catch(()=>null);if(v1?.ok)uploaded=name;}
-        }
-        sendJson(res,200,{kind:wf.kind,json:wf.json,host:base,uploaded});return;}
-      if(path==='/api/footage/order'&&req.method==='PUT'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.setFootageOrder({order:Array.isArray(b.order)?b.order:[]}));return;}
-      // Poster for a footage video: one ffmpeg frame, cached in .director-studio/footage-thumbs (streamed here, never via /api/file).
-      if(path==='/api/footage/thumb'&&['GET','HEAD'].includes(req.method)){
-        const {resolved,mime}=await resolveMediaPath(url,join(store.root,'..'),sessionIndex);
-        if(!mime.startsWith('video/'))throw new StudioStoreError('Thumbnails are generated for videos only.',400);
-        const target=await ensureFootageThumb(store,resolved);const tinfo=statSync(target);
-        res.writeHead(200,{'Content-Type':'image/jpeg','X-Content-Type-Options':'nosniff','Cache-Control':'private, max-age=3600','Content-Length':String(tinfo.size)});mediaLog(req,200,'thumb '+extname(resolved));
-        if(req.method==='HEAD'){res.end();return;}
-        createReadStream(target).pipe(res);return;
+      // Footage & Images libraries: /api/footage* over media/ (video) and /api/images* over images/ — one shared block, kind from the URL segment.
+      match=/^\/api\/(footage|images)(?:\/(open|delete|comfy|order|thumb|folder|refs|group|smart|tag-ai))?$/.exec(path);
+      if(match){
+        const seg=match[1],kind=seg==='images'?'images':'footage',sub=match[2]??'';
+        if(!sub&&req.method==='GET'){
+          const [library,root,assets]=await Promise.all([store.listLib(kind),store.libRoot(kind),store.listAssets({project_id:project.id,include_unassigned:true})]);
+          const files=library.files.map(item=>{const abs=join(root,item.path),enc=encodeURIComponent(abs);let size=null,mtime=null;try{const st=statSync(abs);size=st.size;mtime=st.mtimeMs;}catch{}const empty=size===0;return {...item,size,mtime,empty,url:`/director-studio/api/file?path=${enc}&session=${encodeURIComponent(sessionId)}`,thumb:empty||kind==='images'?null:`/director-studio/api/footage/thumb?path=${enc}&session=${encodeURIComponent(sessionId)}`};});
+          sendJson(res,200,{files,groups:library.groups,order:library.order,open:library.open,assets:assets.filter(item=>['actors','scenes','props'].includes(item.kind)).map(item=>({name:item.name,kind:item.kind,id:item.id}))});return;}
+        if(sub==='open'&&req.method==='PUT'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.setLibOpen(kind,{id:b.id,expanded:b.expanded}));return;}
+        // Selected files leave the library by going to the OS trash (XDG), one result row per file.
+        if(sub==='delete'&&req.method==='POST'){const b=await readJson(req,controller.signal);
+          const results=[];for(const p of Array.isArray(b.paths)?b.paths:[]){try{results.push(await store.deleteLib(kind,{path:p}));}catch(e){results.push({path:String(p),error:String(e.message||e)});}}
+          sendJson(res,200,{results});return;}
+        // "Open in ComfyUI": ComfyUI embeds the whole graph in the saved file (mp4 container tags; PNG tEXt chunks) — UI `workflow` first, else API `prompt`.
+        // probe:true → just presence (the menu greys the item out). Full call → extract, hand JSON to the browser, push it into the first ComfyUI that answers.
+        if(sub==='comfy'&&req.method==='POST'){
+          const b=await readJson(req,controller.signal);
+          const rel=String(b.path??''),root=await store.libRoot(kind),abs=join(root,rel);
+          if(!rel||!abs.startsWith(root+sep)||!existsSync(abs)){sendJson(res,404,{detail:'Library file not found.'});return;}
+          const wf=kind==='images'?await embeddedComfyPng(abs):await embeddedComfyWorkflow(abs);
+          if(b.probe){sendJson(res,200,{has:Boolean(wf)});return;}
+          if(!wf){sendJson(res,404,{detail:'No embedded ComfyUI workflow in this file.'});return;}
+          const base=await firstOnlineComfy({comfyHosts,store,fetchImpl,signal:controller.signal});
+          let uploaded='';
+          if(base){
+            const name=`workflows/dsh/${rel.replace(/\.[a-z0-9]+$/i,'')}.json`;
+            const v2=await fetchImpl(`${base}/api/userdata/v2/${name.split('/').map(encodeURIComponent).join('/')}`,{method:'PUT',signal:controller.signal,headers:{'content-type':'application/json'},body:JSON.stringify({content:wf.json})}).catch(()=>null);
+            if(v2?.ok)uploaded=name;
+            else{const v1=await fetchImpl(`${base}/api/userdata?path=${encodeURIComponent(name)}`,{method:'PUT',signal:controller.signal,headers:{'content-type':'application/json'},body:wf.json}).catch(()=>null);if(v1?.ok)uploaded=name;}
+          }
+          sendJson(res,200,{kind:wf.kind,json:wf.json,host:base,uploaded});return;}
+        if(sub==='order'&&req.method==='PUT'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.setLibOrder(kind,{order:Array.isArray(b.order)?b.order:[]}));return;}
+        // Poster for a footage video: one ffmpeg frame, cached in .director-studio/footage-thumbs (streamed here, never via /api/file). Images serve their own bytes.
+        if(sub==='thumb'&&['GET','HEAD'].includes(req.method)){
+          const {resolved,mime}=await resolveMediaPath(url,join(store.root,'..'),sessionIndex);
+          if(!mime.startsWith('video/'))throw new StudioStoreError('Thumbnails are generated for videos only.',400);
+          const target=await ensureFootageThumb(store,resolved);const tinfo=statSync(target);
+          res.writeHead(200,{'Content-Type':'image/jpeg','X-Content-Type-Options':'nosniff','Cache-Control':'private, max-age=3600','Content-Length':String(tinfo.size)});mediaLog(req,200,'thumb '+extname(resolved));
+          if(req.method==='HEAD'){res.end();return;}
+          createReadStream(target).pipe(res);return;}
+        if(!sub&&req.method==='POST'){sendJson(res,201,await store.addLib(kind,await readJson(req,controller.signal)));return;}
+        if(sub==='folder'&&req.method==='POST'){sendJson(res,200,await store.attachLibFolder(kind,await readJson(req,controller.signal)));return;}
+        if(sub==='refs'&&req.method==='PUT'){sendJson(res,200,await store.tagLib(kind,await readJson(req,controller.signal)));return;}
+        if(sub==='group'&&req.method==='POST'){sendJson(res,200,await store.addLibGroup(kind,await readJson(req,controller.signal)));return;}
+        if(sub==='group'&&req.method==='DELETE'){const b=await readJson(req,controller.signal).catch(()=>({}));sendJson(res,200,await store.removeLibGroup(kind,{name:String(b.name??url.searchParams.get('name')??'')}));return;}
+        // Smart filter: free-text query → one cheap chat call over the compact catalog → matching paths.
+        // ponytail: naive whole-catalog prompt (fine for thousands of items); upgrade path = embeddings. Answer is
+        // intersected with real catalog paths so a hallucinated path can never render.
+        if(sub==='smart'&&req.method==='POST'){
+          const b=await readJson(req,controller.signal);
+          const query=String(b.query??'').trim();
+          const smart=(await store.getAppSettings()).smart??{};
+          if(!query||!String(smart.url??'').trim()){sendJson(res,400,{detail:'Smart filter needs a query and an LLM endpoint — set the smart-query URL in the gear panel.'});return;}
+          // The model is the requesting session's own current model; gear's smart.model is only an explicit override. No local timeout: whatever the model takes, it takes.
+          const override=String(smart.model??'').trim();
+          const used=override?{model:override,reasoning:null}:await sessionModel(sessionId);
+          const model=used.model,reasoning=used.reasoning;
+          const [library,root]=await Promise.all([store.listLib(kind),store.libRoot(kind)]);
+          const noun=kind==='images'?'image':'video';
+          const catalog=library.files.map(item=>{let day=null;try{day=new Date(statSync(join(root,item.path)).mtimeMs).toISOString().slice(0,10);}catch{}return {path:item.path,tags:item.tags??[],day};});
+          const reply=await fetchImpl(`${String(smart.url).trim().replace(/\/$/,'')}/chat/completions`,{method:'POST',signal:controller.signal,headers:{'content-type':'application/json'},body:JSON.stringify({model:model||undefined,temperature:0,...(reasoning?{reasoning_effort:reasoning}:{}),messages:[{role:'system',content:`You filter a ${noun} library. Reply with ONLY a JSON array of matching "path" values taken verbatim from the CATALOG. No prose.`},{role:'user',content:`CATALOG\n${JSON.stringify(catalog)}\n\nShow the ${noun}s matching: ${query}`}]})}).then(r=>r.ok?r.json():Promise.reject(Error(`LLM endpoint answered ${r.status}`))).catch(e=>({__err:String(e.message||e)}));
+          if(reply.__err){sendJson(res,502,{detail:`Smart filter LLM: ${reply.__err}`});return;}
+          const found=/\[[\s\S]*\]/.exec(reply?.choices?.[0]?.message?.content??'');
+          let picked=[];if(found){try{picked=JSON.parse(found[0]);}catch{}}
+          const known=new Set(catalog.map(c=>c.path));
+          sendJson(res,200,{query,paths:(Array.isArray(picked)?picked:[]).filter(p=>known.has(String(p)))});return;}
+        // AI tagging (0.2.45 / 0.2.57): the session's own model looks at the media and returns content tags.
+        // Videos ride a 480p preview (also keeps bodies under the codex-router's big-body limit — verified external
+        // limit: ≥~5MB base64 503s; if a body still fails the endpoint's own error surfaces verbatim, no local gate).
+        // Images are sent as-is via image_url.
+        if(sub==='tag-ai'&&req.method==='POST'){
+          const b=await readJson(req,controller.signal);
+          const smart=(await store.getAppSettings()).smart??{};
+          const url=String(smart.url??'').trim().replace(/\/$/,'');
+          if(!String(b.path??'').trim()||!url){sendJson(res,400,{detail:'AI tagging needs a file path and the smart-filter endpoint (gear panel).'});return;}
+          const root=await store.libRoot(kind);
+          const abs=join(root,String(b.path).replaceAll('\\','/'));// join normalizes ../ so the containment check below is exact
+          if(abs!==root&&!abs.startsWith(root+sep)){sendJson(res,400,{detail:`Path must be inside the ${kind==='images'?'images/':'media/'} library.`});return;}
+          let mediaPart;
+          if(kind==='images'){
+            const mime=({'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif'})[extname(abs).toLowerCase()];
+            if(!mime)throw new StudioStoreError('AI tagging supports PNG/JPG/WebP/GIF images.',400);
+            mediaPart={type:'image_url',image_url:{url:`data:${mime};base64,${readFileSync(abs).toString('base64')}`}};
+          }else{
+            let preview;try{preview=await ensureFootagePreview(store,abs);}catch(e){sendJson(res,e instanceof StudioStoreError?e.status:502,{detail:String(e.message||e)});return;}
+            mediaPart={type:'video_url',video_url:{url:`data:video/mp4;base64,${readFileSync(preview).toString('base64')}`}};
+          }
+          let model=String(smart.model??'').trim(),reasoning=null;
+          if(!model){const used=await sessionModel(sessionId);model=used.model;reasoning=used.reasoning;}
+          if(!model)model=await qwenFallback(url,fetchImpl,controller.signal);
+          // Group membership is tag equality (tab collapsibles), so the tagger also gets every group name —
+          // one call per file therefore updates ALL groups, asset and custom, when the file belongs there.
+          const [lib,assetsAll]=await Promise.all([store.listLib(kind),store.listAssets({project_id:project.id,include_unassigned:true})]);
+          const groupNames=[...new Set([...lib.groups,...assetsAll.filter(item=>['actors','scenes','props'].includes(item.kind)).map(item=>item.name.toLowerCase())])];
+          const text=kind==='images'
+            ?`You are tagging one image of an AI film production library. Look at the image. Reply with ONLY a JSON array of 4-10 lowercase tags (1-2 words each): characters/creatures, main content, setting, style, mood. No prose, no duplicates of the existing tags. Library path: ${abs}. Existing tags: ${JSON.stringify(b.existing??[])}. Library groups (collapsibles): ${JSON.stringify(groupNames)} — if the image clearly belongs to a group, include that exact group name as a tag so it joins that group.`
+            :`You are tagging one clip of an AI film production library. Watch the video. Reply with ONLY a JSON array of 4-10 lowercase tags (1-2 words each): characters/creatures, main actions, setting, camera movement, mood. No prose, no duplicates of the existing tags. Library path: ${abs}. Existing tags: ${JSON.stringify(b.existing??[])}. Library groups (collapsibles): ${JSON.stringify(groupNames)} — if the clip clearly belongs to a group, include that exact group name as a tag so it joins that group.`;
+          const reply=await fetchImpl(`${url}/chat/completions`,{method:'POST',signal:controller.signal,headers:{'content-type':'application/json'},body:JSON.stringify({model:model||undefined,temperature:0,...(reasoning?{reasoning_effort:reasoning}:{}),messages:[{role:'user',content:[{type:'text',text},mediaPart]}]})}).then(r=>r.ok?r.json():r.text().catch(()=>'').then(t=>Promise.reject(Error(`LLM endpoint answered ${r.status}: ${String(t).slice(0,300)}`)))).catch(e=>({__err:String(e.message||e)}));
+          if(reply.__err){sendJson(res,502,{detail:`AI tagging LLM: ${reply.__err}`});return;}
+          const found=/\[[\s\S]*\]/.exec(reply?.choices?.[0]?.message?.content??'');
+          let tags=[];if(found){try{const arr=JSON.parse(found[0]);if(Array.isArray(arr))tags=arr.map(String);}catch{}}
+          const resolution=resolutionTag(await videoHeight(abs));
+          const v=await store.tagLib(kind,{path:String(b.path),tags_add:resolution?[...tags,resolution]:tags});
+          sendJson(res,200,{path:v.path,tags:v.tags,model:model||'endpoint default',resolution});return;}
       }
-      if(path==='/api/footage'&&req.method==='POST'){sendJson(res,201,await store.addFootage(await readJson(req,controller.signal)));return;}
-      if(path==='/api/footage/folder'&&req.method==='POST'){sendJson(res,200,await store.attachFootageFolder(await readJson(req,controller.signal)));return;}
-      if(path==='/api/footage/refs'&&req.method==='PUT'){sendJson(res,200,await store.tagFootage(await readJson(req,controller.signal)));return;}
-      if(path==='/api/footage/group'&&req.method==='POST'){sendJson(res,200,await store.addFootageGroup(await readJson(req,controller.signal)));return;}
-      if(path==='/api/footage/group'&&req.method==='DELETE'){const b=await readJson(req,controller.signal).catch(()=>({}));sendJson(res,200,await store.removeFootageGroup({name:String(b.name??url.searchParams.get('name')??'')}));return;}
-      // Smart filter (0.2.43): free-text query → one cheap chat call over the compact catalog → matching paths.
-      // ponytail: naive whole-catalog prompt (fine for thousands of clips); upgrade path = embeddings. Answer is
-      // intersected with real catalog paths so a hallucinated path can never render.
-      if(path==='/api/footage/smart'&&req.method==='POST'){
-        const b=await readJson(req,controller.signal);
-        const query=String(b.query??'').trim();
-        const smart=(await store.getAppSettings()).smart??{};
-        if(!query||!String(smart.url??'').trim()){sendJson(res,400,{detail:'Smart filter needs a query and an LLM endpoint — set the smart-query URL in the gear panel.'});return;}
-        // The model is the requesting session's own current model; gear's smart.model is only an explicit override. No local timeout: whatever the model takes, it takes.
-        const override=String(smart.model??'').trim();
-        const used=override?{model:override,reasoning:null}:await sessionModel(sessionId);
-        const model=used.model,reasoning=used.reasoning;
-        const [library,root]=await Promise.all([store.footageList(),store.footageRoot()]);
-        const catalog=library.files.map(item=>{let day=null;try{day=new Date(statSync(join(root,item.path)).mtimeMs).toISOString().slice(0,10);}catch{}return {path:item.path,tags:item.tags??[],day};});
-        const reply=await fetchImpl(`${String(smart.url).trim().replace(/\/$/,'')}/chat/completions`,{method:'POST',signal:controller.signal,headers:{'content-type':'application/json'},body:JSON.stringify({model:model||undefined,temperature:0,...(reasoning?{reasoning_effort:reasoning}:{}),messages:[{role:'system',content:'You filter a video library. Reply with ONLY a JSON array of matching "path" values taken verbatim from the CATALOG. No prose.'},{role:'user',content:`CATALOG\n${JSON.stringify(catalog)}\n\nShow the videos matching: ${query}`}]})}).then(r=>r.ok?r.json():Promise.reject(Error(`LLM endpoint answered ${r.status}`))).catch(e=>({__err:String(e.message||e)}));
-        if(reply.__err){sendJson(res,502,{detail:`Smart filter LLM: ${reply.__err}`});return;}
-        const found=/\[[\s\S]*\]/.exec(reply?.choices?.[0]?.message?.content??'');
-        let picked=[];if(found){try{picked=JSON.parse(found[0]);}catch{}}
-        const known=new Set(catalog.map(c=>c.path));
-        sendJson(res,200,{query,paths:(Array.isArray(picked)?picked:[]).filter(p=>known.has(String(p)))});return;}
-      // AI tagging for footage (0.2.45): the session's own model WATCHES the clip (native video_url data-URI part,
-      // like the watch-video skill) and returns content tags. Preview = 480p re-encode cached next to posters,
-      // which also keeps bodies under the codex-router's big-body limit (verified external limit: ≥~5MB base64 503s;
-      // if a body still fails there, the endpoint's own error is surfaced verbatim — no local size gate).
-      if(path==='/api/footage/tag-ai'&&req.method==='POST'){
-        const b=await readJson(req,controller.signal);
-        const smart=(await store.getAppSettings()).smart??{};
-        const url=String(smart.url??'').trim().replace(/\/$/,'');
-        if(!String(b.path??'').trim()||!url){sendJson(res,400,{detail:'AI tagging needs a clip path and the smart-filter endpoint (gear panel).'});return;}
-        const root=await store.footageRoot();
-        const abs=join(root,String(b.path).replaceAll('\\','/'));// join normalizes ../ so the containment check below is exact
-        if(abs!==root&&!abs.startsWith(root+sep)){sendJson(res,400,{detail:'Path must be inside the media/ library.'});return;}
-        let preview;try{preview=await ensureFootagePreview(store,abs);}catch(e){sendJson(res,e instanceof StudioStoreError?e.status:502,{detail:String(e.message||e)});return;}
-        let model=String(smart.model??'').trim(),reasoning=null;
-        if(!model){const used=await sessionModel(sessionId);model=used.model;reasoning=used.reasoning;}
-        if(!model)model=await qwenFallback(url,fetchImpl,controller.signal);
-        // Group membership is tag equality (Footage collapsibles), so the tagger also gets every group name —
-        // one call per clip therefore updates ALL groups, asset and custom, when the clip belongs there.
-        const [lib,assetsAll]=await Promise.all([store.footageList(),store.listAssets({project_id:project.id,include_unassigned:true})]);
-        const groupNames=[...new Set([...lib.groups,...assetsAll.filter(item=>['actors','scenes','props'].includes(item.kind)).map(item=>item.name.toLowerCase())])];
-        const video=`data:video/mp4;base64,${readFileSync(preview).toString('base64')}`;
-        const text=`You are tagging one clip of an AI film production library. Watch the video. Reply with ONLY a JSON array of 4-10 lowercase tags (1-2 words each): characters/creatures, main actions, setting, camera movement, mood. No prose, no duplicates of the existing tags. Library path: ${abs}. Existing tags: ${JSON.stringify(b.existing??[])}. Library groups (collapsibles): ${JSON.stringify(groupNames)} — if the clip clearly belongs to a group, include that exact group name as a tag so it joins that group.`;
-        const reply=await fetchImpl(`${url}/chat/completions`,{method:'POST',signal:controller.signal,headers:{'content-type':'application/json'},body:JSON.stringify({model:model||undefined,temperature:0,...(reasoning?{reasoning_effort:reasoning}:{}),messages:[{role:'user',content:[{type:'text',text},{type:'video_url',video_url:{url:video}}]}]})}).then(r=>r.ok?r.json():r.text().catch(()=>'').then(t=>Promise.reject(Error(`LLM endpoint answered ${r.status}: ${String(t).slice(0,300)}`)))).catch(e=>({__err:String(e.message||e)}));
-        if(reply.__err){sendJson(res,502,{detail:`AI tagging LLM: ${reply.__err}`});return;}
-        const found=/\[[\s\S]*\]/.exec(reply?.choices?.[0]?.message?.content??'');
-        let tags=[];if(found){try{const arr=JSON.parse(found[0]);if(Array.isArray(arr))tags=arr.map(String);}catch{}}
-        const resolution=resolutionTag(await videoHeight(abs));
-        const v=await store.tagFootage({path:String(b.path),tags_add:resolution?[...tags,resolution]:tags});
-        sendJson(res,200,{path:v.path,tags:v.tags,model:model||'endpoint default',resolution});return;}
       match=/^\/api\/(actors|scenes|props)(?:\/(generate|jobs)(?:\/([A-Za-z0-9_-]{1,128})(?:\/(cancel|save))?)?)?$/.exec(path);
       if(match){
         const [,kind,section,jobId,action]=match;

@@ -1,7 +1,7 @@
 import {MediaCard} from './MediaCard.jsx';
 import {GpuUsageSettings} from './GpuUsageSettings.jsx';
 import {PresetAwareGpuStatus} from './GpuStatus.jsx';
-import {AssetsTab,FootageTab,MediaTab,ProductionTab,StoryTab,TimelineTab} from './studio/StudioSidebar.jsx';
+import {AssetsTab,FootageTab,ImagesTab,MediaTab,ProductionTab,StoryTab,TimelineTab} from './studio/StudioSidebar.jsx';
 import {createMediaBody,MEDIA_KINDS} from './MediaBodies.jsx';
 import {startMediaPathFixer} from './markdown-media.mjs';
 import {startMediaFenceTakeover} from './media-fence-enhancer.mjs';
@@ -38,6 +38,7 @@ export function apply(ctx){
      {id:'dsh-director-studio-production',kind:'director-studio-production',title:()=>'Production',Body:ProductionTab,guide:[{id:'production',order:40,title:()=>'Production',description:()=>'Project shots, references, dialogue, and generation review.'}]},
      {id:'dsh-director-studio-timeline',kind:'director-studio-timeline',title:()=>'Timeline',Body:TimelineTab,guide:[{id:'timeline',order:45,title:()=>'Timeline',description:()=>'Episode timeline: sequence buttons, shot blocks, take switching, watch the whole cut before rendering it.'}]},
      {id:'dsh-director-studio-footage',kind:'director-studio-footage',title:()=>'Footage',Body:FootageTab,guide:[{id:'footage',order:42,title:()=>'Footage',description:()=>'Every video under media/ with tags: asset groups, custom tag groups, filter, right-click copy path.'}]},
+     {id:'dsh-director-studio-images',kind:'director-studio-images',title:()=>'Images',Body:ImagesTab,guide:[{id:'images',order:41,title:()=>'Images',description:()=>'Every image under images/ with tags: asset groups, custom tag groups, filter, AI tagging, Open in ComfyUI for embedded graphs.'}]},
      {id:'dsh-director-studio-story',kind:'director-studio-story',title:()=>'Story',Body:StoryTab,guide:[{id:'story',order:50,title:()=>'Story',description:()=>'Decision cards, canon floor, story beats on two clocks — the wall that remembers what you decided.'}]},
      {id:'dsh-director-studio-media',kind:'director-studio-media',title:()=>'Media',Body:MediaTab,guide:[{id:'media',order:35,title:()=>'Media',description:()=>'Every image and video of this session as cards: Images/Videos/Both filter, same-title version stacks, click to zoom or play.'}]},
    ];

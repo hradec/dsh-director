@@ -10,7 +10,11 @@ const hasTag=(file,name)=>(file.tags??[]).some((t)=>String(t).toLowerCase()===St
 // The file url carries the on-disk absolute path in its ?path= param — that is what "copy path" puts on the clipboard.
 const fsPath=(file)=>{try{const p=new URL(file.url,location.origin).searchParams.get('path');return p?decodeURIComponent(p):file.url;}catch{return file.url;}};
 
-export function FootageBoard(){
+export function FootageBoard({lib='footage'}={}){
+  // One board serves both libraries: lib='footage' (media/, videos) and lib='images' (images/, pictures) — identical routes, menus, tags, groups, tasks.
+  const api=(p='')=>`/api/${lib}${p}`;
+  const noun=lib==='images'?'image':'video';
+  const dirName=lib==='images'?'images/':'media/';
   const [data,setData]=useState(null);
   const [error,setError]=useState('');
   const [filter,setFilter]=useState('');
@@ -33,24 +37,24 @@ export function FootageBoard(){
     queueRef.current=step;
     return step;
   };
-  const load=useCallback(()=>apiFetch('/api/footage').then((r)=>r.ok?r.json():Promise.reject(Error(`footage API ${r.status}`))).then((v)=>{setData(v);setError('');}).catch((e)=>setError(`${e.message} — the running DSH service may need a restart (when idle) to enable it.`)),[]);
+  const load=useCallback(()=>apiFetch(api()).then((r)=>r.ok?r.json():Promise.reject(Error(`${lib} API ${r.status}`))).then((v)=>{setData(v);setError('');}).catch((e)=>setError(`${e.message} — the running DSH service may need a restart (when idle) to enable it.`)),[]);
   useEffect(()=>{load();},[load]);
   const post=(path,method,body)=>apiFetch(path,{method,headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(async(r)=>{const v=await r.json().catch(()=>null);return r.ok?v:Promise.reject(Error(`${method} ${path} → ${r.status}`));});
   const setTags=async(path,tagsBody)=>{
-    try{const v=await post('/api/footage/refs','PUT',{path,...tagsBody});if(v?.tags)setData((d)=>({...d,files:(d?.files??[]).map((f)=>f.path===path?{...f,tags:v.tags}:f)}));}
+    try{const v=await post(api('/refs'),'PUT',{path,...tagsBody});if(v?.tags)setData((d)=>({...d,files:(d?.files??[]).map((f)=>f.path===path?{...f,tags:v.tags}:f)}));}
     catch(e){setError(String(e.message||e));}
   };
   const addTag=async(path)=>{const tag=(tagDrafts[path]??'').trim();if(!tag)return;setTagDrafts((d)=>({...d,[path]:''}));await setTags(path,{tags_add:[tag]});};
   const removeTag=(path,tag)=>void setTags(path,{tags_remove:[tag]});
   // Expand/collapse persists to footage.json — survives refresh and closing/reopening the tab.
-  const toggleOpen=(id,expanded)=>{setOpen((o)=>({...o,[id]:expanded}));post('/api/footage/open','PUT',{id,expanded}).catch((e)=>setError(String(e.message||e)));};
+  const toggleOpen=(id,expanded)=>{setOpen((o)=>({...o,[id]:expanded}));post(api('/open'),'PUT',{id,expanded}).catch((e)=>setError(String(e.message||e)));};
   const addGroup=async()=>{
     const name=filter.trim();if(!name)return;
-    try{const v=await post('/api/footage/group','POST',{name});if(v?.groups)setData((d)=>({...d,groups:v.groups}));setOpen((o)=>({...o,[`g:${name}`]:true}));setNotice(`Group “${name}” created — every video tagged ${name} is in it.`);}
+    try{const v=await post(api('/group'),'POST',{name});if(v?.groups)setData((d)=>({...d,groups:v.groups}));setOpen((o)=>({...o,[`g:${name}`]:true}));setNotice(`Group “${name}” created — every ${noun} tagged ${name} is in it.`);}
     catch(e){setError(String(e.message||e));}
   };
   const deleteGroup=async(name)=>{
-    try{const v=await post('/api/footage/group','DELETE',{name});if(v?.groups)setData((d)=>({...d,groups:v.groups}));}
+    try{const v=await post(api('/group'),'DELETE',{name});if(v?.groups)setData((d)=>({...d,groups:v.groups}));}
     catch(e){setError(String(e.message||e));}
   };
   // Asset groups mirror the library and are never deleted from Footage — assets live and die in the Assets tab.
@@ -59,14 +63,14 @@ export function FootageBoard(){
     for(const q of queries){
       if(q in smart)continue;
       setSmart((s)=>({...s,[q]:'pending'}));
-      try{const v=await post('/api/footage/smart','POST',{query:q});setSmart((s)=>({...s,[q]:new Set(v?.paths??[])}));}
+      try{const v=await post(api('/smart'),'POST',{query:q});setSmart((s)=>({...s,[q]:new Set(v?.paths??[])}));}
       catch(e){setSmart((s)=>{const n={...s};delete n[q];return n;});setError(String(e.message||e));}
     }
   };
   // AI tagging: untagged clips get the session's model to watch them and produce content tags — one honest call per clip,
   // queued in the background; right-click re-tags any card. seenTag keeps one pass per file per tab session.
   const seenTag=useRef(new Set());
-  const tagAi=(f)=>{const short=f.path.split('/').pop();return runTask(`AI tag ${short}`,()=>post('/api/footage/tag-ai','POST',{path:f.path,existing:f.tags??[]}).then((v)=>{if(v?.tags)setData((d)=>({...d,files:(d?.files??[]).map((x)=>x.path===f.path?{...x,tags:v.tags}:x)}));}));};
+  const tagAi=(f)=>{const short=f.path.split('/').pop();return runTask(`AI tag ${short}`,()=>post(api('/tag-ai'),'POST',{path:f.path,existing:f.tags??[]}).then((v)=>{if(v?.tags)setData((d)=>({...d,files:(d?.files??[]).map((x)=>x.path===f.path?{...x,tags:v.tags}:x)}));}));};
   useEffect(()=>{
     if(!data)return;
     const fresh=(data.files??[]).filter((f)=>!f.tags?.length&&!seenTag.current.has(f.path));
@@ -74,23 +78,23 @@ export function FootageBoard(){
   },[data]);
   const importVideo=async()=>{
     const path=importPath.trim();if(!path)return;setImportOpen(false);
-    await runTask('import video',()=>post('/api/footage','POST',{path,tags:[]}).then((v)=>{setNotice(v?.skipped==='same bytes'?'Skipped — identical bytes already in media/.':`Imported ${v?.file?.path??path}`);setImportPath('');return load();}));
+    await runTask(`import ${noun}`,()=>post(api(),'POST',{path,tags:[]}).then((v)=>{setNotice(v?.skipped==='same bytes'?`Skipped — identical bytes already in ${dirName}.`:`Imported ${v?.file?.path??path}`);setImportPath('');return load();}));
   };
   const importFolder=async()=>{
     const path=importPath.trim();if(!path)return;setImportOpen(false);
-    await runTask('import folder',()=>post('/api/footage/folder','POST',{path}).then((v)=>{setNotice(`Folder import added ${v?.added??0} video(s).`);setImportPath('');return load();}));
+    await runTask('import folder',()=>post(api('/folder'),'POST',{path}).then((v)=>{setNotice(`Folder import added ${v?.added??0} ${noun}(s).`);setImportPath('');return load();}));
   };
   // Batch selection: checkboxes appear on every card once anything is selected; delete sends files to the OS trash.
   const toggleSel=(p)=>setSel((s)=>{const n=new Set(s);if(n.has(p))n.delete(p);else n.add(p);return n;});
   const selectAll=()=>setSel(new Set((data?.files??[]).filter(matches).map((f)=>f.path)));
   const deleteSelected=()=>{
     const paths=[...sel];if(!paths.length)return;setSel(new Set());
-    void runTask(`trash ${paths.length} clip${paths.length>1?'s':''}`,async()=>{
-      const v=await post('/api/footage/delete','POST',{paths});
+    void runTask(`trash ${paths.length} ${noun}${paths.length>1?'s':''}`,async()=>{
+      const v=await post(api('/delete'),'POST',{paths});
       const bad=(v?.results??[]).filter((r)=>r.error);
       if(bad.length)setError(bad.map((r)=>`${r.path}: ${r.error}`).join(' · '));
       const done=(v?.results??[]).filter((r)=>r.trashed_to);
-      if(done.length){setNotice(`${done.length} clip(s) moved to the OS trash (recoverable).`);setData((d)=>({...d,files:(d?.files??[]).filter((f)=>!(done.some((r)=>r.path===f.path)))}));}
+      if(done.length){setNotice(`${done.length} ${noun}(s) moved to the OS trash (recoverable).`);setData((d)=>({...d,files:(d?.files??[]).filter((f)=>!(done.some((r)=>r.path===f.path)))}));}
     });
   };
   const copyPath=async(file)=>{
@@ -128,7 +132,7 @@ export function FootageBoard(){
     const at=ids.indexOf(targetId)+(after?1:0);
     ids.splice(at,0,drag.id);
     setData((d)=>({...d,order:ids}));setDrag(null);
-    try{await post('/api/footage/order','PUT',{order:ids});}
+    try{await post(api('/order'),'PUT',{order:ids});}
     catch(e){setError(String(e.message||e));load();}
   };
   // Filter grammar: bare words are tag substrings, space ANDs them, nelare+chicken ANDs within one token.
@@ -158,7 +162,7 @@ export function FootageBoard(){
   const matches=useCallback((f)=>parsed.conds.every((c)=>c(f)),[parsed]);
   const pending=parsed.smartQ.some((q)=>smart[q]==='pending');
   const fname=filter.trim().toLowerCase();
-  const card=(f)=><div key={f.path} className={`footage-card${sel.has(f.path)?' footage-selected':''}`} role="button" tabIndex={0} title="Click to play · right-click for the path"
+  const card=(f)=><div key={f.path} className={`footage-card${sel.has(f.path)?' footage-selected':''}`} role="button" tabIndex={0} title={`Click to ${lib==='images'?'view':'play'} · right-click for the path`}
     onClick={()=>{if(menu){setMenu(null);return;}setPlaying(f);}}
     onKeyDown={(e)=>{if(e.key==='Enter')setPlaying(f);}}
     onContextMenu={(e)=>{e.preventDefault();setMenu({x:e.clientX,y:e.clientY,file:f});}}>
@@ -180,26 +184,26 @@ export function FootageBoard(){
   useEffect(()=>{
     if(!menu||menu.file.path in comfyKnown)return;
     setComfyKnown((k)=>({...k,[menu.file.path]:'pending'}));
-    post('/api/footage/comfy','POST',{path:menu.file.path,probe:true}).then((v)=>setComfyKnown((k)=>({...k,[menu.file.path]:Boolean(v?.has)}))).catch(()=>setComfyKnown((k)=>({...k,[menu.file.path]:false})));
+    post(api('/comfy'),'POST',{path:menu.file.path,probe:true}).then((v)=>setComfyKnown((k)=>({...k,[menu.file.path]:Boolean(v?.has)}))).catch(()=>setComfyKnown((k)=>({...k,[menu.file.path]:false})));
   },[menu]);
   const openComfy=async(f)=>{
     const tab=window.open('about:blank','_blank');   // sync with the click so the popup blocker stays asleep
     try{
-      const v=await post('/api/footage/comfy','POST',{path:f.path});
+      const v=await post(api('/comfy'),'POST',{path:f.path});
       try{await navigator.clipboard.writeText(v.json);}catch{}
       if(tab&&v.host)tab.location.href=v.host;else if(tab)tab.close();
       setNotice(v.host?`ComfyUI opened — paste (Ctrl+V) the copied workflow onto its canvas${v.uploaded?` · also saved there as ${v.uploaded}`:''}${v.kind==='prompt'?' (API graph — the new UI converts it)':''}.`:'No ComfyUI answered on the usual hosts — the workflow JSON is on your clipboard.');
     }catch(e){if(tab)tab.close();setError(String(e.message||e));}
   };
-  return <main className="panel footage-board" aria-label="Footage">
+  return <main className="panel footage-board" aria-label={lib==='images'?'Images':'Footage'}>
     {error?<div className="banner error" role="alert">{error}</div>:null}
     <div className="footage-bar">
-      <input className="footage-filter" type="search" placeholder="Filter: tag nelare+chicken · [last hour] · [today] · [free text]↵" aria-label="Filter footage by tag" value={filter} onChange={(e)=>setFilter(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();void runSmart(parsed.smartQ);}}}/>
+      <input className="footage-filter" type="search" placeholder="Filter: tag nelare+chicken · [last hour] · [today] · [free text]↵" aria-label={`Filter ${lib} by tag`} value={filter} onChange={(e)=>setFilter(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();void runSmart(parsed.smartQ);}}}/>
       {pending?<span className="field-hint">asking the LLM about [ … ]…</span>:null}
       {fname&&(data?.groups??[]).includes(fname)
-        ?<button type="button" className="btn ghost sm" title={`Remove the custom group “${fname}” (the videos and their tags stay)`} onClick={()=>{void deleteGroup(fname);}}>✕</button>
+        ?<button type="button" className="btn ghost sm" title={`Remove the custom group “${fname}” (the ${noun}s and their tags stay)`} onClick={()=>{void deleteGroup(fname);}}>✕</button>
         :<button type="button" className="btn primary sm" title={fname&&(data?.assets??[]).some((a)=>a.name.toLowerCase()===fname)?'Asset groups come from the Assets tab — manage them there':`Turn “${fname||'the filter text'}” into a permanent tag group`} disabled={!fname} onClick={()=>void addGroup()}>+</button>}
-      <button type="button" className="btn sm" title="Import a video file or folder into media/" onClick={()=>setImportOpen(true)}>Import…</button>
+      <button type="button" className="btn sm" title={`Import a ${noun} file or folder into ${dirName}`} onClick={()=>setImportOpen(true)}>Import…</button>
       <button type="button" className="btn sm" title="Reload the board — files, tags, groups and layout" onClick={()=>void load()}>⟳</button>
       {tasks.length?<span className="footage-tasks" title="Background tasks run one at a time">⏳ {tasks.length>1?`${tasks.length} tasks · `:''}{tasks[0].label}{tasks[0].progress?` (${tasks[0].progress})`:''}{tasks.length>1?'…':''}</span>:null}
       {notice?<span className="field-hint">{notice}</span>:null}
@@ -211,8 +215,8 @@ export function FootageBoard(){
       </div>:null}
     </div>
     <div className="footage-scroll">
-    {!data&&!error?<div className="muted">Loading footage…</div>:null}
-    {data&&!data.files.length?<p className="empty-copy">No videos in media/ yet — generated videos land here automatically.</p>:null}
+    {!data&&!error?<div className="muted">{`Loading ${lib}…`}</div>:null}
+    {data&&!data.files.length?<p className="empty-copy">{`No ${noun}s in ${dirName} yet — import them with Import… or register them from a session.`}</p>:null}
     {groups.length?<div className="footage-groups">{groups.map((g)=>{
       const shown=g.members.filter(matches);
       if(parsed.text&&!shown.length)return null;
@@ -237,10 +241,10 @@ export function FootageBoard(){
     </div>
     {importOpen?<div className="footage-dialog" role="dialog" onClick={()=>setImportOpen(false)}>
       <div className="footage-dialog-body" onClick={(e)=>e.stopPropagation()}>
-        <h3>Import into media/</h3>
-        <input className="footage-import-path" autoFocus placeholder="path — workspace-relative or absolute (a video file, or a folder)" aria-label="Import path" value={importPath} onChange={(e)=>setImportPath(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();void importVideo();}}}/>
+        <h3>{`Import into ${dirName}`}</h3>
+        <input className="footage-import-path" autoFocus placeholder={`path — workspace-relative or absolute (a ${noun} file, or a folder)`} aria-label="Import path" value={importPath} onChange={(e)=>setImportPath(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();void importVideo();}}}/>
         <div className="footage-dialog-actions">
-          <button type="button" className="btn primary sm" disabled={!importPath.trim()} onClick={()=>void importVideo()}>Import video</button>
+          <button type="button" className="btn primary sm" disabled={!importPath.trim()} onClick={()=>void importVideo()}>{`Import ${noun}`}</button>
           <button type="button" className="btn sm" disabled={!importPath.trim()} onClick={()=>void importFolder()}>Import folder</button>
           <button type="button" className="btn ghost sm" onClick={()=>setImportOpen(false)}>Close</button>
         </div>
@@ -254,7 +258,7 @@ export function FootageBoard(){
     </div>:null}
     {playing?<div className="footage-viewer" role="dialog" onClick={()=>setPlaying(null)}>
       <div className="footage-viewer-body" onClick={(e)=>e.stopPropagation()}>
-        <video src={playing.url} poster={playing.thumb??undefined} controls autoPlay playsInline/>
+        {lib==='images'?<img className="footage-viewer-image" src={playing.url} alt={playing.path}/>:<video src={playing.url} poster={playing.thumb??undefined} controls autoPlay playsInline/>}
       </div>
       <button type="button" className="btn ghost sm footage-viewer-close" aria-label="Close player" onClick={()=>setPlaying(null)}>✕</button>
     </div>:null}

@@ -171,16 +171,19 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
     }
     return added;
   }
-  // Footage library (0.2.39): <workspace>/media/ recursively holds every video clip; media/footage.json
-  // ({files:{rel:{tags,added_at}},groups:[…]}) is the hand-editable tag/group index — same overlay-wins-on-read
-  // rule as asset.json. The human organizes media/ into subfolders (season/episode); the catalog follows the tree.
-  const mediaLibraryRoot=join(workspace,'media');
+  // Footage & Images libraries (0.2.39 / 0.2.57): <workspace>/media/ holds video clips, <workspace>/images/ holds images;
+  // each has a hand-editable tag/group index (footage.json / images.json) — same overlay-wins-on-read rule as asset.json.
+  // The human organizes the folders into subfolders (season/episode); the catalog follows the tree.
+  const LIB_KINDS={footage:{dir:'media',meta:'footage.json',type:'video',accept:'MP4/MOV/WebM video files'},images:{dir:'images',meta:'images.json',type:'image',accept:'PNG/JPG/WebP/GIF image files'}};
+  const libSpec=kind=>LIB_KINDS[kind==='images'?'images':'footage'];
+  const libRootDir=kind=>join(workspace,libSpec(kind).dir);
+  const mediaLibraryRoot=libRootDir('footage');
   const normFootageRel=value=>String(value??'').replaceAll('\\','/').split('/').map(part=>safeText(part,120)).filter(part=>part&&!part.startsWith('.')).join('/');
   const normFootageTags=value=>Array.isArray(value)?[...new Set(value.map(tag=>safeText(tag,80).toLowerCase()).filter(Boolean))]:[];
-  async function readFootageJson(){try{const parsed=JSON.parse(await readFile(join(mediaLibraryRoot,'footage.json'),'utf8'));
+  async function readLibJson(kind){try{const parsed=JSON.parse(await readFile(join(libRootDir(kind),libSpec(kind).meta),'utf8'));
     if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))return {files:parsed.files&&typeof parsed.files==='object'&&!Array.isArray(parsed.files)?parsed.files:{},groups:Array.isArray(parsed.groups)?parsed.groups.map(group=>safeText(group,80)).filter(Boolean):[],order:Array.isArray(parsed.order)?parsed.order.map(row=>safeText(row,140)).filter(Boolean):[],open:parsed.open&&typeof parsed.open==='object'&&!Array.isArray(parsed.open)?Object.fromEntries(Object.entries(parsed.open).filter(([,v])=>typeof v==='boolean')):{}};}catch{}
     return {files:{},groups:[],order:[],open:{}};}
-  async function writeFootageJson(data){await mkdir(mediaLibraryRoot,{recursive:true});await writeFile(join(mediaLibraryRoot,'footage.json'),JSON.stringify(data,null,1));}
+  async function writeLibJson(kind,data){const dir=libRootDir(kind);await mkdir(dir,{recursive:true});await writeFile(join(dir,libSpec(kind).meta),JSON.stringify(data,null,1));}
   // Footage delete = real OS trash (freedesktop spec: XDG Trash files/ + info/.trashinfo), never a raw unlink — recoverable from the desktop trash.
   async function moveToTrash(abs){
     const trashRoot=join(process.env.XDG_DATA_HOME??join(homedir(),'.local','share'),'Trash');
@@ -194,22 +197,22 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
     await writeFile(join(infoDir,`${name}.trashinfo`),`[Trash Info]\nPath=${abs}\nDeleteTime=${stamp()}\n`);
     return join(filesDir,name);}
   // ponytail: extension gate on scan (no byte read per file); signatures verified only at copy-in time.
-  async function listLibraryVideos(){const out=[];
+  async function listLibraryFiles(kind){const out=[];
     async function walk(dir,prefix){let entries;try{entries=await readdir(dir,{withFileTypes:true});}catch{return;}
       for(const entry of entries){if(entry.name.startsWith('.'))continue;const rel=prefix?`${prefix}/${entry.name}`:entry.name;
         if(entry.isDirectory()){await walk(join(dir,entry.name),rel);continue;}
-        if(MEDIA_TYPES[extname(entry.name).toLowerCase()]?.[0]==='video')out.push(rel);}}
-    await walk(mediaLibraryRoot,'');return out;}
+        if(MEDIA_TYPES[extname(entry.name).toLowerCase()]?.[0]===libSpec(kind).type)out.push(rel);}}
+    await walk(libRootDir(kind),'');return out;}
   // Dedupe by bytes against same-size library files; collision gets <stem>-2.ext… names. Returns {path,tags} or {skipped,path}.
-  async function copyIntoLibrary(filename,bytes,tags,sub=''){
-    const digest=hash(bytes),rels=await listLibraryVideos();
-    for(const rel of rels){try{const full=join(mediaLibraryRoot,rel);if((await stat(full)).size!==bytes.length)continue;if(hash(await readFile(full))===digest)return {skipped:'same bytes',path:rel};}catch{continue;}}
-    const base=cleanBase(filename);if(!base)throw new StudioStoreError('Video filename is required.');
-    const ext=extname(base).toLowerCase(),stem=base.slice(0,base.length-ext.length)||'clip',dir=normFootageRel(sub);
+  async function copyIntoLibrary(filename,bytes,tags,sub='',kind='footage'){
+    const digest=hash(bytes),rels=await listLibraryFiles(kind);
+    for(const rel of rels){try{const full=join(libRootDir(kind),rel);if((await stat(full)).size!==bytes.length)continue;if(hash(await readFile(full))===digest)return {skipped:'same bytes',path:rel};}catch{continue;}}
+    const base=cleanBase(filename);if(!base)throw new StudioStoreError('Library filename is required.');
+    const ext=extname(base).toLowerCase(),stem=base.slice(0,base.length-ext.length)||'item',dir=normFootageRel(sub);
     let rel,name,n=1;do{name=n===1?`${stem}${ext}`:`${stem}-${n}${ext}`;rel=[dir,name].filter(Boolean).join('/');n++;}while(rels.includes(rel));
-    await mkdir(dirname(join(mediaLibraryRoot,rel)),{recursive:true});
-    await writeFile(join(mediaLibraryRoot,rel),bytes);
-    const stored=await readFootageJson();stored.files[rel]={tags:normFootageTags(tags),added_at:stamp()};await writeFootageJson(stored);
+    await mkdir(dirname(join(libRootDir(kind),rel)),{recursive:true});
+    await writeFile(join(libRootDir(kind),rel),bytes);
+    const stored=await readLibJson(kind);stored.files[rel]={tags:normFootageTags(tags),added_at:stamp()};await writeLibJson(kind,stored);
     return {path:rel,tags:stored.files[rel].tags};}
   async function load(){
     if(state)return state;
@@ -369,60 +372,81 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
         item.ref_meta={...(item.ref_meta??{}),[key]:next};item.updated_at=stamp();await writeAssetJson(item);return {key,...next};
       });
     },
-    // Footage library surface: the Footage tab and footage.* tool actions both land here.
-    async footageList(){const stored=await readFootageJson(),rels=await listLibraryVideos(),files=[];
-      for(const rel of rels){let info;try{info=await stat(join(mediaLibraryRoot,rel));}catch{continue;}
+    // Footage/Images library surface: the two tabs and the footage.*/images.* tool actions both land here.
+    async listLib(kind){const spec=libSpec(kind),stored=await readLibJson(kind),rels=await listLibraryFiles(kind),files=[];
+      for(const rel of rels){let info;try{info=await stat(join(libRootDir(kind),rel));}catch{continue;}
         const meta=stored.files[rel]??{};
         files.push({path:rel,name:rel.split('/').pop(),tags:normFootageTags(meta.tags),added_at:typeof meta.added_at==='string'?meta.added_at:info.mtime.toISOString(),size:info.size,mtime:info.mtime.toISOString()});}
       files.sort((a,b)=>b.mtime.localeCompare(a.mtime));return {files,groups:stored.groups,order:stored.order,open:stored.open};},
-    async footageRoot(){return mediaLibraryRoot;},
-    async addFootage(input={}){const raw=String(input.path??'').trim();if(!raw)throw new StudioStoreError('A source video path is required.');
+    async libRoot(kind){return libRootDir(kind);},
+    async addLib(kind,input={}){const spec=libSpec(kind),raw=String(input.path??'').trim();if(!raw)throw new StudioStoreError(`A source ${spec.type==='image'?'image':'video'} path is required.`);
       const source=isAbsolute(raw)?resolve(raw):resolve(workspace,raw);
-      return change(async()=>{let bytes;try{bytes=await readFile(source);}catch{throw new StudioStoreError('Source video could not be read.',404);}
-        let type;try{[type]=mediaType(basename(source),bytes);}catch{throw new StudioStoreError('Footage accepts MP4/MOV/WebM video files.',400);}
-        if(type!=='video')throw new StudioStoreError('Footage accepts video files only.',400);
-        return await copyIntoLibrary(basename(source),bytes,normFootageTags(input.tags),normFootageRel(input.subfolder));});},
-    async attachFootageFolder(input={}){const raw=String(input.path??'').trim();if(!raw)throw new StudioStoreError('A source folder path is required.');
+      return change(async()=>{let bytes;try{bytes=await readFile(source);}catch{throw new StudioStoreError('Source file could not be read.',404);}
+        let type;try{[type]=mediaType(basename(source),bytes);}catch{throw new StudioStoreError(`The library accepts ${spec.accept}.`,400);}
+        if(type!==spec.type)throw new StudioStoreError(`The library accepts ${spec.accept} only.`,400);
+        return await copyIntoLibrary(basename(source),bytes,normFootageTags(input.tags),normFootageRel(input.subfolder),kind);});},
+    async attachLibFolder(kind,input={}){const spec=libSpec(kind),raw=String(input.path??'').trim();if(!raw)throw new StudioStoreError('A source folder path is required.');
       const dir=isAbsolute(raw)?resolve(raw):resolve(workspace,raw);
       return change(async()=>{
         if(!(await readdir(dir).then(()=>true,()=>false)))throw new StudioStoreError('Source folder does not exist.',404);
-        // Mirror the source tree under media/: workspace-relative path inside, else the folder name.
+        // Mirror the source tree under the library root: workspace-relative path inside, else the folder name.
         const sub=normFootageRel(dir.startsWith(`${workspace}/`)?dir.slice(workspace.length+1):basename(dir));
         const tags=normFootageTags(input.tags);let added=0;
-        // ponytail: copyIntoLibrary rescans the library per file — fine for hundreds of clips.
+        // ponytail: copyIntoLibrary rescans the library per file — fine for hundreds of files.
         async function walk(source,prefix){for(const entry of await readdir(source,{withFileTypes:true})){if(entry.name.startsWith('.'))continue;const full=join(source,entry.name);
           if(entry.isDirectory()){await walk(full,prefix?`${prefix}/${entry.name}`:entry.name);continue;}
-          if(MEDIA_TYPES[extname(entry.name).toLowerCase()]?.[0]!=='video')continue;
+          if(MEDIA_TYPES[extname(entry.name).toLowerCase()]?.[0]!==spec.type)continue;
           let bytes;try{bytes=await readFile(full);}catch{continue;}
           try{mediaType(entry.name,bytes);}catch{continue;}
-          const out=await copyIntoLibrary(entry.name,bytes,tags,[sub,prefix].filter(Boolean).join('/'));
+          const out=await copyIntoLibrary(entry.name,bytes,tags,[sub,prefix].filter(Boolean).join('/'),kind);
           if(!out.skipped)added++;}}
         await walk(dir,'');return {added};});},
-    async tagFootage(input={}){const rel=normFootageRel(input.path);if(!rel)throw new StudioStoreError('A footage file path is required.');
+    async tagLib(kind,input={}){const rel=normFootageRel(input.path);if(!rel)throw new StudioStoreError('A library file path is required.');
       return change(async()=>{
-        if(!(await stat(join(mediaLibraryRoot,rel)).then(()=>true,()=>false)))throw new StudioStoreError('Footage file not found.',404);
-        const stored=await readFootageJson(),meta=stored.files[rel]??{tags:[],added_at:stamp()};
+        if(!(await stat(join(libRootDir(kind),rel)).then(()=>true,()=>false)))throw new StudioStoreError('Library file not found.',404);
+        const stored=await readLibJson(kind),meta=stored.files[rel]??{tags:[],added_at:stamp()};
         const add=normFootageTags(input.tags_add),remove=new Set(normFootageTags(input.tags_remove));
         const tags=[...new Set([...(Array.isArray(meta.tags)?meta.tags.map(tag=>String(tag).trim().toLowerCase()).filter(Boolean):[]),...add])].filter(tag=>!remove.has(tag));
-        stored.files[rel]={...meta,tags};await writeFootageJson(stored);return {path:rel,tags};});},
-    async addFootageGroup(input={}){const name=safeText(input.name,80).toLowerCase();if(!name)throw new StudioStoreError('A group name is required.');
-      return change(async()=>{const stored=await readFootageJson();if(!stored.groups.includes(name))stored.groups=[...stored.groups,name];await writeFootageJson(stored);return {groups:stored.groups};});},
-    async removeFootageGroup(input={}){const name=safeText(input.name,80).toLowerCase();
-      return change(async()=>{const stored=await readFootageJson();stored.groups=stored.groups.filter(group=>group!==name);await writeFootageJson(stored);return {groups:stored.groups};});},
+        stored.files[rel]={...meta,tags};await writeLibJson(kind,stored);return {path:rel,tags};});},
+    async addLibGroup(kind,input={}){const name=safeText(input.name,80).toLowerCase();if(!name)throw new StudioStoreError('A group name is required.');
+      return change(async()=>{const stored=await readLibJson(kind);if(!stored.groups.includes(name))stored.groups=[...stored.groups,name];await writeLibJson(kind,stored);return {groups:stored.groups};});},
+    async removeLibGroup(kind,input={}){const name=safeText(input.name,80).toLowerCase();
+      return change(async()=>{const stored=await readLibJson(kind);stored.groups=stored.groups.filter(group=>group!==name);await writeLibJson(kind,stored);return {groups:stored.groups};});},
     // Drag-reordered group layout: hand-written order list of group ids (a:<asset>, g:<group>, other); unlisted groups follow in default order.
-    async setFootageOrder(input={}){const order=Array.isArray(input.order)?[...new Set(input.order.map(row=>safeText(row,140)).filter(Boolean))]:[];
-      return change(async()=>{const stored=await readFootageJson();stored.order=order;await writeFootageJson(stored);return {order};});},
-    // Expand/collapse state of Footage groups survives refresh and tab close/reopen (kept in footage.json, per group id).
-    async setFootageOpen(input={}){const id=safeText(input.id,140);if(!id)throw new StudioStoreError('A group id is required.');const expanded=Boolean(input.expanded);
-      return change(async()=>{const stored=await readFootageJson();if(expanded)stored.open[id]=true;else delete stored.open[id];await writeFootageJson(stored);return {open:stored.open};});},
-    // Delete = move the real file to the OS trash (see moveToTrash) + drop its footage.json entry. Never a bare unlink.
-    async deleteFootage(input={}){const rel=normFootageRel(input.path);if(!rel)throw new StudioStoreError('A footage file path is required.');
+    async setLibOrder(kind,input={}){const order=Array.isArray(input.order)?[...new Set(input.order.map(row=>safeText(row,140)).filter(Boolean))]:[];
+      return change(async()=>{const stored=await readLibJson(kind);stored.order=order;await writeLibJson(kind,stored);return {order};});},
+    // Expand/collapse state of groups survives refresh and tab close/reopen (kept in the index file, per group id).
+    async setLibOpen(kind,input={}){const id=safeText(input.id,140);if(!id)throw new StudioStoreError('A group id is required.');const expanded=Boolean(input.expanded);
+      return change(async()=>{const stored=await readLibJson(kind);if(expanded)stored.open[id]=true;else delete stored.open[id];await writeLibJson(kind,stored);return {open:stored.open};});},
+    // Delete = move the real file to the OS trash (see moveToTrash) + drop its index entry. Never a bare unlink.
+    async deleteLib(kind,input={}){const rel=normFootageRel(input.path);if(!rel)throw new StudioStoreError('A library file path is required.');
       return change(async()=>{
-        const abs=join(mediaLibraryRoot,rel);
-        if(!(await stat(abs).then(()=>true,()=>false)))throw new StudioStoreError('Footage file not found.',404);
+        const abs=join(libRootDir(kind),rel);
+        if(!(await stat(abs).then(()=>true,()=>false)))throw new StudioStoreError('Library file not found.',404);
         const trashed=await moveToTrash(abs);
-        const stored=await readFootageJson();delete stored.files[rel];await writeFootageJson(stored);
+        const stored=await readLibJson(kind);delete stored.files[rel];await writeLibJson(kind,stored);
         return {path:rel,trashed_to:trashed};});},
+    // Footage names stay as the stable surface for the tool actions and the old routes.
+    footageList(){return this.listLib('footage');},
+    footageRoot(){return this.libRoot('footage');},
+    addFootage(input={}){return this.addLib('footage',input);},
+    attachFootageFolder(input={}){return this.attachLibFolder('footage',input);},
+    tagFootage(input={}){return this.tagLib('footage',input);},
+    addFootageGroup(input={}){return this.addLibGroup('footage',input);},
+    removeFootageGroup(input={}){return this.removeLibGroup('footage',input);},
+    setFootageOrder(input={}){return this.setLibOrder('footage',input);},
+    setFootageOpen(input={}){return this.setLibOpen('footage',input);},
+    deleteFootage(input={}){return this.deleteLib('footage',input);},
+    imagesList(){return this.listLib('images');},
+    imagesRoot(){return this.libRoot('images');},
+    addImages(input={}){return this.addLib('images',input);},
+    attachImagesFolder(input={}){return this.attachLibFolder('images',input);},
+    tagImages(input={}){return this.tagLib('images',input);},
+    addImagesGroup(input={}){return this.addLibGroup('images',input);},
+    removeImagesGroup(input={}){return this.removeLibGroup('images',input);},
+    setImagesOrder(input={}){return this.setLibOrder('images',input);},
+    setImagesOpen(input={}){return this.setLibOpen('images',input);},
+    deleteImages(input={}){return this.deleteLib('images',input);},
     async deleteAsset(kind,assetId){
       canonicalKind(kind);
       const result=await change(s=>{const index=s.assets.findIndex(value=>value.id===assetId&&value.kind===kind);if(index<0)throw new StudioStoreError('Asset not found.',404);if(s.shots.some(shot=>shot.layout_asset_id===assetId||shot.video_asset_id===assetId||shot.video_context?.upload_id===assetId||(shot.refs??[]).some(ref=>ref.asset_id===assetId)||(shot.voice_refs??[]).some(ref=>ref.asset_id===assetId)))throw new StudioStoreError('Cannot delete an asset referenced by a Production shot.');const [item]=s.assets.splice(index,1),paths=Object.values(item.files??{});s.files=s.files.filter(file=>!paths.includes(file.path));return {deleted:true,id:item.id,paths,folder:item.folder??null};});

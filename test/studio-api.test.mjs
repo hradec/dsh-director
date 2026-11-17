@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {mkdir,mkdtemp,readFile,rm,writeFile,stat} from 'node:fs/promises';
-import {realpathSync,readdirSync} from 'node:fs';
+import {realpathSync,readdirSync,readFileSync,writeFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {join,resolve as pathResolve,basename} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
@@ -141,17 +141,42 @@ test('temporary [job …] request-references placeholders are garbage-collected 
   assert.equal(jobs[0].ref_asset_id,null,'the dead job no longer points at a deleted asset');
 });
 
-test('footage open-in-comfyui: embedded SaveVideo metadata detected; probe, extraction, no ComfyUI hosts → json still delivered',async t=>{
-  const {base,root}=await setup(t);
-  process.env.DSH_DIRECTOR_COMFY_URLS='';   // no reachable ComfyUI in tests — extraction must still succeed
+test('footage open-in-comfyui: embedded SaveVideo metadata detected; probe, extraction, upload into the first answering comfy host',async t=>{
+  const {base,root}=await setup(t);   // comfyHosts()=[http://comfy.test]; default stub fetch answers ok everywhere
   await mkdir(join(root,'media'),{recursive:true});
   execFileSync('ffmpeg',['-y','-v','error','-f','lavfi','-i','color=c=red:s=64x64:d=0.2:r=10','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+use_metadata_tags','-metadata','prompt={"1":{"class_type":"KSampler","inputs":{}}}',join(root,'media','wfdemo.mp4')]);
   execFileSync('ffmpeg',['-y','-v','error','-f','lavfi','-i','color=c=blue:s=64x64:d=0.2:r=10','-c:v','libx264','-pix_fmt','yuv420p',join(root,'media','nowfdemo.mp4')]);
   assert.equal((await (await json(base,'/api/footage/comfy',{method:'POST',body:JSON.stringify({path:'wfdemo.mp4',probe:true})})).json()).has,true,'embedded prompt tag detected');
   assert.equal((await (await json(base,'/api/footage/comfy',{method:'POST',body:JSON.stringify({path:'nowfdemo.mp4',probe:true})})).json()).has,false,'plain video stays greyed out in the menu');
   const v=await (await json(base,'/api/footage/comfy',{method:'POST',body:JSON.stringify({path:'wfdemo.mp4'})})).json();
-  assert.equal(v.kind,'prompt');assert.ok(v.json.includes('KSampler'));assert.equal(v.host,'');assert.equal(v.uploaded,'');
+  assert.equal(v.kind,'prompt');assert.ok(v.json.includes('KSampler'));assert.equal(v.host,'http://comfy.test');assert.equal(v.uploaded,'workflows/dsh/wfdemo.json');
   assert.equal((await json(base,'/api/footage/comfy',{method:'POST',body:JSON.stringify({path:'../../etc/passwd'})})).status,404,'containment enforced');
+});
+
+test('images library (0.2.57): PNG import, tag, group, comfy tEXt probe/extraction, delete to OS trash',async t=>{
+  const {base,root}=await setup(t);
+  const trash=join(root,'trash-home');process.env.XDG_DATA_HOME=trash;t.after(()=>{delete process.env.XDG_DATA_HOME;});
+  // ComfyUI SaveImage embeds the graph as PNG tEXt chunks; inject one the same way (ffprobe cannot see these).
+  const crc32=buf=>{let crc=0xFFFFFFFF;for(const b of buf){crc^=b;for(let k=0;k<8;k++)crc=crc&1?0xEDB88329^(crc>>>1):crc>>>1;}return (crc^0xFFFFFFFF)>>>0;};
+  execFileSync('ffmpeg',['-y','-v','error','-f','lavfi','-i','color=c=green:s=64x64:d=1','-frames:v','1',join(root,'demo.png')]);
+  const png=readFileSync(join(root,'demo.png')),text=Buffer.from('prompt\0'+JSON.stringify({12:{class_type:'KSampler',inputs:{}}})),head=Buffer.concat([Buffer.from('tEXt'),text]);
+  const len=Buffer.alloc(4);len.writeUInt32BE(text.length);const crc=Buffer.alloc(4);crc.writeUInt32BE(crc32(head));
+  writeFileSync(join(root,'demo.png'),Buffer.concat([png.subarray(0,33),len,head,crc,png.subarray(33)]));
+  execFileSync('ffmpeg',['-y','-v','error','-f','lavfi','-i','color=c=blue:s=64x64:d=0.2:r=10','-c:v','libx264','-pix_fmt','yuv420p',join(root,'clip.mp4')]);
+  assert.equal((await json(base,'/api/images',{method:'POST',body:JSON.stringify({path:'demo.png',tags:['nelare']})})).status,201,'png accepted');
+  assert.equal((await json(base,'/api/images',{method:'POST',body:JSON.stringify({path:'clip.mp4'})})).status,400,'video rejected from the images library');
+  const list=await (await json(base,'/api/images')).json();
+  assert.deepEqual(list.files.map(f=>f.path),['demo.png']);assert.equal(list.files[0].thumb,null,'images serve their own bytes as thumbnail');
+  assert.equal((await (await json(base,'/api/images/comfy',{method:'POST',body:JSON.stringify({path:'demo.png',probe:true})})).json()).has,true,'embedded tEXt prompt chunk detected');
+  const v=await (await json(base,'/api/images/comfy',{method:'POST',body:JSON.stringify({path:'demo.png'})})).json();
+  assert.equal(v.kind,'prompt');assert.ok(v.json.includes('KSampler'));assert.equal(v.host,'http://comfy.test');assert.equal(v.uploaded,'workflows/dsh/demo.json');
+  assert.equal((await json(base,'/api/images/group',{method:'POST',body:JSON.stringify({name:'Episode 1'})})).status,200,'group created');
+  assert.equal((await (await json(base,'/api/images/refs',{method:'PUT',body:JSON.stringify({path:'demo.png',tags_add:['episode-1']})})).json()).tags.join(','),'nelare,episode-1','tags overlay');
+  assert.equal((await json(base,'/api/images/refs',{method:'PUT',body:JSON.stringify({path:'../../etc/passwd',tags_add:['x']})})).status,404,'containment enforced');
+  const del=await (await json(base,'/api/images/delete',{method:'POST',body:JSON.stringify({paths:['demo.png']})})).json();
+  assert.equal(del.results[0].path,'demo.png');assert.ok(del.results[0].trashed_to.includes('trash-home/Trash/files/demo.png'),'image went to the OS trash');
+  assert.equal(readdirSync(join(trash,'Trash','files')).includes('demo.png'),true);
+  assert.deepEqual((await (await json(base,'/api/images')).json()).files,[],'catalog empty after delete');
 });
 
 test('footage playback: suffix Range 206, moov-at-end served faststart, ffmpeg poster thumb',async t=>{
