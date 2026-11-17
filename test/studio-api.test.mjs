@@ -141,6 +141,19 @@ test('temporary [job …] request-references placeholders are garbage-collected 
   assert.equal(jobs[0].ref_asset_id,null,'the dead job no longer points at a deleted asset');
 });
 
+test('footage open-in-comfyui: embedded SaveVideo metadata detected; probe, extraction, no ComfyUI hosts → json still delivered',async t=>{
+  const {base,root}=await setup(t);
+  process.env.DSH_DIRECTOR_COMFY_URLS='';   // no reachable ComfyUI in tests — extraction must still succeed
+  await mkdir(join(root,'media'),{recursive:true});
+  execFileSync('ffmpeg',['-y','-v','error','-f','lavfi','-i','color=c=red:s=64x64:d=0.2:r=10','-c:v','libx264','-pix_fmt','yuv420p','-metadata','prompt={"1":{"class_type":"KSampler","inputs":{}}}',join(root,'media','wfdemo.mp4')]);
+  execFileSync('ffmpeg',['-y','-v','error','-f','lavfi','-i','color=c=blue:s=64x64:d=0.2:r=10','-c:v','libx264','-pix_fmt','yuv420p',join(root,'media','nowfdemo.mp4')]);
+  assert.equal((await (await json(base,'/api/footage/comfy',{method:'POST',body:JSON.stringify({path:'wfdemo.mp4',probe:true})})).json()).has,true,'embedded prompt tag detected');
+  assert.equal((await (await json(base,'/api/footage/comfy',{method:'POST',body:JSON.stringify({path:'nowfdemo.mp4',probe:true})})).json()).has,false,'plain video stays greyed out in the menu');
+  const v=await (await json(base,'/api/footage/comfy',{method:'POST',body:JSON.stringify({path:'wfdemo.mp4'})})).json();
+  assert.equal(v.kind,'prompt');assert.ok(v.json.includes('KSampler'));assert.equal(v.host,'');assert.equal(v.uploaded,'');
+  assert.equal((await json(base,'/api/footage/comfy',{method:'POST',body:JSON.stringify({path:'../../etc/passwd'})})).status,404,'containment enforced');
+});
+
 test('footage playback: suffix Range 206, moov-at-end served faststart, ffmpeg poster thumb',async t=>{
   const {base,root}=await setup(t);
   await mkdir(join(root,'media','ep1'),{recursive:true});

@@ -117,6 +117,12 @@ function videoDuration(file){return new Promise(resolve=>{execFile('ffprobe',['-
 // Real source height — the 480p preview the LLM watches cannot reveal the true resolution, so we probe it.
 function videoHeight(file){return new Promise(resolve=>{execFile('ffprobe',['-v','error','-select_streams','v:0','-show_entries','stream=height','-of','csv=p=0',file],{timeout:20000},(error,stdout)=>resolve(error?0:Number(String(stdout).trim())||0));});}
 function resolutionTag(height){return height>=2000?'4k':height>=1000?'2k':height>=600?'720p':height>0?'480p':'';}
+// ComfyUI SaveVideo embeds the graph in container metadata: `workflow` (UI format) preferred, `prompt` (API format) fallback.
+function embeddedComfyWorkflow(file){return new Promise(resolve=>{execFile('ffprobe',['-v','error','-show_entries','format_tags=prompt,workflow','-of','json',file],{timeout:20000},(error,stdout)=>{if(error){resolve(null);return;}
+  try{const tags=JSON.parse(String(stdout))?.format?.tags??{};if(String(tags.workflow??'').includes('nodes'))resolve({kind:'workflow',json:tags.workflow});else if(String(tags.prompt??'').includes('class_type'))resolve({kind:'prompt',json:tags.prompt});else resolve(null);}catch{resolve(null);}});});}
+// No server is configured for the studio — try the known instances in order, first that answers wins (human chose this; wrong host only means missing models).
+async function firstOnlineComfy(fetchImpl){const candidates=String(process.env.DSH_DIRECTOR_COMFY_URLS??'http://240.1.0.100:8188,http://240.0.0.242:8188,http://240.0.0.243:8188').split(',').map(entry=>entry.trim()).filter(Boolean);
+  for(const base of candidates){try{const r=await fetchImpl(`${base}/system_stats`,{signal:AbortSignal.timeout(3000)});if(r.ok)return base;}catch{}}return '';}
 function ensureFootageThumb(store,source){
   const info=statSync(source);
   const key=createHash('sha1').update(`${source}|${info.mtimeMs}|${info.size}`).digest('hex');
@@ -318,6 +324,24 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       if(path==='/api/footage/delete'&&req.method==='POST'){const b=await readJson(req,controller.signal);
         const results=[];for(const p of Array.isArray(b.paths)?b.paths:[]){try{results.push(await store.deleteFootage({path:p}));}catch(e){results.push({path:String(p),error:String(e.message||e)});}}
         sendJson(res,200,{results});return;}
+      // "Open in ComfyUI": ComfyUI's SaveVideo embeds the whole graph in the file's metadata (UI `workflow` tag, else API `prompt` tag).
+      // probe:true → just presence (the menu greys the item out). Full call → extract, hand JSON to the browser, push it into the first ComfyUI that answers.
+      if(path==='/api/footage/comfy'&&req.method==='POST'){
+        const b=await readJson(req,controller.signal);
+        const rel=String(b.path??''),root=await store.footageRoot(),abs=join(root,rel);
+        if(!rel||!abs.startsWith(root+sep)||!existsSync(abs)){sendJson(res,404,{detail:'Footage file not found.'});return;}
+        const wf=await embeddedComfyWorkflow(abs);
+        if(b.probe){sendJson(res,200,{has:Boolean(wf)});return;}
+        if(!wf){sendJson(res,404,{detail:'No embedded ComfyUI workflow in this file.'});return;}
+        const base=await firstOnlineComfy(fetchImpl);
+        let uploaded='';
+        if(base){
+          const name=`workflows/dsh/${rel.replace(/\.mp4$/i,'')}.json`;
+          const v2=await fetchImpl(`${base}/api/userdata/v2/${name.split('/').map(encodeURIComponent).join('/')}`,{method:'PUT',signal:controller.signal,headers:{'content-type':'application/json'},body:JSON.stringify({content:wf.json})}).catch(()=>null);
+          if(v2?.ok)uploaded=name;
+          else{const v1=await fetchImpl(`${base}/api/userdata?path=${encodeURIComponent(name)}`,{method:'PUT',signal:controller.signal,headers:{'content-type':'application/json'},body:wf.json}).catch(()=>null);if(v1?.ok)uploaded=name;}
+        }
+        sendJson(res,200,{kind:wf.kind,json:wf.json,host:base,uploaded});return;}
       if(path==='/api/footage/order'&&req.method==='PUT'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.setFootageOrder({order:Array.isArray(b.order)?b.order:[]}));return;}
       // Poster for a footage video: one ffmpeg frame, cached in .director-studio/footage-thumbs (streamed here, never via /api/file).
       if(path==='/api/footage/thumb'&&['GET','HEAD'].includes(req.method)){

@@ -175,6 +175,22 @@ export function FootageBoard(){
       </div>
     </div>
   </div>;
+  // "Open in ComfyUI": presence of an embedded graph is probed once per clip when the menu opens; the item greys out when absent.
+  const [comfyKnown,setComfyKnown]=useState({});
+  useEffect(()=>{
+    if(!menu||menu.file.path in comfyKnown)return;
+    setComfyKnown((k)=>({...k,[menu.file.path]:'pending'}));
+    post('/api/footage/comfy','POST',{path:menu.file.path,probe:true}).then((v)=>setComfyKnown((k)=>({...k,[menu.file.path]:Boolean(v?.has)}))).catch(()=>setComfyKnown((k)=>({...k,[menu.file.path]:false})));
+  },[menu]);
+  const openComfy=async(f)=>{
+    const tab=window.open('about:blank','_blank');   // sync with the click so the popup blocker stays asleep
+    try{
+      const v=await post('/api/footage/comfy','POST',{path:f.path});
+      try{await navigator.clipboard.writeText(v.json);}catch{}
+      if(tab&&v.host)tab.location.href=v.host;else if(tab)tab.close();
+      setNotice(v.host?`ComfyUI opened — paste (Ctrl+V) the copied workflow onto its canvas${v.uploaded?` · also saved there as ${v.uploaded}`:''}${v.kind==='prompt'?' (API graph — the new UI converts it)':''}.`:'No ComfyUI answered on the usual hosts — the workflow JSON is on your clipboard.');
+    }catch(e){if(tab)tab.close();setError(String(e.message||e));}
+  };
   return <main className="panel footage-board" aria-label="Footage">
     {error?<div className="banner error" role="alert">{error}</div>:null}
     <div className="footage-bar">
@@ -233,6 +249,8 @@ export function FootageBoard(){
     {menu?<div className="footage-menu" style={{left:`${menu.x}px`,top:`${menu.y}px`}}>
       <button type="button" onClick={()=>void copyPath(menu.file)}>Copy path to clipboard</button>
       <button type="button" onClick={()=>{const f=menu.file;setMenu(null);void tagAi(f);}}>AI tag / re-tag</button>
+      <button type="button" disabled={comfyKnown[menu.file.path]!==true} title={comfyKnown[menu.file.path]===false?'This file has no ComfyUI workflow embedded in its metadata':'Load the workflow embedded in this file into ComfyUI'}
+        onClick={()=>{const f=menu.file;setMenu(null);void openComfy(f);}}>{comfyKnown[menu.file.path]==='pending'?'Open in ComfyUI…':'Open in ComfyUI'}</button>
     </div>:null}
     {playing?<div className="footage-viewer" role="dialog" onClick={()=>setPlaying(null)}>
       <div className="footage-viewer-body" onClick={(e)=>e.stopPropagation()}>

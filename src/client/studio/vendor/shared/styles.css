@@ -7380,6 +7380,7 @@ select {
 .footage-menu{position:fixed;z-index:80;min-width:12rem;padding:.25rem;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
 .footage-menu button{display:block;width:100%;text-align:left;background:none;border:0;padding:.4rem .55rem;border-radius:6px;color:var(--text);font:inherit;font-size:.8rem;cursor:pointer}
 .footage-menu button:hover{background:var(--accent-soft)}
+.footage-menu button:disabled{opacity:.42;cursor:default;background:none}
 .footage-viewer{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.72);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.6rem;padding:1rem}
 .footage-viewer-body{display:flex;align-items:center;justify-content:center;min-width:0;min-height:0}
 .footage-viewer video{max-width:92vw;max-height:82vh;border-radius:10px;background:#000}
