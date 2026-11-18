@@ -185,15 +185,17 @@ test('library refs by tag (0.2.58): library files tagged with the asset name joi
   const created=await fetch(`${base}/api/library/import`,{method:'POST',headers:{'x-director-session':'session-a'},body:form});assert.equal(created.status,201);const asset=await created.json();
   const form2=new FormData();form2.set('kind','actors');form2.set('name','Mira');form2.set('project_id',project.id);form2.set('file',new Blob([png],{type:'image/png'}),'mira.png');
   assert.equal((await fetch(`${base}/api/library/import`,{method:'POST',headers:{'x-director-session':'session-a'},body:form2})).status,201);
-  await writeFile(join(root,'widge-hero.png'),png);await writeFile(join(root,'widge-study.png'),Buffer.concat([png,Buffer.from('study')]));// distinct bytes — the library dedupes identical files by design
+  await writeFile(join(root,'widge-hero.png'),png);await writeFile(join(root,'widge-study.png'),Buffer.concat([png,Buffer.from('study')]));await writeFile(join(root,'widge-plain.png'),Buffer.concat([png,Buffer.from('plain')]));// distinct bytes — the library dedupes identical files by design
   assert.equal((await json(base,'/api/images',{method:'POST',body:JSON.stringify({path:'widge-hero.png',tags:['widgeon','approved','body']})})).status,201);
   assert.equal((await json(base,'/api/images',{method:'POST',body:JSON.stringify({path:'widge-study.png',tags:['widgeon','brainstorming']})})).status,201);
+  assert.equal((await json(base,'/api/images',{method:'POST',body:JSON.stringify({path:'widge-plain.png',tags:['widgeon']})})).status,201);
   const list=await (await json(base,'/api/library?kind=actors')).json();
   const widgeon=list.find(item=>item.id===asset.id),mira=list.find(item=>item.name==='Mira');
   assert.deepEqual(widgeon.library_refs.map(r=>r.path),['widge-hero.png','widge-study.png'],'approved first, both linked by the name tag');
   assert.equal(widgeon.library_refs[0].approved,true);assert.ok(widgeon.library_refs[0].tags.includes('body'));assert.ok(widgeon.library_refs[0].url.includes('/api/file?path='+encodeURIComponent(join(root,'images','widge-hero.png'))),'Assets board gets a playable url at the true library path');
   assert.equal(widgeon.library_refs[1].approved,false);assert.equal(widgeon.library_refs[1].brainstorming,true);
   assert.deepEqual(mira.library_refs,[],'untagged library files connect to nothing');
+  assert.ok(!widgeon.library_refs.some(r=>r.path==='widge-plain.png'),'asset-name tag alone groups in the tab but does not link the board — needs approved or brainstorming');
 });
 
 test('footage playback: suffix Range 206, moov-at-end served faststart, ffmpeg poster thumb',async t=>{
