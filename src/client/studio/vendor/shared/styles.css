@@ -7378,7 +7378,7 @@ select {
 .footage-dialog-actions{display:flex;gap:.5rem}
 .footage-groups{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.7rem;align-items:start;margin-top:.5rem}
 /* The group's rounded box is split head+body so the title keeps the box's top edge (round corners + border) while the body scrolls neatly under it. */
-.footage-group{display:grid;gap:0;border-radius:10px}
+.footage-group{display:grid;gap:0;border-radius:10px;position:relative}
 .footage-group-wide{grid-column:1/-1}
 /* head paints a square wash (covers the corner notch, so the body's border never peeks); the rounded border is drawn by ::before over it — a real border on head would be painted under the wash and vanish. */
 .footage-group-head{display:flex;align-items:center;gap:.35rem;cursor:grab;position:sticky;top:0;z-index:3;padding:.55rem .7rem;background:color-mix(in srgb,var(--text) 3%,var(--bg))}
@@ -7388,8 +7388,10 @@ select {
 .footage-strip img{flex:0 0 auto;height:72px;width:120px;object-fit:cover;border-radius:8px;border:1px solid var(--border-strong);background:color-mix(in srgb,var(--text) 4%,transparent)}
 .footage-strip-empty,.footage-strip-more{flex:0 0 auto;min-width:120px;height:72px;display:inline-flex;align-items:center;justify-content:center;border:1px dashed var(--border-strong);border-radius:8px;color:color-mix(in srgb,var(--text) 55%,transparent);font-size:.75rem;letter-spacing:.06em}
 .footage-dragging{opacity:.4}
-.footage-drop-before{box-shadow:inset 3px 0 0 var(--accent)}
-.footage-drop-after{box-shadow:inset -3px 0 0 var(--accent)}
+/* Drop anchor must paint OVER the group head/body backgrounds (0.2.51 gave them opaque fills, which buried the old inset box-shadow) — real overlay bar instead. */
+.footage-drop-before::after,.footage-drop-after::after{content:"";position:absolute;top:4px;bottom:4px;width:5px;border-radius:3px;background:var(--accent);box-shadow:0 0 8px color-mix(in srgb,var(--accent) 70%,transparent);z-index:4;pointer-events:none}
+.footage-drop-before::after{left:-3px}
+.footage-drop-after::after{right:-3px}
 .footage-group-toggle{display:inline-flex;align-items:center;gap:.35rem;background:none;border:0;padding:.2rem 0;color:var(--text);font:inherit;font-weight:600;font-size:.9rem;cursor:pointer}
 .footage-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:.6rem}
 .footage-card{position:relative;border:1px solid var(--border-strong);border-radius:7px;overflow:hidden;cursor:pointer;background:color-mix(in srgb,var(--text) 4%,transparent)}
