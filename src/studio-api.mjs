@@ -5,6 +5,7 @@ import {Readable} from 'node:stream';
 import {createReadStream,statSync,fstatSync,realpathSync,readdirSync,readFileSync,rmSync,existsSync,mkdirSync,writeFileSync,openSync,closeSync,readSync,utimesSync} from 'node:fs';
 import {execFile} from 'node:child_process';
 import {isAbsolute,join,sep,extname} from 'node:path';
+import {apiToUi} from './comfy-api-to-ui.mjs';
 import {homedir,tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 
@@ -373,14 +374,15 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
           if(b.probe){sendJson(res,200,{has:Boolean(wf)});return;}
           if(!wf){sendJson(res,404,{detail:'No embedded ComfyUI workflow in this file.'});return;}
           const base=await firstOnlineComfy({comfyHosts,store,fetchImpl,signal:controller.signal});
-          let uploaded='';
+          // Convert API graphs to UI format with the target host's own /object_info so the browser clipboard can be pasted anywhere (the UI paste path does NOT convert API format itself; File→Open does).
+          let uploaded='',ui='';if(wf.kind==='prompt'&&base){try{const oi=await fetchImpl(`${base}/object_info`,{signal:controller.signal}).then((r)=>r.ok?r.json():null);if(oi){const conv=apiToUi(JSON.parse(wf.json),oi);if(conv)ui=JSON.stringify(conv);}}catch{}}
           if(base){
             const name=`workflows/dsh/${String(rel).replace(/\.[a-z0-9]+$/i,'')}.json`;
-            const v2=await fetchImpl(`${base}/api/userdata/v2/${name.split('/').map(encodeURIComponent).join('/')}`,{method:'PUT',signal:controller.signal,headers:{'content-type':'application/json'},body:JSON.stringify({content:wf.json})}).catch(()=>null);
+            const v2=await fetchImpl(`${base}/api/userdata/v2/${name.split('/').map(encodeURIComponent).join('/')}`,{method:'PUT',signal:controller.signal,headers:{'content-type':'application/json'},body:JSON.stringify({content:ui||wf.json})}).catch(()=>null);
             if(v2?.ok)uploaded=name;
-            else{const v1=await fetchImpl(`${base}/api/userdata?path=${encodeURIComponent(name)}`,{method:'PUT',signal:controller.signal,headers:{'content-type':'application/json'},body:wf.json}).catch(()=>null);if(v1?.ok)uploaded=name;}
+            else{const v1=await fetchImpl(`${base}/api/userdata?path=${encodeURIComponent(name)}`,{method:'PUT',signal:controller.signal,headers:{'content-type':'application/json'},body:ui||wf.json}).catch(()=>null);if(v1?.ok)uploaded=name;}
           }
-          sendJson(res,200,{kind:wf.kind,json:wf.json,host:base,uploaded});return;}
+          sendJson(res,200,{kind:wf.kind,json:wf.json,ui:ui||undefined,host:base,uploaded});return;}
         if(sub==='order'&&req.method==='PUT'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.setLibOrder(kind,{order:Array.isArray(b.order)?b.order:[]}));return;}
         // Poster for a footage video: one ffmpeg frame, cached in .director-studio/footage-thumbs (streamed here, never via /api/file). Images serve their own bytes.
         if(sub==='thumb'&&['GET','HEAD'].includes(req.method)){

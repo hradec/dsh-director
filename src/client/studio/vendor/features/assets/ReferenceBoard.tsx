@@ -114,9 +114,9 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
       const res = await fetch(`/api/${target.seg}/comfy`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(target.body) });
       const v = await res.json().catch(() => null);
       if (!res.ok) throw new Error(v?.detail ?? `comfy ${res.status}`);
-      try { await navigator.clipboard.writeText(v.json); } catch { /* clipboard may be blocked; the tab still opens */ }
+      try { await navigator.clipboard.writeText(v.ui ?? v.json); } catch { /* clipboard may be blocked; the tab still opens */ }   // UI format when converted — paste needs UI graphs
       if (v.host) window.open(v.host, "_blank");
-      setNotice(v.host ? `ComfyUI opened — paste (Ctrl+V) the copied workflow onto its canvas${v.uploaded ? ` · also saved there as ${v.uploaded} (Workflows panel)` : ""}.` : "No ComfyUI answered — the workflow JSON is on your clipboard.");
+      setNotice(v.host ? `ComfyUI opened — paste (Ctrl+V) onto its canvas (converted to editor format${v.ui ? "" : ", raw API graph — use File→Open"})${v.uploaded ? ` · also saved there as ${v.uploaded} (Workflows panel)` : ""}.` : "No ComfyUI answered — the workflow JSON is on your clipboard.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

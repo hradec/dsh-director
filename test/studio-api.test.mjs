@@ -150,6 +150,9 @@ test('footage open-in-comfyui: embedded SaveVideo metadata detected; probe, extr
   assert.equal((await (await json(base,'/api/footage/comfy',{method:'POST',body:JSON.stringify({path:'nowfdemo.mp4',probe:true})})).json()).has,false,'plain video stays greyed out in the menu');
   const v=await (await json(base,'/api/footage/comfy',{method:'POST',body:JSON.stringify({path:'wfdemo.mp4'})})).json();
   assert.equal(v.kind,'prompt');assert.ok(v.json.includes('KSampler'));assert.equal(v.host,'http://comfy.test');assert.equal(v.uploaded,'workflows/dsh/wfdemo.json');
+  assert.ok(v.ui,'stub object_info still yields a UI-format conversion');
+  const ui=JSON.parse(v.ui);
+  assert.ok(Array.isArray(ui.nodes)&&Array.isArray(ui.links)&&ui.nodes.some((node)=>node.widgets_values!==undefined),'editor-format clipboard payload');
   assert.equal((await json(base,'/api/footage/comfy',{method:'POST',body:JSON.stringify({path:'../../etc/passwd'})})).status,404,'containment enforced');
 });
 
@@ -531,4 +534,22 @@ test('tag-ai on an asset reference (asset mode): vision tags land in the asset r
   assert.equal(seen[0].messages[0].content[1].type,'image_url','the asset picture traveled as an image part');
   const assets=await (await json(base,'/api/library?kind=actors')).json();
   assert.ok((assets.find((v)=>v.id===a.id).ref_meta?.master?.tags??[]).includes('studio shot'),'ref_meta persisted on the asset');
+});
+
+test('comfy api→ui converter: schema widgets, hidden inputs skipped, links by slot name, layered layout',async t=>{
+  const {apiToUi}=await import('../src/comfy-api-to-ui.mjs');
+  const objectInfo={KSampler:{input:{required:{seed:['INT',{default:42}],steps:['INT',{default:20}]},optional:{latent_image:['LATENT']},hidden:{foo:'*'}},output:['LATENT'],output_name:['LATENT']},VAELoader:{input:{required:{vae:[['taesd']]},hidden:{}},output:['LATENT'],output_name:['LATENT']},Mystery:{input:{hidden:{}}}};
+  const prompt={'1':{class_type:'VAELoader',inputs:{vae:'taesd'}},'2':{class_type:'KSampler',inputs:{seed:7,steps:30,latent_image:['1',0],not_declared:['1',0]}},'3':{class_type:'Mystery',inputs:{some_text:'hello'}}};
+  const ui=apiToUi(prompt,objectInfo);
+  assert.ok(ui&&Array.isArray(ui.nodes));
+  const k=ui.nodes.find((node)=>node.type==='KSampler');
+  assert.deepEqual(k.widgets_values,[7,30],'prompt values win over schema defaults, hidden inputs are not widgets');
+  assert.ok(ui.nodes.find((node)=>node.type==='VAELoader').widgets_values[0]==='taesd');
+  const fed=k.inputs.filter((input)=>input.link!==null).map((input)=>input.name);
+  assert.ok(fed.includes('latent_image')&&fed.includes('not_declared'),'declared and undeclared fed inputs both get sockets');
+  const link=ui.links.find((l)=>l[4]==='latent_image');
+  assert.ok(link&&link[5]==='LATENT','link carries the source output type');
+  const m=ui.nodes.find((node)=>node.type==='Mystery');
+  assert.deepEqual(m.widgets_values,['hello'],'unknown classes still get a loadable node with the prompt constants');
+  assert.ok(ui.nodes.find((node)=>node.type==='VAELoader').pos[0]<k.pos[0],'producers placed left of consumers');
 });

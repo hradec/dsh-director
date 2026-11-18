@@ -193,10 +193,10 @@ export function FootageBoard({lib='footage'}={}){
     // the fetch is local, well inside the popup blocker's activation window.
     try{
       const v=await post(api('/comfy'),'POST',{path:f.path});
-      try{await navigator.clipboard.writeText(v.json);}catch{}
+      try{await navigator.clipboard.writeText(v.ui??v.json);}catch{}   // UI format when converted — the canvas paste path only takes UI graphs
       const tab=v.host?window.open(v.host,'_blank'):null;
       if(!tab)setNotice(v.host?'Popup blocked — allow popups, then click again (the workflow is on your clipboard).':'No ComfyUI answered — the workflow JSON is on your clipboard.');
-      setNotice(v.host?`ComfyUI opened — paste (Ctrl+V) the copied workflow onto its canvas${v.uploaded?` · also saved there as ${v.uploaded} (Workflows panel)`:''}${v.kind==='prompt'?' (API graph — the new UI converts it)':''}.`:'No ComfyUI answered on the usual hosts — the workflow JSON is on your clipboard.');
+      setNotice(v.host?`ComfyUI opened — paste (Ctrl+V) onto its canvas (converted to editor format${v.ui?'':', raw API graph — use File→Open'})${v.uploaded?` · also saved there as ${v.uploaded} (Workflows panel)`:''}.`:'No ComfyUI answered on the usual hosts — the workflow JSON is on your clipboard.');
     }catch(e){setError(String(e.message||e));}
   };
   return <main className="panel footage-board" aria-label={lib==='images'?'Images':'Footage'}>
