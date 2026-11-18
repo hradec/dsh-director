@@ -179,6 +179,23 @@ test('images library (0.2.57): PNG import, tag, group, comfy tEXt probe/extracti
   assert.deepEqual((await (await json(base,'/api/images')).json()).files,[],'catalog empty after delete');
 });
 
+test('library refs by tag (0.2.58): library files tagged with the asset name join the asset; approved wins over brainstorming',async t=>{
+  const {base,root,project}=await setup(t);
+  const form=new FormData();form.set('kind','actors');form.set('name','Widgeon');form.set('project_id',project.id);form.set('file',new Blob([png],{type:'image/png'}),'widgeon.png');
+  const created=await fetch(`${base}/api/library/import`,{method:'POST',headers:{'x-director-session':'session-a'},body:form});assert.equal(created.status,201);const asset=await created.json();
+  const form2=new FormData();form2.set('kind','actors');form2.set('name','Mira');form2.set('project_id',project.id);form2.set('file',new Blob([png],{type:'image/png'}),'mira.png');
+  assert.equal((await fetch(`${base}/api/library/import`,{method:'POST',headers:{'x-director-session':'session-a'},body:form2})).status,201);
+  await writeFile(join(root,'widge-hero.png'),png);await writeFile(join(root,'widge-study.png'),Buffer.concat([png,Buffer.from('study')]));// distinct bytes — the library dedupes identical files by design
+  assert.equal((await json(base,'/api/images',{method:'POST',body:JSON.stringify({path:'widge-hero.png',tags:['widgeon','approved','body']})})).status,201);
+  assert.equal((await json(base,'/api/images',{method:'POST',body:JSON.stringify({path:'widge-study.png',tags:['widgeon','brainstorming']})})).status,201);
+  const list=await (await json(base,'/api/library?kind=actors')).json();
+  const widgeon=list.find(item=>item.id===asset.id),mira=list.find(item=>item.name==='Mira');
+  assert.deepEqual(widgeon.library_refs.map(r=>r.path),['widge-hero.png','widge-study.png'],'approved first, both linked by the name tag');
+  assert.equal(widgeon.library_refs[0].approved,true);assert.ok(widgeon.library_refs[0].tags.includes('body'));assert.ok(widgeon.library_refs[0].url.includes('/api/file?path='),'Assets board gets a playable url');
+  assert.equal(widgeon.library_refs[1].approved,false);assert.equal(widgeon.library_refs[1].brainstorming,true);
+  assert.deepEqual(mira.library_refs,[],'untagged library files connect to nothing');
+});
+
 test('footage playback: suffix Range 206, moov-at-end served faststart, ffmpeg poster thumb',async t=>{
   const {base,root}=await setup(t);
   await mkdir(join(root,'media','ep1'),{recursive:true});

@@ -7264,6 +7264,8 @@ select {
 .reference-board-toggle:hover { color: var(--accent); }
 .reference-tile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.85rem; }
 .reference-tile { position: relative; display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
+/* Tag-linked library refs (0.2.58): dashed frame marks "lives in images//media/, tags edited there". */
+.reference-tile-library .folder-file-card { border: 1px dashed var(--border-strong); border-radius: 10px; padding: .35rem; }
 .reference-delete {
   position: absolute;
   top: -0.5rem;

@@ -32,7 +32,11 @@ function parseMultipart(bytes,contentType){
 }
 async function readMultipart(req,signal,maxBytes=studioStoreConstants.maxAssetBytes+1024*1024){return parseMultipart(await bodyBytes(req,maxBytes,signal),String(req.headers['content-type']??''));}
 const fileUrl=(kind,assetId,key,session)=>`/director-studio/api/files/library/${encodeURIComponent(kind)}/${encodeURIComponent(assetId)}/${encodeURIComponent(key)}?session=${encodeURIComponent(session??'')}`;
-function presentAsset(item,session){const urls={},files={};for(const key of Object.keys(item.files??{})){urls[key]=fileUrl(item.kind,item.id,key,session);files[key]=item.file_names?.[key]||item.files[key].split(/[\\/]/).pop();}const {file_names,...publicItem}=item;return {...publicItem,files,urls};}
+function presentAsset(item,session,storeRoot){const urls={},files={};for(const key of Object.keys(item.files??{})){urls[key]=fileUrl(item.kind,item.id,key,session);files[key]=item.file_names?.[key]||item.files[key].split(/[\\/]/).pop();}
+  // Tag-linked library refs (0.2.58): library pictures/clips join the asset by tag — give the Assets board direct URLs for them.
+  const library_refs=(item.library_refs??[]).map(ref=>{const abs=join(storeRoot??'',ref.library==='images'?'images':'media',ref.path);
+    return {...ref,url:`/director-studio/api/file?path=${encodeURIComponent(abs)}&session=${encodeURIComponent(session??'')}`,thumb:ref.library==='footage'?`/director-studio/api/footage/thumb?path=${encodeURIComponent(abs)}&session=${encodeURIComponent(session??'')}`:null};});
+  const {file_names,...publicItem}=item;return {...publicItem,files,urls,library_refs};}
 // Jobs mirror the upstream Casting/Set/Props job records; outputs materialize once DSH imports an asset carrying the job token.
 function presentGenerationRecord(job,session){
   const outputs={},output_order=[];
@@ -438,7 +442,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         if(!section&&req.method==='GET'){
           const [assets,jobs]=await Promise.all([store.listAssets({kind,project_id:project.id}),store.listGenerationJobs({kind,project_id:project.id,limit:100})]);
           const byJob=new Map(),byAsset=new Map();for(const job of jobs.slice().reverse()){byJob.set(job.id,job);if(job.asset_id)byAsset.set(job.asset_id,job);}// jobs arrive newest-first; reversing makes the newest job overwrite older ones.
-          const items=assets.filter(item=>!item.meta?.temporary_job_refs).map(item=>{const job=byJob.get(item.job_id)??byAsset.get(item.id);return {...presentAsset(item,sessionId),form:job?generationForm(job):null,references:job?assetReferences(job,sessionId):null};});
+          const items=assets.filter(item=>!item.meta?.temporary_job_refs).map(item=>{const job=byJob.get(item.job_id)??byAsset.get(item.id);return {...presentAsset(item,sessionId,store.root),form:job?generationForm(job):null,references:job?assetReferences(job,sessionId):null};});
           sendJson(res,200,{items});return;
         }
         if(section==='generate'&&req.method==='POST'){
@@ -457,37 +461,37 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         if(section==='jobs'&&jobId&&action==='save'&&req.method==='POST'){
           const body=await readJson(req,controller.signal);const job=await store.getGenerationJob(jobId);if(!job||job.project_id!==project.id){sendJson(res,404,{detail:'No plugin-managed asset job exists.'});return;}
           if(!job.asset_id)throw new StudioStoreError('DSH has not imported the generated asset yet. Complete the DSH request first; saving happens when the agent imports it with this job id.',409);
-          sendJson(res,200,presentAsset(await store.updateAsset(kind,job.asset_id,{...(typeof body.name==='string'&&body.name.trim()?{name:body.name.trim()}:{}),...(typeof body.notes==='string'?{notes:body.notes}:{})}),sessionId));return;
+          sendJson(res,200,presentAsset(await store.updateAsset(kind,job.asset_id,{...(typeof body.name==='string'&&body.name.trim()?{name:body.name.trim()}:{}),...(typeof body.notes==='string'?{notes:body.notes}:{})}),sessionId,store.root));return;
         }
       }
       if(path==='/api/library'&&req.method==='GET'){
         const kind=url.searchParams.get('kind')||undefined;
-        sendJson(res,200,(await store.listAssets({kind,project_id:project.id,include_unassigned:true})).map(item=>presentAsset(item,sessionId)));return;
+        sendJson(res,200,(await store.listAssets({kind,project_id:project.id,include_unassigned:true})).map(item=>presentAsset(item,sessionId,store.root)));return;
       }
       if(path==='/api/library/import'&&req.method==='POST'){
         const fields=await readMultipart(req,controller.signal,maxUploadBytes+1024*1024),file=fields.file;
         if(!file||typeof file!=='object'||!file.filename)throw new StudioStoreError('A media file is required.');
         if(!isStudioAssetKind(fields.kind))throw new StudioStoreError('Unsupported asset kind.');
-        const item=await store.saveAsset({kind:fields.kind,name:fields.name||file.filename.replace(/\.[^.]+$/,''),notes:fields.notes,project_id:project.id,filename:file.filename,bytes:file.bytes});sendJson(res,201,presentAsset(item,sessionId));return;
+        const item=await store.saveAsset({kind:fields.kind,name:fields.name||file.filename.replace(/\.[^.]+$/,''),notes:fields.notes,project_id:project.id,filename:file.filename,bytes:file.bytes});sendJson(res,201,presentAsset(item,sessionId,store.root));return;
       }
       if(path==='/api/library/generation-settings'&&req.method==='GET'){sendJson(res,200,await store.getGenerationSettings());return;}
       if(path==='/api/library/generation-settings'&&req.method==='PUT'){const input=await readJson(req,controller.signal);sendJson(res,200,await store.setGenerationSettings(input.kind,input.instructions));return;}
       match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})$/.exec(path);
-      if(match&&req.method==='PATCH'){const item=await store.updateAsset(match[1],match[2],await readJson(req,controller.signal));sendJson(res,200,presentAsset(item,sessionId));return;}
+      if(match&&req.method==='PATCH'){const item=await store.updateAsset(match[1],match[2],await readJson(req,controller.signal));sendJson(res,200,presentAsset(item,sessionId,store.root));return;}
       if(match&&req.method==='DELETE'){sendJson(res,200,await store.deleteAsset(match[1],match[2]));return;}
       match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})\/files\/([A-Za-z0-9_-]{1,100})$/.exec(path);
       if(match&&req.method==='DELETE'){sendJson(res,200,await store.deleteAssetFile(match[1],match[2],match[3]));return;}
       match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})\/source$/.exec(path);
-      if(match&&req.method==='POST'){const out=await store.attachAssetSource(match[1],match[2],await readJson(req,controller.signal));sendJson(res,200,{added:out.added,asset:presentAsset(out.asset,sessionId)});return;}
+      if(match&&req.method==='POST'){const out=await store.attachAssetSource(match[1],match[2],await readJson(req,controller.signal));sendJson(res,200,{added:out.added,asset:presentAsset(out.asset,sessionId,store.root)});return;}
       match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})\/scan$/.exec(path);
-      if(match&&req.method==='POST'){const out=await store.scanAsset(match[1],match[2]);sendJson(res,200,{added:out.added,asset:presentAsset(out.asset,sessionId)});return;}
+      if(match&&req.method==='POST'){const out=await store.scanAsset(match[1],match[2]);sendJson(res,200,{added:out.added,asset:presentAsset(out.asset,sessionId,store.root)});return;}
       match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})\/refs\/([A-Za-z0-9_-]{1,100})$/.exec(path);
       if(match&&req.method==='PUT'){sendJson(res,200,await store.setAssetRef(match[1],match[2],{key:match[3],...(await readJson(req,controller.signal))}));return;}
       match=/^\/api\/library\/([a-z_]+)\/([A-Za-z0-9_-]{1,128})\/project$/.exec(path);
-      if(match&&req.method==='PATCH'){await readJson(req,controller.signal);sendJson(res,200,presentAsset(await store.assignAsset(match[1],match[2],project.id),sessionId));return;}
+      if(match&&req.method==='PATCH'){await readJson(req,controller.signal);sendJson(res,200,presentAsset(await store.assignAsset(match[1],match[2],project.id),sessionId,store.root));return;}
       if(path==='/api/library/assign-project'&&req.method==='POST'){
         const input=await readJson(req,controller.signal);if(!Array.isArray(input.asset_ids)||input.asset_ids.length>200)throw new StudioStoreError('asset_ids must be an array with at most 200 entries.');
-        const result=[];for(const asset of input.asset_ids){if(!asset||!isStudioAssetKind(asset.kind))throw new StudioStoreError('Each asset needs a supported kind.');result.push(presentAsset(await store.assignAsset(asset.kind,asset.id,project.id),sessionId));}sendJson(res,200,result);return;
+        const result=[];for(const asset of input.asset_ids){if(!asset||!isStudioAssetKind(asset.kind))throw new StudioStoreError('Each asset needs a supported kind.');result.push(presentAsset(await store.assignAsset(asset.kind,asset.id,project.id),sessionId,store.root));}sendJson(res,200,result);return;
       }
       if(path==='/api/shots/reorder'&&req.method==='POST'){sendJson(res,200,{shots:await store.reorderShots((await readJson(req,controller.signal)).shot_ids)});return;}
       match=/^\/api\/shots\/([A-Za-z0-9_-]{1,128})$/.exec(path);

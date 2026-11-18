@@ -18,6 +18,8 @@ import {
 interface BoardSlot extends OutputSlot {
   tags: string[];
   note: string;
+  /** Poster for library videos (own refs use the full image). */
+  thumb?: string | null;
 }
 
 interface Props {
@@ -79,8 +81,24 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted }: Props) {
     [asset, refMeta],
   );
 
-  const approvedSlots = slots.filter((slot) => slot.tags.includes("approved"));
-  const brainstormSlots = slots.filter((slot) => !slot.tags.includes("approved"));
+  // Tag = connection: library pictures/clips tagged with this asset's name sit on the same board.
+  // Their tags are edited in the Images/Footage tab, so these tiles are read-only here (lightbox works).
+  const librarySlots = useMemo<BoardSlot[]>(
+    () =>
+      (asset.library_refs ?? []).map((ref) => ({
+        key: `lib:${ref.library}:${ref.path}`,
+        label: ref.name,
+        filename: `${ref.library}/${ref.path}`,
+        url: ref.url,
+        tags: ref.tags,
+        note: "",
+        thumb: ref.thumb,
+      })),
+    [asset.library_refs],
+  );
+  const allSlots = [...slots, ...librarySlots];
+  const approvedSlots = allSlots.filter((slot) => slot.tags.includes("approved"));
+  const brainstormSlots = allSlots.filter((slot) => !slot.tags.includes("approved"));
   const needle = filter.trim().toLowerCase();
   // Typing hides images whose tags AND filename do not contain the string.
   const visibleBrainstorm = needle
@@ -188,7 +206,31 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted }: Props) {
     }
   }
 
+  function libTile(slot: BoardSlot) {
+    const video = /\.(mp4|mov|webm)$/i.test(slot.filename ?? "");
+    const src = slot.thumb ?? (video ? null : slot.url);
+    return (
+      <div key={slot.key} className="reference-tile reference-tile-library" title="Linked by tag from the Images/Footage library — edit its tags in that tab">
+        <button
+          type="button"
+          className="folder-file-card"
+          title="Open in lightbox"
+          onClick={() => setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)))}
+        >
+          <div className="folder-file-thumb">{src ? <img loading="lazy" src={src} alt={slot.label} /> : <div className="output-empty">🎞</div>}</div>
+          <div className="folder-file-label ellipsis" title={slot.filename}>{slot.filename}</div>
+        </button>
+        <div className="reference-chips">
+          {slot.tags.map((tag) => (
+            <span key={tag} className={`reference-chip${tag === "approved" ? " approved" : ""}`}>{tag}</span>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   function tile(slot: BoardSlot) {
+    if (slot.key.startsWith("lib:")) return libTile(slot);
     return (
       <div key={slot.key} className="reference-tile">
         <button

@@ -266,7 +266,16 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
     async createProject(input={}){return change(s=>{const item={id:id(),name:validName(input.name,'Project name'),script_text:safeText(input.script_text,100000),mode:['director','mv','json_production'].includes(input.mode)?input.mode:'director',created_at:stamp(),updated_at:stamp()};s.projects.push(item);return clone(item);});},
     async getProject(projectId){const s=await load();const p=await project(projectId,s);const shotOrder=(a,b)=>((a.order??0)-(b.order??0))||String(a.created_at).localeCompare(String(b.created_at));return {...clone(p),shots:clone(s.shots.filter(item=>item.project_id===projectId).sort(shotOrder)),assets:clone(await overlayAssets(s.assets.filter(item=>item.project_id===projectId))),sequences:clone(s.sequences.filter(item=>item.project_id===projectId)),takes:clone(s.takes.filter(item=>item.project_id===projectId))};},
     async patchProject(projectId,input={}){return change(async s=>{const item=await project(projectId,s);if(input.name!==undefined)item.name=validName(input.name,'Project name');if(input.script_text!==undefined)item.script_text=safeText(input.script_text,100000);if(input.mode!==undefined){if(!['director','mv','json_production'].includes(input.mode))throw new StudioStoreError('Unsupported project mode.');item.mode=input.mode;}item.updated_at=stamp();return clone(item);});},
-    async listAssets({kind,project_id,include_unassigned=false}={}){const s=await load();return clone(await overlayAssets(s.assets.filter(item=>(!kind||item.kind===canonicalKind(kind))&&(!project_id||item.project_id===project_id||include_unassigned&&!item.project_id))));},
+    async listAssets({kind,project_id,include_unassigned=false}={}){const s=await load();const items=await overlayAssets(s.assets.filter(item=>(!kind||item.kind===canonicalKind(kind))&&(!project_id||item.project_id===project_id||include_unassigned&&!item.project_id)));
+      // Tag = connection (0.2.58): files in the images//media/ libraries tagged with the asset's name are its library_refs.
+      // approved → ready to use for shots; brainstorming (or no trust tag) → candidate the human has not confirmed. No copying: one byte-store.
+      const [imageIndex,videoIndex]=await Promise.all([readLibJson('images'),readLibJson('footage')]);
+      for(const item of items){const key=(item.name??'').trim().toLowerCase();const refs=[];
+        if(key)for(const [index,library] of [[imageIndex,'images'],[videoIndex,'footage']])for(const [rel,meta] of Object.entries(index.files??{})){
+          const tags=normFootageTags(meta.tags);if(!tags.includes(key))continue;
+          refs.push({library,path:rel,name:rel.split('/').pop(),tags,approved:tags.includes('approved'),brainstorming:!tags.includes('approved')});}
+        refs.sort((a,b)=>Number(b.approved)-Number(a.approved)||a.path.localeCompare(b.path));item.library_refs=refs;}
+      return clone(items);},
     async saveAsset(input={}){
       const kind=canonicalKind(input.kind),name=input.asset_id&&input.name===undefined?null:validName(input.name,'Asset name'),projectId=input.project_id||null,fileKey=safeText(input.file_key,100)||'master';
       if(!/^[A-Za-z0-9_-]{1,100}$/.test(fileKey))throw new StudioStoreError('file_key may contain only letters, numbers, underscore and hyphen.');

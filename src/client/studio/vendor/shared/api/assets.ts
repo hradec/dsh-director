@@ -18,6 +18,19 @@ export interface ReferenceAsset {
   files?: Record<string, string | null>;
   urls?: Record<string, string>;
   ref_meta?: Record<string, RefMetaEntry>;
+  /** Tag-linked files from the images/ and media/ libraries (tag = the asset's name). */
+  library_refs?: LibraryRef[];
+}
+
+export interface LibraryRef {
+  library: "images" | "footage";
+  path: string;
+  name: string;
+  tags: string[];
+  approved: boolean;
+  brainstorming: boolean;
+  url: string;
+  thumb: string | null;
 }
 
 export interface RefUpdateResult {
