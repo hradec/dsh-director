@@ -1,4 +1,5 @@
 import {MediaCard} from './MediaCard.jsx';
+import {askDshAgent} from './studio/agent-queue.jsx';
 import {GpuUsageSettings} from './GpuUsageSettings.jsx';
 import {PresetAwareGpuStatus} from './GpuStatus.jsx';
 import {AssetsTab,FootageTab,ImagesTab,MediaTab,ProductionTab,StoryTab,TimelineTab} from './studio/StudioSidebar.jsx';
@@ -45,7 +46,7 @@ export function apply(ctx){
    if(ctx.sidebarRightTabs?.register)for(const definition of studioTabs){
      const Body=definition.Body;
      ctx.effect(()=>ctx.sidebarRightTabs.register(definition),`director Studio ${definition.kind} type`);
-     ctx.effect(()=>ctx.slots.inject('sidebar.right.pane.tab',()=>ctx.slots.register({name:'sidebar.right.pane.tab',key:definition.id,inject:sessionId=>({sessionId,sendDshRequest:text=>sendSessionMessage(sessionId,text)})},Body)),`director Studio ${definition.kind} body`);
+     ctx.effect(()=>ctx.slots.inject('sidebar.right.pane.tab',()=>ctx.slots.register({name:'sidebar.right.pane.tab',key:definition.id,inject:sessionId=>({sessionId,sendDshRequest:(text,label)=>askDshAgent(text,label)})},Body)),`director Studio ${definition.kind} body`);
    }
    // The core document tabs have no video/audio renderer and fall back to the Open button; stream media players instead.
    if(ctx.documentPreviews?.register)for(const [group,extensions] of MEDIA_KINDS){

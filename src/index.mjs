@@ -13,10 +13,11 @@ import {createAssetTool} from './asset-catalog.mjs';
 import {createWorkflowTool} from './workflow-discovery.mjs';
 import {createStudioRegistry,StudioStoreError} from './studio-store.mjs';
 import {registerStudioApi} from './studio-api.mjs';
+import {createAgentTasks} from './agent-task.mjs';
 import {createStudioTools} from './studio-tools.mjs';
 
 export const name='dsh-director';
-export const inject=['tools','jobs','skills','fs','connection','webServer','attachments'];
+export const inject=['tools','jobs','skills','fs','attachments'];
 export const Config=z.object({
   comfyBaseUrl:z.string().default('http://127.0.0.1:8188'),
   comfyTryUrls:z.string().default('').volatile(),
@@ -90,8 +91,7 @@ export async function apply(ctx,config={}){
   const cardPresentation=createCardPresentationRegistry();
   const gpuStatus=createGpuStatus(handoffConfig);
   registerSubmit(ctx,{...handoffConfig,comfyBaseUrl:resolveComfyBaseUrl,getWorkflowNames:currentWorkflowNames,onGpuState:value=>gpuStatus.update(value),getGoal,cardPresentation});
-  ctx.effect(()=>registerGpuStatusRoute(ctx,gpuStatus),'director GPU status');
-  ctx.effect(()=>registerGpuReleaseRoute(ctx,gpuStatus),'director GPU release');
+
   const store=createMediaStore({root:config.mediaRoot||join(process.env.DSH_HOME||join(homedir(),'.dsh'),'director-media')});
   ctx.effect(()=>ctx.tools.register(createAssetTool({root:join(config.mediaRoot||join(process.env.DSH_HOME||join(homedir(),'.dsh'),'director-media'),'assets'),fs:ctx.fs,attachments:ctx.attachments})),'director asset lookup');
   ctx.effect(()=>ctx.tools.register(createStageImagesTool({root:join(config.mediaRoot||join(process.env.DSH_HOME||join(homedir(),'.dsh'),'director-media'),'staged-images'),fs:ctx.fs,comfyBaseUrl:resolveComfyBaseUrl})),'director reference staging');
@@ -99,7 +99,6 @@ export async function apply(ctx,config={}){
   const mediaTool=createMediaTool({store,fs:ctx.fs,attachments:ctx.attachments,getGoal,cardPresentation});
   ctx.effect(()=>ctx.tools.register(mediaTool),'director media tool');
   ctx.effect(()=>ctx.tools.register(createEditReviewTool(mediaTool)),'director review edits');
-  ctx.effect(()=>registerMediaRoute(ctx,store,cardPresentation),'director media route');
   const studioRegistry=createStudioRegistry();
   let sessionPersistence;
   if(typeof ctx.inject==='function')ctx.inject(['sessionPersistence'],scoped=>{sessionPersistence=scoped.sessionPersistence;});
@@ -109,6 +108,12 @@ export async function apply(ctx,config={}){
     if(!snapshot)throw new StudioStoreError('Unknown DSH session.',404);
     return studioRegistry(snapshot.header.cwd);
   }
-  ctx.effect(()=>registerStudioApi(ctx,{resolveSession:resolveStudioSession,comfyBaseUrl:resolveComfyBaseUrl,comfyHosts:()=>[String(currentConfigValue('comfyBaseUrl')??'').trim(),...String(currentConfigValue('comfyTryUrls')??'').split(/[\n,]+/).map(entry=>entry.trim()).filter(Boolean)].filter(Boolean)}),'director Studio API');
+  // HTTP surface only exists where the harness serves web routes; headless agent workers load just the tools.
+  ctx.inject(['connection','webServer'],scoped=>{
+    scoped.effect(()=>registerGpuStatusRoute(scoped,gpuStatus),'director GPU status');
+    scoped.effect(()=>registerGpuReleaseRoute(scoped,gpuStatus),'director GPU release');
+    scoped.effect(()=>registerMediaRoute(scoped,store,cardPresentation),'director media route');
+    scoped.effect(()=>registerStudioApi(scoped,{agentTasks:createAgentTasks(),resolveSession:resolveStudioSession,comfyBaseUrl:resolveComfyBaseUrl,comfyHosts:()=>[String(currentConfigValue('comfyBaseUrl')??'').trim(),...String(currentConfigValue('comfyTryUrls')??'').split(/[\n,]+/).map(entry=>entry.trim()).filter(Boolean)].filter(Boolean)}),'director Studio API');
+  });
   ctx.effect(()=>ctx.tools.register(createStudioTools({registry:studioRegistry,fs:ctx.fs,comfyBaseUrl:resolveComfyBaseUrl})),'director Studio project and production tools');
 }

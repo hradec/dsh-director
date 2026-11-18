@@ -10,7 +10,6 @@ import { AssetImportDialog } from "../library/AssetImportDialog";
 import { CastingPage } from "../casting/CastingPage";
 import { SetDesignPage } from "../set/SetDesignPage";
 import { PropsPage } from "../props/PropsPage";
-import { useTaskQueue } from "../../shared/hooks/useTaskQueue";
 
 type PreparedAssetCategory = Exclude<LibraryKind, "layouts" | "costumes">;
 type AssetCategory = "library" | PreparedAssetCategory;
@@ -58,10 +57,9 @@ function requestPrompt(kind: PreparedAssetCategory, projectName: string, name: s
   ].join("\n");
 }
 
-export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: string) => Promise<void> }) {
-  // Ask-DSH field/story requests ride one FIFO queue (same pattern as the Footage AI-tag queue).
-  const askQueue = useTaskQueue(sendAssetRequest);
-  const askRequest = (text: string, label: string) => askQueue.enqueue(text, label);
+export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: string, label?: string) => Promise<void> }) {
+  // 0.2.65: every DSH ask goes through the single agent door (shared queue window bottom-right).
+  const askRequest = (text: string, label: string) => void sendAssetRequest(text, label);
   const { projectId, project } = useProject();
   const [category, setCategory] = useState<AssetCategory>("library");
   const [importKind, setImportKind] = useState<PreparedAssetCategory | null>(null);
@@ -174,12 +172,6 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
                   >
                     Import {IMPORT_LABELS[workflowCategory]}
                   </button>
-                  {askQueue.tasks.length ? (
-                    <span className="dsh-task-chip">DSH queue: {askQueue.tasks.map((t) => t.label).join(" · ")}</span>
-                  ) : null}
-                  {askQueue.queueError ? (
-                    <button type="button" className="dsh-task-chip error" onClick={askQueue.clearQueueError}>⚠ {askQueue.queueError} (dismiss)</button>
-                  ) : null}
                 </div>
                 {/* Plugin: actors/scenes/props show the full generation studio (Casting, Set, Props). Queued jobs go to the DSH session agent, which generates with a reviewed local ComfyUI workflow and imports results under the same job token. */}
                 {workflowCategory === "actors" || workflowCategory === "scenes" || workflowCategory === "props" ? (

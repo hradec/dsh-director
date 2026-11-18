@@ -21,7 +21,7 @@ test('host entry owns reference staging, media and both submit tools with declar
     jobs:{start(){}},fs:{},connection:{requestRejection(){}},webServer:{register(){return ()=>{};}},inject(){},effect(fn){const d=fn();effects.push(d);}});
   assert.deepEqual(names.sort(),['director_assets','director_edit_review','director_show_media','director_stage_images','director_studio','director_workflows','submit_comfy_job','submit_comfy_video']);
   assert.equal(guards.length,0,'plugin tools must not intercept native Harness shell calls');
-  assert.deepEqual(entry.inject,['tools','jobs','skills','fs','connection','webServer','attachments']);
+  assert.deepEqual(entry.inject,['tools','jobs','skills','fs','attachments'],'headless workers without web services still load the tools');
   for(const dispose of effects)dispose?.();
 });
 

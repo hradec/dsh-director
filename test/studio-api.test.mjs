@@ -12,9 +12,9 @@ import {createStudioTools} from '../src/studio-tools.mjs';
 
 const png=Buffer.from('89504e470d0a1a0a00000000','hex');
 // The DSH session workspace folder IS the project; tests resolve every session id to one temporary workspace.
-async function setup(t,{reject,fetchImpl,sessionIndex}={}){
+async function setup(t,{reject,fetchImpl,sessionIndex,agentTasks}={}){
   const root=await mkdtemp(join(tmpdir(),'dsh-studio-api-'));t.after(()=>rm(root,{recursive:true,force:true}));
-  const registry=createStudioRegistry();const server=createServer(createStudioApiHandler({resolveSession:()=>registry(root),requestRejection:()=>reject,comfyHosts:()=>['http://comfy.test'],sessionIndex:sessionIndex??(()=>[]),fetchImpl:fetchImpl??(async()=>new Response('{}'))}));
+  const registry=createStudioRegistry();const server=createServer(createStudioApiHandler({resolveSession:()=>registry(root),requestRejection:()=>reject,comfyHosts:()=>['http://comfy.test'],sessionIndex:sessionIndex??(()=>[]),agentTasks:agentTasks??undefined,fetchImpl:fetchImpl??(async()=>new Response('{}'))}));
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
   const {store,project}=await registry(root);
   return {store,project,root,base:`http://127.0.0.1:${server.address().port}/director-studio`};
@@ -490,4 +490,20 @@ test('director_studio asset.folder, asset.scan and asset.tag give the agent the 
   assert.ok(approved.ref.tags.includes('approved')&&!approved.ref.tags.includes('brainstorming'));
   const scanned=await tools.execute({action:'asset.scan',kind:'actors',asset_id:asset.id},exec);
   assert.equal(scanned.added,0);
+});
+test('agent-task door: every Director Studio DSH ask rides one server queue with waiting-task cancel',async t=>{
+  const queue=[];
+  const fakeTasks={async submit(input){const task={id:'task-'+(queue.length+1),status:'pending',...input};queue.push(task);return task;},
+    list(){return queue.map(({prompt,...row})=>({...row,preview:String(prompt).split('\n')[0]}));},
+    cancel(id){const i=queue.findIndex((row)=>row.id===id&&row.status==='pending');if(i<0)return null;queue[i].status='cancelled';return queue[i];}};
+  const {base,root}=await setup(t,{agentTasks:fakeTasks});
+  const created=await json(base,'/api/agent-task',{method:'POST',body:JSON.stringify({prompt:'fix the nelare notes',label:'asset Nelare \u00b7 notes'})});
+  assert.equal(created.status,201);
+  const task=await created.json();assert.equal(task.status,'pending');
+  assert.equal((await json(base,'/api/agent-task',{method:'POST',body:JSON.stringify({})})).status,400);
+  const list=await (await json(base,'/api/agent-tasks')).json();
+  assert.equal(list.length,1);assert.equal(list[0].label,'asset Nelare \u00b7 notes');assert.equal(list[0].preview,'fix the nelare notes');
+  const cancelled=await json(base,`/api/agent-task/${task.id}`,{method:'DELETE'});assert.equal(cancelled.status,200);assert.equal((await cancelled.json()).status,'cancelled');
+  assert.equal((await json(base,`/api/agent-task/${task.id}`,{method:'DELETE'})).status,409,'a cancelled task cannot be cancelled again');
+  assert.equal(list[0].cwd,pathResolve(root),'worker runs in the session workspace, where the same Director Studio store lives');
 });

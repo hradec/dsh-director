@@ -262,6 +262,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
   async function project(projectId,s){const value=s.projects.find(item=>item.id===projectId);if(!value)throw new StudioStoreError('Project not found.',404);return value;}
   return {
     root,
+    workspaceRoot:workspaceRoot?resolve(workspaceRoot):null,
     async listProjects(){return clone((await load()).projects);},
     async createProject(input={}){return change(s=>{const item={id:id(),name:validName(input.name,'Project name'),script_text:safeText(input.script_text,100000),mode:['director','mv','json_production'].includes(input.mode)?input.mode:'director',created_at:stamp(),updated_at:stamp()};s.projects.push(item);return clone(item);});},
     async getProject(projectId){const s=await load();const p=await project(projectId,s);const shotOrder=(a,b)=>((a.order??0)-(b.order??0))||String(a.created_at).localeCompare(String(b.created_at));return {...clone(p),shots:clone(s.shots.filter(item=>item.project_id===projectId).sort(shotOrder)),assets:clone(await overlayAssets(s.assets.filter(item=>item.project_id===projectId))),sequences:clone(s.sequences.filter(item=>item.project_id===projectId)),takes:clone(s.takes.filter(item=>item.project_id===projectId))};},

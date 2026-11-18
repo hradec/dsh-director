@@ -2,6 +2,7 @@ import {useEffect,useState} from 'react';
 import {AssetWorkspace} from './vendor/features/assets/AssetWorkspace.tsx';
 import {ProductionPage} from './vendor/features/production/ProductionPage.tsx';
 import {StoryWall} from './StoryWall.jsx';
+import {AgentTaskWindow} from './agent-queue.jsx';
 import {TimelineBoard} from './TimelineBoard.jsx';
 import {FootageBoard} from './FootageBoard.jsx';
 import {ProjectProvider,useProject} from './vendor/shared/project/ProjectContext.tsx';
@@ -134,6 +135,7 @@ function StudioContent({area,sendDshRequest}){
     <button className="btn ghost corner-settings" title="Studio settings" aria-label="Studio settings" onClick={()=>setSettingsOpen(true)}>⚙</button>
     {settingsOpen?<AppSettingsPanel onClose={()=>setSettingsOpen(false)}/>:null}
     <WorkspaceHeader/>
+    <AgentTaskWindow/>
     {area==='story'?<StoryWall sendDshRequest={sendDshRequest}/>:area==='timeline'?<TimelineBoard/>:area==='footage'?<FootageBoard/>:area==='images'?<FootageBoard lib="images"/>:area==='assets'?<AssetWorkspace sendAssetRequest={sendDshRequest}/>:<ProductionPage requestProduction={sendDshRequest}/>}
     {railOpen?<MediaRail onClose={()=>setRailOpen(false)}/>:null}
   </div>;

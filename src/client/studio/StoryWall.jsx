@@ -1,5 +1,4 @@
 import {useEffect,useMemo,useState} from 'react';
-import {useTaskQueue} from './vendor/shared/hooks/useTaskQueue.ts';
 import {fetch as apiFetch} from './fetch-inject.mjs';
 
 // Story wall (Phase 2): third Studio area. Visual-first: kind-color columns, canon as an immovable gray floor,
@@ -204,7 +203,6 @@ function Timeline({story,onOpen}){
 
 export function StoryWall({sendDshRequest}={}){
   const {story,error,reload}=useStory();
-  const askQueue=useTaskQueue(sendDshRequest??(async()=>{}));
   const [view,setView]=useState('board');
   const [open,setOpen]=useState(null);
   if(!story)return <div className="app dsh-director-studio-app"><style>{STYLE}</style><WorkspaceNotice text={error||'Loading story wall…'}/></div>;
@@ -212,8 +210,6 @@ export function StoryWall({sendDshRequest}={}){
   return <div className="app dsh-director-studio-app dsh-story">
     <style>{STYLE}</style>
     <div className="dsh-story-bar">
-    {askQueue.tasks.length?<span className="dsh-task-chip">DSH queue: {askQueue.tasks.map((t)=><span key={t.id}>{t.label} </span>)}</span>:null}
-    {askQueue.queueError?<button className="dsh-task-chip error" onClick={askQueue.clearQueueError}>⚠ {askQueue.queueError} (dismiss)</button>:null}
       <div className="brand-title">Story wall</div>
       <div className="dsh-story-counts">
         <span style={{color:KIND_COLORS.open}}>open {story.decisions.filter((d)=>d.kind==='open').length}</span>
@@ -228,7 +224,7 @@ export function StoryWall({sendDshRequest}={}){
     {view==='board'&&<Board story={story} onOpen={setOpen} mutated={reload}/>}
     {view==='map'&&<MapView story={story} onOpen={setOpen}/>}
     {view==='timeline'&&<Timeline story={story} onOpen={setOpen}/>}
-    {openItem&&(openItem.handle?true:false)&&<Drawer story={story} sendDshRequest={(text,label)=>askQueue.enqueue(text,label)} item={openItem} onClose={()=>setOpen(null)} onSaved={()=>{setOpen(null);reload();}}/>}
+    {openItem&&(openItem.handle?true:false)&&<Drawer story={story} sendDshRequest={sendDshRequest} item={openItem} onClose={()=>setOpen(null)} onSaved={()=>{setOpen(null);reload();}}/>}
   </div>;
 }
 

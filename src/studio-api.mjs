@@ -1,3 +1,4 @@
+import {agentTaskStoreRootFor} from './agent-task.mjs';
 import {StudioStoreError,isStudioAssetKind,studioStoreConstants} from './studio-store.mjs';
 import {storyStoreFor} from './story-store.mjs';
 import {Readable} from 'node:stream';
@@ -236,7 +237,8 @@ async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSession
   createReadStream(served).pipe(res);
 }
 
-export function createStudioApiHandler({resolveSession,requestRejection,comfyBaseUrl='http://127.0.0.1:8188',comfyHosts=async()=>[],sessionIndex=defaultSessionIndex,fetchImpl=globalThis.fetch,maxUploadBytes=studioStoreConstants.maxAssetBytes,controllers=new Set()}={}){
+function createNullAgentTasks(){return {async submit(){throw Error('agent tasks not configured');},list(){return [];},cancel(){return null;}};}
+export function createStudioApiHandler({resolveSession,requestRejection,comfyBaseUrl='http://127.0.0.1:8188',comfyHosts=async()=>[],sessionIndex=defaultSessionIndex,fetchImpl=globalThis.fetch,maxUploadBytes=studioStoreConstants.maxAssetBytes,agentTasks=createNullAgentTasks(),controllers=new Set()}={}){
   return async(req,res)=>{
     const controller=new AbortController();controllers.add(controller);const abort=()=>controller.abort();res.once('close',abort);
     try{
@@ -254,6 +256,13 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       const sessionId=(typeof req.headers['x-director-session']==='string'?req.headers['x-director-session']:'')||url.searchParams.get('session')||'';
       if(!sessionId){sendJson(res,400,{detail:'Director Studio requests need the X-Director-Session header or session query parameter identifying the active DSH session.'});return;}
       const {store,project}=await resolveSession(sessionId);
+      if(path==='/api/agent-task'&&req.method==='POST'){const body=await readJson(req,controller.signal);const prompt=String(body.prompt??'').trim();
+        if(!prompt){sendJson(res,400,{detail:'prompt required'});return;}
+        const task=await agentTasks.submit({prompt,label:body.label,sessionId,cwd:agentTaskStoreRootFor(store)});
+        sendJson(res,201,{id:task.id,status:task.status,model:task.model});return;}
+      if(path==='/api/agent-tasks'&&req.method==='GET'){sendJson(res,200,agentTasks.list());return;}
+      const taskMatch=/^\/api\/agent-task\/([A-Za-z0-9_-]+)$/.exec(path);
+      if(taskMatch&&req.method==='DELETE'){const done=agentTasks.cancel(taskMatch[1]);sendJson(res,done?200:409,done??{detail:'only waiting tasks can be cancelled'});return;}
       if(path==='/api/projects'&&req.method==='GET'){const shots=await store.snapshot();sendJson(res,200,[presentProject(project,shots.shots.filter(shot=>shot.project_id===project.id))]);return;}
       if(path==='/api/projects'&&req.method==='POST'){sendJson(res,409,{detail:'The DSH session workspace is the project. Open a session in another folder to start another one.'});return;}
       let match=/^\/api\/projects\/([A-Za-z0-9_-]{1,128})$/.exec(path);
@@ -522,7 +531,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
   };
 }
 
-export function registerStudioApi(ctx,{resolveSession,comfyBaseUrl,comfyHosts}={}){
-  const controllers=new Set(),unregister=ctx.webServer.register({kind:'prefix',path:'/director-studio',handler:createStudioApiHandler({resolveSession,comfyBaseUrl,comfyHosts,controllers,requestRejection:req=>ctx.connection.requestRejection(req)})});
+export function registerStudioApi(ctx,{resolveSession,comfyBaseUrl,comfyHosts,agentTasks}={}){
+  const controllers=new Set(),unregister=ctx.webServer.register({kind:'prefix',path:'/director-studio',handler:createStudioApiHandler({resolveSession,comfyBaseUrl,comfyHosts,agentTasks,controllers,requestRejection:req=>ctx.connection.requestRejection(req)})});
   return ()=>{unregister();for(const controller of controllers)controller.abort();};
 }
