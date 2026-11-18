@@ -187,13 +187,17 @@ export function FootageBoard({lib='footage'}={}){
     post(api('/comfy'),'POST',{path:menu.file.path,probe:true}).then((v)=>setComfyKnown((k)=>({...k,[menu.file.path]:Boolean(v?.has)}))).catch(()=>setComfyKnown((k)=>({...k,[menu.file.path]:false})));
   },[menu]);
   const openComfy=async(f)=>{
-    const tab=window.open('about:blank','_blank');   // sync with the click so the popup blocker stays asleep
+    // ponytail: the clipboard must be written while this tab still has user focus — a writeText issued
+    // after the new ComfyUI tab took focus silently rejects, which is why pasting used to give the
+    // previously-open workflow ("dsh-video") instead of the file's own graph. Copy first, open second;
+    // the fetch is local, well inside the popup blocker's activation window.
     try{
       const v=await post(api('/comfy'),'POST',{path:f.path});
       try{await navigator.clipboard.writeText(v.json);}catch{}
-      if(tab&&v.host)tab.location.href=v.host;else if(tab)tab.close();
-      setNotice(v.host?`ComfyUI opened — paste (Ctrl+V) the copied workflow onto its canvas${v.uploaded?` · also saved there as ${v.uploaded}`:''}${v.kind==='prompt'?' (API graph — the new UI converts it)':''}.`:'No ComfyUI answered on the usual hosts — the workflow JSON is on your clipboard.');
-    }catch(e){if(tab)tab.close();setError(String(e.message||e));}
+      const tab=v.host?window.open(v.host,'_blank'):null;
+      if(!tab)setNotice(v.host?'Popup blocked — allow popups, then click again (the workflow is on your clipboard).':'No ComfyUI answered — the workflow JSON is on your clipboard.');
+      setNotice(v.host?`ComfyUI opened — paste (Ctrl+V) the copied workflow onto its canvas${v.uploaded?` · also saved there as ${v.uploaded} (Workflows panel)`:''}${v.kind==='prompt'?' (API graph — the new UI converts it)':''}.`:'No ComfyUI answered on the usual hosts — the workflow JSON is on your clipboard.');
+    }catch(e){setError(String(e.message||e));}
   };
   return <main className="panel footage-board" aria-label={lib==='images'?'Images':'Footage'}>
     {error?<div className="banner error" role="alert">{error}</div>:null}

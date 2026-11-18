@@ -108,17 +108,16 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
     }
   }
   async function openComfy(slot: BoardSlot) {
-    const tab = window.open("about:blank", "_blank");   // sync with the click so the popup blocker stays asleep
+    // Copy while this tab still has focus (see 0.2.75 note in FootageBoard); open the tab afterwards.
     const target = menuTarget(slot);
     try {
       const res = await fetch(`/api/${target.seg}/comfy`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(target.body) });
       const v = await res.json().catch(() => null);
       if (!res.ok) throw new Error(v?.detail ?? `comfy ${res.status}`);
       try { await navigator.clipboard.writeText(v.json); } catch { /* clipboard may be blocked; the tab still opens */ }
-      if (tab && v.host) tab.location.href = v.host; else if (tab) tab.close();
-      setNotice(v.host ? `ComfyUI opened — paste (Ctrl+V) the copied workflow onto its canvas${v.uploaded ? ` · also saved there as ${v.uploaded}` : ""}.` : "No ComfyUI answered — the workflow JSON is on your clipboard.");
+      if (v.host) window.open(v.host, "_blank");
+      setNotice(v.host ? `ComfyUI opened — paste (Ctrl+V) the copied workflow onto its canvas${v.uploaded ? ` · also saved there as ${v.uploaded} (Workflows panel)` : ""}.` : "No ComfyUI answered — the workflow JSON is on your clipboard.");
     } catch (e) {
-      if (tab) tab.close();
       setError(e instanceof Error ? e.message : String(e));
     }
   }
