@@ -134,7 +134,7 @@ function StudioContent({area,sendDshRequest}){
     <button className="btn ghost corner-settings" title="Studio settings" aria-label="Studio settings" onClick={()=>setSettingsOpen(true)}>⚙</button>
     {settingsOpen?<AppSettingsPanel onClose={()=>setSettingsOpen(false)}/>:null}
     <WorkspaceHeader/>
-    {area==='story'?<StoryWall/>:area==='timeline'?<TimelineBoard/>:area==='footage'?<FootageBoard/>:area==='images'?<FootageBoard lib="images"/>:area==='assets'?<AssetWorkspace sendAssetRequest={sendDshRequest}/>:<ProductionPage requestProduction={sendDshRequest}/>}
+    {area==='story'?<StoryWall sendDshRequest={sendDshRequest}/>:area==='timeline'?<TimelineBoard/>:area==='footage'?<FootageBoard/>:area==='images'?<FootageBoard lib="images"/>:area==='assets'?<AssetWorkspace sendAssetRequest={sendDshRequest}/>:<ProductionPage requestProduction={sendDshRequest}/>}
     {railOpen?<MediaRail onClose={()=>setRailOpen(false)}/>:null}
   </div>;
 }

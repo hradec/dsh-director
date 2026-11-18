@@ -38,7 +38,9 @@ function CardFace({story,item,onOpen,onDragStart,draggable}){
   </div>;
 }
 
-function Drawer({story,item,onClose,onSaved}){
+function Drawer({story,item,onClose,onSaved,sendDshRequest}){
+  const [askOpen,setAskOpen]=useState(false);
+  const [askDraft,setAskDraft]=useState('');
   const [body,setBody]=useState(item.body??'');
   const [handle,setHandle]=useState(item.handle??'');
   const [linkTo,setLinkTo]=useState('');
@@ -53,6 +55,9 @@ function Drawer({story,item,onClose,onSaved}){
   const save=(patch)=>postJson(`/api/story/decision/${item.id}`,{__patch:1,...patch}).then(({ok,value})=>{if(!ok){setBody(value?.detail||String(value));return;}onSaved();});
   const issues=issuesFor(story,item.id);
   const isCanoni=item.kind==='canon';
+    async function askSend(){const instruction=askDraft.trim();if(!instruction||!sendDshRequest)return;
+      await sendDshRequest('Director Studio — edit the story decision '+Q+'"{item.handle}"'+Q+' (decision_id '+item.id+'). Current body:\n"""\n'+body+'\n"""\nHuman request: '+instruction+'\nApply the change with the director_studio story.update action, then state briefly what changed.');
+      setAskDraft('');setAskOpen(false);}
   return <div className="dsh-story-drawer">
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
       <span className="dsh-story-badge" style={{background:KIND_COLORS[item.kind],color:'#fff'}}>{item.kind}</span>
@@ -66,6 +71,8 @@ function Drawer({story,item,onClose,onSaved}){
       <button className="btn ghost sm" onClick={()=>save({kind:'open'})}>Reopen</button>
       <button className="btn ghost sm" onClick={()=>save({kind:'superseded'})}>Strike</button>
       <button className="btn ghost sm" onClick={()=>save({body,handle})}>Save text</button>
+      <button className="btn ghost sm" onClick={()=>setAskOpen(!askOpen)}>Ask DSH…</button>
+      {askOpen?<div className="dsh-story-ask"><input className="dsh-story-input" value={askDraft} placeholder="what to change in the text…" onChange={(e)=>setAskDraft(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();askSend();}}}/><button className="btn primary sm" onClick={askSend}>Send</button></div>:null}
       <button className="btn ghost sm" style={{color:'#c0392b'}} onClick={()=>postJson(`/api/story/decision/${item.id}`,{__delete:1}).then(onSaved)}>Delete</button>
     </div>}
     <div className="dsh-story-links">
@@ -193,7 +200,7 @@ function Timeline({story,onOpen}){
   </div>;
 }
 
-export function StoryWall(){
+export function StoryWall({sendDshRequest}={}){
   const {story,error,reload}=useStory();
   const [view,setView]=useState('board');
   const [open,setOpen]=useState(null);
@@ -216,7 +223,7 @@ export function StoryWall(){
     {view==='board'&&<Board story={story} onOpen={setOpen} mutated={reload}/>}
     {view==='map'&&<MapView story={story} onOpen={setOpen}/>}
     {view==='timeline'&&<Timeline story={story} onOpen={setOpen}/>}
-    {openItem&&(openItem.handle?true:false)&&<Drawer story={story} item={openItem} onClose={()=>setOpen(null)} onSaved={()=>{setOpen(null);reload();}}/>}
+    {openItem&&(openItem.handle?true:false)&&<Drawer story={story} sendDshRequest={sendDshRequest} item={openItem} onClose={()=>setOpen(null)} onSaved={()=>{setOpen(null);reload();}}/>}
   </div>;
 }
 
@@ -226,7 +233,9 @@ const STYLE=`
 .dsh-story-bar{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;padding:.6rem .8rem;border-bottom:1px solid var(--border,#c8beac);}
 .dsh-story-counts{display:flex;gap:.8rem;font-size:.85rem;font-weight:650;}
 .dsh-story-boardwrap{padding:.7rem;}
-.dsh-story-board{display:grid;grid-template-columns:repeat(4,minmax(190px,1fr));gap:.7rem;}
+.dsh-story-board{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:.7rem;}
+.dsh-story-ask{display:flex;gap:.4rem;}
+.dsh-story-ask input{flex:1;}
 .dsh-story-col{background:rgba(255,255,255,.45);border:1px solid #c8beac;border-radius:10px;padding:.5rem;min-height:9rem;display:flex;flex-direction:column;gap:.5rem;}
 .dsh-story-colhead{font-weight:700;font-size:.8rem;text-transform:lowercase;display:flex;justify-content:space-between;align-items:center;}
 .dsh-story-arc{display:flex;flex-direction:column;gap:.4rem;margin-top:.3rem;}
