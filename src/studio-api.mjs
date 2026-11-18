@@ -36,7 +36,8 @@ const fileUrl=(kind,assetId,key,session)=>`/director-studio/api/files/library/${
 function presentAsset(item,session){const urls={},files={};for(const key of Object.keys(item.files??{})){urls[key]=fileUrl(item.kind,item.id,key,session);files[key]=item.file_names?.[key]||item.files[key].split(/[\\/]/).pop();}
   // Tag-linked library refs (0.2.58): library pictures/clips join the asset by tag — give the Assets board direct URLs for them.
   const library_refs=(item.library_refs??[]).map(ref=>({...ref,url:`/director-studio/api/file?path=${encodeURIComponent(ref.abs??'')}&session=${encodeURIComponent(session??'')}`,thumb:ref.library==='footage'?`/director-studio/api/footage/thumb?path=${encodeURIComponent(ref.abs??'')}&session=${encodeURIComponent(session??'')}`:null}));
-  const {file_names,...publicItem}=item;return {...publicItem,files,urls,library_refs};}
+  const paths={};for(const key of Object.keys(item.files??{}))paths[key]=item.files[key];
+  const {file_names,...publicItem}=item;return {...publicItem,files,urls,paths,library_refs};}
 // Jobs mirror the upstream Casting/Set/Props job records; outputs materialize once DSH imports an asset carrying the job token.
 function presentGenerationRecord(job,session){
   const outputs={},output_order=[];
@@ -356,15 +357,25 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         // probe:true → just presence (the menu greys the item out). Full call → extract, hand JSON to the browser, push it into the first ComfyUI that answers.
         if(sub==='comfy'&&req.method==='POST'){
           const b=await readJson(req,controller.signal);
-          const rel=String(b.path??''),root=await store.libRoot(kind),abs=join(root,rel);
-          if(!rel||!abs.startsWith(root+sep)||!existsSync(abs)){sendJson(res,404,{detail:'Library file not found.'});return;}
-          const wf=kind==='images'?await embeddedComfyPng(abs):await embeddedComfyWorkflow(abs);
+          // Asset mode: a file that lives on an asset (not in the media//images/ libraries) — resolve its absolute path from the record.
+          const aRef=b.asset&&typeof b.asset==='object'&&isStudioAssetKind(String(b.asset.kind??''))?{kind:String(b.asset.kind),id:String(b.asset.asset_id??''),key:String(b.asset.key??'')}:null;
+          let abs,rel;
+          if(aRef){
+            const item=(await store.listAssets({kind:aRef.kind})).find((v)=>v.id===aRef.id);
+            abs=item?.files?.[aRef.key]??'';rel=String(abs).split(/[\\/]/).pop();
+            if(!abs||!existsSync(abs)){sendJson(res,404,{detail:'Asset file not found.'});return;}
+          }else{
+            rel=String(b.path??'');const root=await store.libRoot(kind);abs=join(root,rel);
+            if(!rel||!abs.startsWith(root+sep)||!existsSync(abs)){sendJson(res,404,{detail:'Library file not found.'});return;}
+          }
+          const isImage=/\.(png|jpe?g|webp|gif)$/i.test(abs);
+          const wf=isImage?await embeddedComfyPng(abs):await embeddedComfyWorkflow(abs);
           if(b.probe){sendJson(res,200,{has:Boolean(wf)});return;}
           if(!wf){sendJson(res,404,{detail:'No embedded ComfyUI workflow in this file.'});return;}
           const base=await firstOnlineComfy({comfyHosts,store,fetchImpl,signal:controller.signal});
           let uploaded='';
           if(base){
-            const name=`workflows/dsh/${rel.replace(/\.[a-z0-9]+$/i,'')}.json`;
+            const name=`workflows/dsh/${String(rel).replace(/\.[a-z0-9]+$/i,'')}.json`;
             const v2=await fetchImpl(`${base}/api/userdata/v2/${name.split('/').map(encodeURIComponent).join('/')}`,{method:'PUT',signal:controller.signal,headers:{'content-type':'application/json'},body:JSON.stringify({content:wf.json})}).catch(()=>null);
             if(v2?.ok)uploaded=name;
             else{const v1=await fetchImpl(`${base}/api/userdata?path=${encodeURIComponent(name)}`,{method:'PUT',signal:controller.signal,headers:{'content-type':'application/json'},body:wf.json}).catch(()=>null);if(v1?.ok)uploaded=name;}
@@ -413,10 +424,18 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
           const b=await readJson(req,controller.signal);
           const smart=(await store.getAppSettings()).smart??{};
           const url=String(smart.url??'').trim().replace(/\/$/,'');
-          if(!String(b.path??'').trim()||!url){sendJson(res,400,{detail:'AI tagging needs a file path and the smart-filter endpoint (gear panel).'});return;}
-          const root=await store.libRoot(kind);
-          const abs=join(root,String(b.path).replaceAll('\\','/'));// join normalizes ../ so the containment check below is exact
-          if(abs!==root&&!abs.startsWith(root+sep)){sendJson(res,400,{detail:`Path must be inside the ${kind==='images'?'images/':'media/'} library.`});return;}
+          const aTag=b.asset&&typeof b.asset==='object'&&isStudioAssetKind(String(b.asset.kind??''))?{kind:String(b.asset.kind),id:String(b.asset.asset_id??''),key:String(b.asset.key??'')}:null;
+          if(!aTag&&!String(b.path??'').trim()||!url){sendJson(res,400,{detail:'AI tagging needs a file path (or an asset reference) and the smart-filter endpoint (gear panel).'});return;}
+          let abs;
+          if(aTag){
+            const item=(await store.listAssets({kind:aTag.kind})).find((v)=>v.id===aTag.id);
+            abs=item?.files?.[aTag.key]??'';
+            if(!abs||!existsSync(abs)){sendJson(res,404,{detail:'Asset file not found.'});return;}
+          }else{
+            const root=await store.libRoot(kind);
+            abs=join(root,String(b.path).replaceAll('\\','/'));// join normalizes ../ so the containment check below is exact
+            if(abs!==root&&!abs.startsWith(root+sep)){sendJson(res,400,{detail:`Path must be inside the ${kind==='images'?'images/':'media/'} library.`});return;}
+          }
           let mediaPart;
           if(kind==='images'){
             const mime=({'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif'})[extname(abs).toLowerCase()];
@@ -441,6 +460,10 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
           const found=/\[[\s\S]*\]/.exec(reply?.choices?.[0]?.message?.content??'');
           let tags=[];if(found){try{const arr=JSON.parse(found[0]);if(Array.isArray(arr))tags=arr.map(String);}catch{}}
           const resolution=resolutionTag(await videoHeight(abs));
+          if(aTag){
+            const v=await store.setAssetRef(aTag.kind,aTag.id,{key:aTag.key,tags_add:resolution?[...tags,resolution]:tags});
+            sendJson(res,200,{path:abs,tags:v.tags??[],model:model||'endpoint default',resolution});return;
+          }
           const v=await store.tagLib(kind,{path:String(b.path),tags_add:resolution?[...tags,resolution]:tags});
           sendJson(res,200,{path:v.path,tags:v.tags,model:model||'endpoint default',resolution});return;}
       }

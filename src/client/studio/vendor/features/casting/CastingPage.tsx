@@ -216,6 +216,7 @@ export function CastingPage({ initialEditId, sendRequest }: Props) {
             }
             onDeleted={refresh}
             sendRequest={sendRequest}
+            onRefresh={refresh}
           />
         ) : (
           <p className="empty-copy">Select an actor above to view and manage its references.</p>

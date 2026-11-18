@@ -18,6 +18,11 @@ interface BoardSlot extends OutputSlot {
   note: string;
   /** Poster for library videos (own refs use the full image). */
   thumb?: string | null;
+  /** Absolute source path on disk (menu: copy path / AI tag / Open in ComfyUI). */
+  abs?: string | null;
+  /** Set on library tiles: which library + the path relative to it. */
+  libKind?: "images" | "footage";
+  libPath?: string;
 }
 
 interface Props {
@@ -29,9 +34,11 @@ interface Props {
   onDeleted?: () => void;
   /** The single DSH door (agent-task queue) for tile auto-tag and note edits. */
   sendRequest?: (text: string, label: string) => void;
+  /** Re-fetch the page after a library tag write (AI tag on a linked tile). */
+  onRefresh?: () => void;
 }
 
-export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest }: Props) {
+export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, onRefresh }: Props) {
   // Local mirror of ref_meta: tag/note writes update from the server's returned tags,
   // which is where approved/brainstorming exclusivity was enforced.
   const [refMeta, setRefMeta] = useState<Record<string, RefMetaEntry>>(asset.ref_meta ?? {});
@@ -48,6 +55,77 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest }:
   const [noteAskKey, setNoteAskKey] = useState<string | null>(null);
   const [noteAskDraft, setNoteAskDraft] = useState("");
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  // Same right-click menu the Footage/Images tabs show on their cards (0.2.74).
+  const [menu, setMenu] = useState<{ x: number; y: number; slot: BoardSlot } | null>(null);
+  const [comfyKnown, setComfyKnown] = useState<Record<string, "pending" | boolean>>({});
+  const [notice, setNotice] = useState("");
+
+  function menuTarget(slot: BoardSlot) {
+    const video = /\.(mp4|mov|webm|mkv)$/i.test(slot.filename ?? "");
+    if (slot.libKind && slot.libPath) return { seg: slot.libKind, body: { path: slot.libPath } as Record<string, unknown> };
+    return { seg: video ? "footage" : "images", body: { path: slot.abs ?? "", asset: { kind, asset_id: asset.id, key: slot.key } } };
+  }
+  const openMenu = (slot: BoardSlot) => (event: { preventDefault(): void; clientX: number; clientY: number }) => {
+    event.preventDefault();
+    setNotice("");
+    setMenu({ x: event.clientX, y: event.clientY, slot });
+  };
+  useEffect(() => {
+    if (!menu) return undefined;
+    const close = () => setMenu(null);
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") setMenu(null); };
+    document.addEventListener("click", close);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("click", close); document.removeEventListener("keydown", key); };
+  }, [menu]);
+  useEffect(() => {
+    // Probe for an embedded ComfyUI workflow the first time a tile's menu opens.
+    if (!menu || menu.slot.key in comfyKnown) return;
+    const target = menuTarget(menu.slot);
+    setComfyKnown((k) => ({ ...k, [menu.slot.key]: "pending" }));
+    fetch(`/api/${target.seg}/comfy`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ probe: true, ...target.body }) })
+      .then((r) => (r.ok ? r.json() : { has: false }))
+      .then((v) => setComfyKnown((k) => ({ ...k, [menu.slot.key]: Boolean(v?.has) })))
+      .catch(() => setComfyKnown((k) => ({ ...k, [menu.slot.key]: false })));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [menu]);
+
+  async function aiTag(slot: BoardSlot) {
+    const target = menuTarget(slot);
+    setBusyKey(slot.key);
+    setError(null);
+    try {
+      const res = await fetch(`/api/${target.seg}/tag-ai`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...target.body, existing: slot.tags }) });
+      const v = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(v?.detail ?? `tag-ai ${res.status}`);
+      if (slot.libKind) { onRefresh?.(); }
+      else setRefMeta((meta) => ({ ...meta, [slot.key]: { tags: v?.tags ?? slot.tags, note: meta[slot.key]?.note ?? slot.note } }));
+      setNotice(`Tagged ${slot.filename ?? slot.key}: ${(v?.tags ?? []).join(", ")}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyKey(null);
+    }
+  }
+  async function openComfy(slot: BoardSlot) {
+    const tab = window.open("about:blank", "_blank");   // sync with the click so the popup blocker stays asleep
+    const target = menuTarget(slot);
+    try {
+      const res = await fetch(`/api/${target.seg}/comfy`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(target.body) });
+      const v = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(v?.detail ?? `comfy ${res.status}`);
+      try { await navigator.clipboard.writeText(v.json); } catch { /* clipboard may be blocked; the tab still opens */ }
+      if (tab && v.host) tab.location.href = v.host; else if (tab) tab.close();
+      setNotice(v.host ? `ComfyUI opened — paste (Ctrl+V) the copied workflow onto its canvas${v.uploaded ? ` · also saved there as ${v.uploaded}` : ""}.` : "No ComfyUI answered — the workflow JSON is on your clipboard.");
+    } catch (e) {
+      if (tab) tab.close();
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+  async function copyPath(slot: BoardSlot) {
+    try { await navigator.clipboard.writeText(slot.abs ?? ""); setNotice("Absolute path copied to clipboard."); }
+    catch { setNotice("Clipboard blocked by the browser — the path was not copied."); }
+  }
 
   useEffect(() => {
     setTagDrafts({});
@@ -72,6 +150,7 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest }:
           label: filename,
           filename,
           url: asset.urls?.[key] ?? null,
+          abs: asset.paths?.[key] ?? null,
           tags: entry.tags ?? ["brainstorming"],
           note: entry.note ?? "",
         };
@@ -89,6 +168,9 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest }:
         label: ref.name,
         filename: `${ref.library}/${ref.path}`,
         url: ref.url,
+        abs: ref.abs ?? null,
+        libKind: ref.library as "images" | "footage",
+        libPath: ref.path,
         tags: ref.tags,
         note: "",
         thumb: ref.thumb,
@@ -178,7 +260,7 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest }:
     const video = /\.(mp4|mov|webm)$/i.test(slot.filename ?? "");
     const src = slot.thumb ?? (video ? null : slot.url);
     return (
-      <div key={slot.key} className="reference-tile reference-tile-library" title="Linked by tag from the Images/Footage library — edit its tags in that tab">
+      <div key={slot.key} className="reference-tile reference-tile-library" title="Linked by tag from the Images/Footage library — edit its tags in that tab" onContextMenu={openMenu(slot)}>
         <button
           type="button"
           className="folder-file-card"
@@ -207,7 +289,7 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest }:
   function tile(slot: BoardSlot) {
     if (slot.key.startsWith("lib:")) return libTile(slot);
     return (
-      <div key={slot.key} className="reference-tile">
+      <div key={slot.key} className="reference-tile" onContextMenu={openMenu(slot)}>
         <button
           type="button"
           className="folder-file-card"
@@ -268,7 +350,7 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest }:
               aria-label="DSH auto-tag this reference"
               onClick={() =>
                 sendRequest(
-                  `Director Studio — auto-tag the reference "QKEY" of the QKIND "QNAME" (asset_id QID). View the image at QPATH with read_image, then add 3-8 tags that actually fit with the director_studio asset.tag action (tags_add; content words like head, body, full body, frontal, side, calm, roaring) — never add or remove "approved"/"brainstorming" yourself. Report the tags you added.`.replace("QKEY", slot.key).replace("QKIND", kind).replace("QNAME", asset.name).replace("QID", asset.id).replace("QPATH", slot.path ?? slot.key),
+                  `Director Studio — auto-tag the reference "QKEY" of the QKIND "QNAME" (asset_id QID). View the image at QPATH with read_image, then add 3-8 tags that actually fit with the director_studio asset.tag action (tags_add; content words like head, body, full body, frontal, side, calm, roaring) — never add or remove "approved"/"brainstorming" yourself. Report the tags you added.`.replace("QKEY", slot.key).replace("QKIND", kind).replace("QNAME", asset.name).replace("QID", asset.id).replace("QPATH", slot.abs ?? slot.path ?? slot.key),
                   `auto-tag ${slot.filename ?? slot.key}`,
                 )
               }
@@ -370,6 +452,21 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest }:
       </section>
 
 
+      {notice ? <div className="reference-notice">{notice}</div> : null}
+      {menu ? (
+        <div className="footage-menu" style={{ left: `${menu.x}px`, top: `${menu.y}px` }}>
+          <button type="button" onClick={() => { void copyPath(menu.slot); setMenu(null); }}>Copy path to clipboard</button>
+          <button type="button" onClick={() => { const s = menu.slot; setMenu(null); void aiTag(s); }}>AI tag / re-tag</button>
+          <button
+            type="button"
+            disabled={comfyKnown[menu.slot.key] !== true}
+            title={comfyKnown[menu.slot.key] === false ? "This file has no ComfyUI workflow embedded in its metadata" : "Load the workflow embedded in this file into ComfyUI"}
+            onClick={() => { const s = menu.slot; setMenu(null); void openComfy(s); }}
+          >
+            {comfyKnown[menu.slot.key] === "pending" ? "Open in ComfyUI…" : "Open in ComfyUI"}
+          </button>
+        </div>
+      ) : null}
       {lightboxIndex != null && visibleSlots[lightboxIndex]?.url ? (
         <Lightbox
           slots={visibleSlots}

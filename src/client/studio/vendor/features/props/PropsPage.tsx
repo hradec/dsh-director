@@ -194,6 +194,7 @@ export function PropsPage({ initialEditId, sendRequest }: Props) {
             }
             onDeleted={refresh}
             sendRequest={sendRequest}
+            onRefresh={refresh}
           />
         ) : (
           <p className="empty-copy">Select a prop above to view and manage its references.</p>

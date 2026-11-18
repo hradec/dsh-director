@@ -194,6 +194,7 @@ export function SetDesignPage({ initialEditId, sendRequest }: Props) {
             }
             onDeleted={refresh}
             sendRequest={sendRequest}
+            onRefresh={refresh}
           />
         ) : (
           <p className="empty-copy">Select a scene above to view and manage its references.</p>

@@ -19,6 +19,8 @@ export interface ReferenceAsset {
   sources?: string[];
   files?: Record<string, string | null>;
   urls?: Record<string, string>;
+  /** Absolute on-disk source path per file key (Copy path / AI tag / Open in ComfyUI). */
+  paths?: Record<string, string>;
   ref_meta?: Record<string, RefMetaEntry>;
   /** Tag-linked files from the images/ and media/ libraries (tag = the asset's name). */
   library_refs?: LibraryRef[];

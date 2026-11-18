@@ -7335,6 +7335,7 @@ select {
 .reference-note-row .btn { white-space: nowrap; flex: 0 0 auto; width: 2.5rem; height: 2.5rem; padding: 0; border-radius: 8px; font-size: 0.62rem; align-self: flex-end; }
 .reference-note-row .reference-note { flex: 1; }
 .reference-note-ask { display: flex; gap: 0.35rem; align-items: center; margin-top: 0.3rem; }
+.reference-notice { margin: 0 0 0.5rem; padding: 0.35rem 0.55rem; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--accent-soft); color: var(--text); font-size: 0.78rem; }
 .reference-filter-input { width: min(22rem, 100%); }
 .reference-note {
   width: 100%;

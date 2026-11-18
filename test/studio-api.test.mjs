@@ -517,3 +517,18 @@ test('asset character_name: separate in-story name persists through PATCH and as
   const listed=await (await json(base,'/api/library?kind=actors')).json();
   assert.equal(listed.find((a)=>a.id===created.id).character_name,'Nelare Dawnwhisper');
 });
+
+test('tag-ai on an asset reference (asset mode): vision tags land in the asset ref_meta, not the library',async t=>{
+  const seen=[];
+  const {base,root,store,project}=await setup(t,{fetchImpl:async(url,init)=>{
+    if(String(url)==='http://llm.test/v1/chat/completions'){seen.push(JSON.parse(init.body));return new Response(JSON.stringify({choices:[{message:{content:'[\u0022dragon\u0022,\u0022creature\u0022,\u0022studio shot\u0022]'}}]}),{headers:{'content-type':'application/json'}});}
+    return new Response('{}',{status:500});
+  }});
+  const a=await store.saveAsset({kind:'actors',name:'Test Dragon',project_id:project.id,filename:'master.png',bytes:png,file_key:'master'});
+  await json(base,'/api/library/app-settings',{method:'PUT',body:JSON.stringify({smart:{url:'http://llm.test/v1',model:'test-llm'}})});
+  const out=await (await json(base,'/api/images/tag-ai',{method:'POST',body:JSON.stringify({asset:{kind:'actors',asset_id:a.id,key:'master'}})})).json();
+  assert.ok(out.tags.includes('dragon'),'tags returned');
+  assert.equal(seen[0].messages[0].content[1].type,'image_url','the asset picture traveled as an image part');
+  const assets=await (await json(base,'/api/library?kind=actors')).json();
+  assert.ok((assets.find((v)=>v.id===a.id).ref_meta?.master?.tags??[]).includes('studio shot'),'ref_meta persisted on the asset');
+});
