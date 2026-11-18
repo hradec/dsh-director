@@ -191,7 +191,7 @@ test('library refs by tag (0.2.58): library files tagged with the asset name joi
   const list=await (await json(base,'/api/library?kind=actors')).json();
   const widgeon=list.find(item=>item.id===asset.id),mira=list.find(item=>item.name==='Mira');
   assert.deepEqual(widgeon.library_refs.map(r=>r.path),['widge-hero.png','widge-study.png'],'approved first, both linked by the name tag');
-  assert.equal(widgeon.library_refs[0].approved,true);assert.ok(widgeon.library_refs[0].tags.includes('body'));assert.ok(widgeon.library_refs[0].url.includes('/api/file?path='),'Assets board gets a playable url');
+  assert.equal(widgeon.library_refs[0].approved,true);assert.ok(widgeon.library_refs[0].tags.includes('body'));assert.ok(widgeon.library_refs[0].url.includes('/api/file?path='+encodeURIComponent(join(root,'images','widge-hero.png'))),'Assets board gets a playable url at the true library path');
   assert.equal(widgeon.library_refs[1].approved,false);assert.equal(widgeon.library_refs[1].brainstorming,true);
   assert.deepEqual(mira.library_refs,[],'untagged library files connect to nothing');
 });

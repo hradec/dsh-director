@@ -273,7 +273,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
       for(const item of items){const key=(item.name??'').trim().toLowerCase();const refs=[];
         if(key)for(const [index,library] of [[imageIndex,'images'],[videoIndex,'footage']])for(const [rel,meta] of Object.entries(index.files??{})){
           const tags=normFootageTags(meta.tags);if(!tags.includes(key))continue;
-          refs.push({library,path:rel,name:rel.split('/').pop(),tags,approved:tags.includes('approved'),brainstorming:!tags.includes('approved')});}
+          refs.push({library,path:rel,name:rel.split('/').pop(),abs:join(libRootDir(library),rel),tags,approved:tags.includes('approved'),brainstorming:!tags.includes('approved')});}
         refs.sort((a,b)=>Number(b.approved)-Number(a.approved)||a.path.localeCompare(b.path));item.library_refs=refs;}
       return clone(items);},
     async saveAsset(input={}){
