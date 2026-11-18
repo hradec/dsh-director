@@ -3612,12 +3612,19 @@ select {
 
 .mobile-library-group-heading {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.35rem;
   padding-right: 0.55rem;
 }
 
+.mobile-library-group-collapse {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.95rem;
+  padding: 0.2rem 0.45rem;
+}
 .mobile-library-group-main {
   width: 100%;
   justify-content: space-between;

@@ -32,6 +32,7 @@ export function LibraryOverview({ onSelectKind, onEditInStudio }: {
   const [importKind, setImportKind] = useState<VisibleLibraryKind | null>(null);
   const [detailAsset, setDetailAsset] = useState<LibraryAsset | null>(null);
   const [editingAsset, setEditingAsset] = useState<LibraryAsset | null>(null);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const onMetadataSaved = (updated: LibraryAsset) => {
     const kind = updated.kind as VisibleLibraryKind;
@@ -102,6 +103,16 @@ export function LibraryOverview({ onSelectKind, onEditInStudio }: {
           return (
             <section key={group.id} className="mobile-library-group">
               <header className="mobile-library-group-heading">
+                <button
+                  className="mobile-library-group-collapse"
+                  type="button"
+                  aria-expanded={!collapsed[group.id]}
+                  aria-label={`${collapsed[group.id] ? "Expand" : "Collapse"} ${group.label}`}
+                  title={collapsed[group.id] ? "Expand" : "Collapse"}
+                  onClick={() => setCollapsed((c) => ({ ...c, [group.id]: !c[group.id] }))}
+                >
+                  {collapsed[group.id] ? "▸" : "▾"}
+                </button>
                 <button className="mobile-library-group-main" type="button" onClick={() => onSelectKind(group.id)} aria-label={`View ${group.label}`}>
                   <strong>{group.label}</strong>
                   <span>{assets.length} · Prepare →</span>
@@ -117,7 +128,7 @@ export function LibraryOverview({ onSelectKind, onEditInStudio }: {
                   +
                 </button>
               </header>
-              {assets.length ? (
+              {!collapsed[group.id] && assets.length ? (
                 <div className="mobile-library-preview-strip">
                   {assets.map((asset) => {
                     const preview = assetPreviewUrl(asset);
@@ -126,8 +137,12 @@ export function LibraryOverview({ onSelectKind, onEditInStudio }: {
                         key={asset.id}
                         type="button"
                         className="mobile-library-preview-card"
-                        aria-label={`View ${asset.name} asset set`}
-                        onClick={() => setDetailAsset(asset)}
+                        aria-label={`Edit ${asset.name}`}
+                        onClick={() => {
+                          const kind = asset.kind as string;
+                          if (onEditInStudio && (kind === "actors" || kind === "scenes" || kind === "props")) onEditInStudio(kind as "actors" | "scenes" | "props", asset.id);
+                          else setEditingAsset(asset);
+                        }}
                       >
                         <div className={`mobile-library-preview${preview ? "" : " empty"}`}>
                           {preview ? <ZoomPanImage src={preview} alt="" className="library-canvas" /> : <span>{group.id === "voices" ? "VOICE" : "ASSET"}</span>}
@@ -137,7 +152,7 @@ export function LibraryOverview({ onSelectKind, onEditInStudio }: {
                     );
                   })}
                 </div>
-              ) : <p>{group.empty}</p>}
+              ) : !collapsed[group.id] ? <p>{group.empty}</p> : null}
             </section>
           );
         })}
