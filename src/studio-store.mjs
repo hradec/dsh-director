@@ -131,10 +131,10 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
   // image retires it from the brainstorm pile. Last operation wins.
   const exclusiveTags=(tags,added)=>{const win=added.includes('approved')?'approved':added.includes('brainstorming')?'brainstorming':null;return win?tags.filter(tag=>tag==='approved'||tag==='brainstorming'?tag===win:true):tags;};
   async function readAssetJson(item){if(!item.folder)return null;try{return JSON.parse(await readFile(join(assetDir(item),'asset.json'),'utf8'));}catch{return null;}}
-  function applyAssetJson(item,json){if(!json)return item;if(typeof json.description==='string')item.description=json.description;if(typeof json.notes==='string')item.notes=json.notes;if(Array.isArray(json.sources))item.sources=json.sources;if(json.files&&typeof json.files==='object'&&!Array.isArray(json.files))item.ref_meta=json.files;return item;}
+  function applyAssetJson(item,json){if(!json)return item;if(typeof json.description==='string')item.description=json.description;if(typeof json.character_name==='string')item.character_name=json.character_name;if(typeof json.notes==='string')item.notes=json.notes;if(Array.isArray(json.sources))item.sources=json.sources;if(json.files&&typeof json.files==='object'&&!Array.isArray(json.files))item.ref_meta=json.files;return item;}
   async function overlayAssets(items){for(const item of items)applyAssetJson(item,await readAssetJson(item));return items;}
   async function writeAssetJson(item){if(!item.folder)return;await mkdir(assetDir(item),{recursive:true});
-    await writeFile(join(assetDir(item),'asset.json'),JSON.stringify({id:item.id,kind:item.kind,name:item.name,description:item.description??'',notes:item.notes??'',sources:item.sources??[],files:item.ref_meta??{}},null,1));}
+    await writeFile(join(assetDir(item),'asset.json'),JSON.stringify({id:item.id,kind:item.kind,name:item.name,character_name:item.character_name??'',description:item.description??'',notes:item.notes??'',sources:item.sources??[],files:item.ref_meta??{}},null,1));}
   async function ensureFolder(s,item){if(item.folder)return;let slug=slugify(item.name),n=2;while(s.assets.some(other=>other.id!==item.id&&other.folder===slug))slug=`${slugify(item.name)}-${n++}`;item.folder=slug;await mkdir(assetDir(item),{recursive:true});}
   const cleanBase=value=>basename(String(value??'').replaceAll('\\','/')).replace(/[\u0000-\u001f\u007f]/g,'').slice(0,200);
   async function putAssetFile(s,item,filename,bytes,fileKey){
@@ -300,7 +300,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
           }
           item.updated_at=stamp();await writeAssetJson(item);return clone(item);
         }
-        const item={id:id(),kind,name,description:safeText(input.description,20000),notes:safeText(input.notes,10000),pipeline_id:safeText(input.pipeline_id,200),job_id:safeText(input.job_id,200),seed:Number.isSafeInteger(input.seed)?input.seed:null,created_at:stamp(),folder:null,files:{},file_names:{},ref_meta:{},sources:[],meta:input.meta&&typeof input.meta==='object'&&!Array.isArray(input.meta)?input.meta:{},urls:{},project_id:projectId};
+        const item={id:id(),kind,name,character_name:safeText(input.character_name,300),description:safeText(input.description,20000),notes:safeText(input.notes,10000),pipeline_id:safeText(input.pipeline_id,200),job_id:safeText(input.job_id,200),seed:Number.isSafeInteger(input.seed)?input.seed:null,created_at:stamp(),folder:null,files:{},file_names:{},ref_meta:{},sources:[],meta:input.meta&&typeof input.meta==='object'&&!Array.isArray(input.meta)?input.meta:{},urls:{},project_id:projectId};
         s.assets.push(item);
         if(input.bytes){await ensureFolder(s,item);const file=await putAssetFile(s,item,input.filename,input.bytes,fileKey);s.files.push(file);
           if(file.type==='video')await copyIntoLibrary(input.filename,input.bytes,[String(item.name).trim().toLowerCase()],[item.folder]);}
@@ -344,7 +344,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
         if(input.error!==undefined)job.error=safeText(input.error,2000)||null;
         job.updated_at=stamp();return clone(job);});
     },
-    async updateAsset(kind,assetId,input={}){canonicalKind(kind);return change(async s=>{const item=s.assets.find(value=>value.id===assetId&&value.kind===kind);if(!item)throw new StudioStoreError('Asset not found.',404);if(input.name!==undefined)item.name=validName(input.name,'Asset name');if(input.notes!==undefined)item.notes=safeText(input.notes,10000);if(input.description!==undefined)item.description=safeText(input.description,20000);item.updated_at=stamp();await writeAssetJson(item);return clone(item);});},
+    async updateAsset(kind,assetId,input={}){canonicalKind(kind);return change(async s=>{const item=s.assets.find(value=>value.id===assetId&&value.kind===kind);if(!item)throw new StudioStoreError('Asset not found.',404);if(input.name!==undefined)item.name=validName(input.name,'Asset name');if(input.character_name!==undefined)item.character_name=safeText(input.character_name,300);if(input.notes!==undefined)item.notes=safeText(input.notes,10000);if(input.description!==undefined)item.description=safeText(input.description,20000);item.updated_at=stamp();await writeAssetJson(item);return clone(item);});},
     // Source folders are ordinary workspace folders (e.g. nelare-designs): attaching one copies every
     // not-yet-known image/audio into the asset folder as a brainstorming reference, deduped by content.
     async attachAssetSource(kind,assetId,input={}){

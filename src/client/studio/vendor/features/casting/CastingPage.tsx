@@ -20,6 +20,7 @@ export function CastingPage({ initialEditId, sendRequest }: Props) {
   const [actors, setActors] = useState<ActorRecord[]>([]);
   const [editId, setEditId] = useState("");
   const [name, setName] = useState("");
+  const [character, setCharacter] = useState("");
   const [description, setDescription] = useState("");
   const [notes, setNotes] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
@@ -54,13 +55,14 @@ export function CastingPage({ initialEditId, sendRequest }: Props) {
   useEffect(() => {
     if (!actor) return;
     setName(actor.name);
+    setCharacter(actor.character_name || "");
     setDescription(actor.description || "");
     setNotes(actor.notes || "");
     setSavedField(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actor?.id]);
 
-  async function save(field: "name" | "description" | "notes", value: string) {
+  async function save(field: "name" | "character_name" | "description" | "notes", value: string) {
     if (!actor) return;
     if (field === "name" && !value.trim()) {
       setFormError("Name is required");
@@ -108,7 +110,7 @@ export function CastingPage({ initialEditId, sendRequest }: Props) {
             <div className="block-title">Identity</div>
             <label className="field">
               <span>
-                Name <span className="req">*</span>
+                Asset name <span className="req">*</span>
               </span>
               <input
                 value={name}
@@ -118,8 +120,28 @@ export function CastingPage({ initialEditId, sendRequest }: Props) {
               />
               {editId && sendRequest ? (
                 <AskDshField
-                  field="Name"
+                  field="Asset name"
                   value={name}
+                  kind="actors"
+                  kindLabel="actor"
+                  name={name}
+                  assetId={editId}
+                  send={sendRequest}
+                />
+              ) : null}
+            </label>
+            <label className="field">
+              <span>Character name</span>
+              <input
+                value={character}
+                onChange={(e) => setCharacter(e.target.value)}
+                onBlur={() => void save("character_name", character)}
+                placeholder="the real name in the story — e.g. Nelare Dawnwhisper"
+              />
+              {editId && sendRequest ? (
+                <AskDshField
+                  field="Character name"
+                  value={character}
                   kind="actors"
                   kindLabel="actor"
                   name={name}
@@ -172,7 +194,7 @@ export function CastingPage({ initialEditId, sendRequest }: Props) {
             </label>
             {savedField ? (
               <span className="field-hint">
-                {savedField === "name" ? "Name saved." : savedField === "description" ? "Description saved." : "Notes saved."}
+                {savedField === "name" ? "Asset name saved." : savedField === "character_name" ? "Character name saved." : savedField === "description" ? "Description saved." : "Notes saved."}
               </span>
             ) : null}
           </div>

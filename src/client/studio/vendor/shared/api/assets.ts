@@ -11,6 +11,8 @@ export interface RefMetaEntry {
 export interface ReferenceAsset {
   id: string;
   name: string;
+  /** The character's real in-story name; asset name stays the production slug. */
+  character_name?: string;
   description?: string;
   notes?: string;
   folder?: string | null;
@@ -67,7 +69,7 @@ const jsonInit = (method: string, body: unknown) => ({
 export async function patchAsset<T extends ReferenceAsset = ReferenceAsset>(
   kind: string,
   assetId: string,
-  body: { name?: string; notes?: string; description?: string },
+  body: { name?: string; character_name?: string; notes?: string; description?: string },
 ): Promise<T> {
   const res = await fetch(libPath(kind, assetId), jsonInit("PATCH", body));
   if (!res.ok) throw new Error(await parseError(res));

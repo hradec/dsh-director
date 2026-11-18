@@ -507,3 +507,13 @@ test('agent-task door: every Director Studio DSH ask rides one server queue with
   assert.equal((await json(base,`/api/agent-task/${task.id}`,{method:'DELETE'})).status,409,'a cancelled task cannot be cancelled again');
   assert.equal(list[0].cwd,pathResolve(root),'worker runs in the session workspace, where the same Director Studio store lives');
 });
+test('asset character_name: separate in-story name persists through PATCH and asset.json',async t=>{
+  const {base,root,store,project}=await setup(t);
+  const created=await store.saveAsset({kind:'actors',name:'Mia Voss',project_id:project.id,filename:'sheet.png',bytes:png});
+  const updated=await (await json(base,`/api/library/actors/${created.id}`,{method:'PATCH',body:JSON.stringify({character_name:'Nelare Dawnwhisper'})})).json();
+  assert.equal(updated.character_name,'Nelare Dawnwhisper','patch returns the character name');
+  const raw=JSON.parse(await readFile(join(root,'assets','mia-voss','asset.json'),'utf8'));
+  assert.equal(raw.character_name,'Nelare Dawnwhisper','asset.json is the database of record for it');
+  const listed=await (await json(base,'/api/library?kind=actors')).json();
+  assert.equal(listed.find((a)=>a.id===created.id).character_name,'Nelare Dawnwhisper');
+});

@@ -108,7 +108,7 @@ export function PropsPage({ initialEditId, sendRequest }: Props) {
             <div className="block-title">Identity</div>
             <label className="field">
               <span>
-                Name <span className="req">*</span>
+                Asset name <span className="req">*</span>
               </span>
               <input
                 value={name}
@@ -118,7 +118,7 @@ export function PropsPage({ initialEditId, sendRequest }: Props) {
               />
               {editId && sendRequest ? (
                 <AskDshField
-                  field="Name"
+                  field="Asset name"
                   value={name}
                   kind="props"
                   kindLabel="prop"
@@ -172,7 +172,7 @@ export function PropsPage({ initialEditId, sendRequest }: Props) {
             </label>
             {savedField ? (
               <span className="field-hint">
-                {savedField === "name" ? "Name saved." : savedField === "description" ? "Description saved." : "Notes saved."}
+                {savedField === "name" ? "Asset name saved." : savedField === "description" ? "Description saved." : "Notes saved."}
               </span>
             ) : null}
           </div>
