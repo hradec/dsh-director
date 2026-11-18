@@ -1,4 +1,5 @@
 import {useEffect,useMemo,useState} from 'react';
+import {useTaskQueue} from './vendor/shared/hooks/useTaskQueue.ts';
 import {fetch as apiFetch} from './fetch-inject.mjs';
 
 // Story wall (Phase 2): third Studio area. Visual-first: kind-color columns, canon as an immovable gray floor,
@@ -39,6 +40,7 @@ function CardFace({story,item,onOpen,onDragStart,draggable}){
 }
 
 function Drawer({story,item,onClose,onSaved,sendDshRequest}){
+  const Q='"';
   const [askOpen,setAskOpen]=useState(false);
   const [askDraft,setAskDraft]=useState('');
   const [body,setBody]=useState(item.body??'');
@@ -55,8 +57,8 @@ function Drawer({story,item,onClose,onSaved,sendDshRequest}){
   const save=(patch)=>postJson(`/api/story/decision/${item.id}`,{__patch:1,...patch}).then(({ok,value})=>{if(!ok){setBody(value?.detail||String(value));return;}onSaved();});
   const issues=issuesFor(story,item.id);
   const isCanoni=item.kind==='canon';
-    async function askSend(){const instruction=askDraft.trim();if(!instruction||!sendDshRequest)return;
-      await sendDshRequest('Director Studio — edit the story decision '+Q+'"{item.handle}"'+Q+' (decision_id '+item.id+'). Current body:\n"""\n'+body+'\n"""\nHuman request: '+instruction+'\nApply the change with the director_studio story.update action, then state briefly what changed.');
+    function askSend(){const instruction=askDraft.trim();if(!instruction||!sendDshRequest)return;
+      sendDshRequest('Director Studio — edit the story decision '+Q+item.handle+Q+' (decision_id '+item.id+'). Current body:'+String.fromCharCode(10)+'"""'+String.fromCharCode(10)+body+String.fromCharCode(10)+'"""'+String.fromCharCode(10)+'Human request: '+instruction+String.fromCharCode(10)+'Apply the change with the director_studio story.update action, then state briefly what changed.','story '+Q+item.handle+Q);
       setAskDraft('');setAskOpen(false);}
   return <div className="dsh-story-drawer">
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -202,6 +204,7 @@ function Timeline({story,onOpen}){
 
 export function StoryWall({sendDshRequest}={}){
   const {story,error,reload}=useStory();
+  const askQueue=useTaskQueue(sendDshRequest??(async()=>{}));
   const [view,setView]=useState('board');
   const [open,setOpen]=useState(null);
   if(!story)return <div className="app dsh-director-studio-app"><style>{STYLE}</style><WorkspaceNotice text={error||'Loading story wall…'}/></div>;
@@ -209,6 +212,8 @@ export function StoryWall({sendDshRequest}={}){
   return <div className="app dsh-director-studio-app dsh-story">
     <style>{STYLE}</style>
     <div className="dsh-story-bar">
+    {askQueue.tasks.length?<span className="dsh-task-chip">DSH queue: {askQueue.tasks.map((t)=><span key={t.id}>{t.label} </span>)}</span>:null}
+    {askQueue.queueError?<button className="dsh-task-chip error" onClick={askQueue.clearQueueError}>⚠ {askQueue.queueError} (dismiss)</button>:null}
       <div className="brand-title">Story wall</div>
       <div className="dsh-story-counts">
         <span style={{color:KIND_COLORS.open}}>open {story.decisions.filter((d)=>d.kind==='open').length}</span>
@@ -223,7 +228,7 @@ export function StoryWall({sendDshRequest}={}){
     {view==='board'&&<Board story={story} onOpen={setOpen} mutated={reload}/>}
     {view==='map'&&<MapView story={story} onOpen={setOpen}/>}
     {view==='timeline'&&<Timeline story={story} onOpen={setOpen}/>}
-    {openItem&&(openItem.handle?true:false)&&<Drawer story={story} sendDshRequest={sendDshRequest} item={openItem} onClose={()=>setOpen(null)} onSaved={()=>{setOpen(null);reload();}}/>}
+    {openItem&&(openItem.handle?true:false)&&<Drawer story={story} sendDshRequest={(text,label)=>askQueue.enqueue(text,label)} item={openItem} onClose={()=>setOpen(null)} onSaved={()=>{setOpen(null);reload();}}/>}
   </div>;
 }
 
@@ -233,7 +238,9 @@ const STYLE=`
 .dsh-story-bar{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;padding:.6rem .8rem;border-bottom:1px solid var(--border,#c8beac);}
 .dsh-story-counts{display:flex;gap:.8rem;font-size:.85rem;font-weight:650;}
 .dsh-story-boardwrap{padding:.7rem;}
-.dsh-story-board{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:.7rem;}
+.dsh-story-board{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:.7rem;}
+.dsh-task-chip{display:inline-flex;align-items:center;gap:.3rem;padding:.2rem .6rem;border-radius:999px;background:#e8b64a;color:#2c2a26;font-size:.75rem;font-weight:650;border:none;}
+.dsh-task-chip.error{background:#c0392b;color:#fff;}
 .dsh-story-ask{display:flex;gap:.4rem;}
 .dsh-story-ask input{flex:1;}
 .dsh-story-col{background:rgba(255,255,255,.45);border:1px solid #c8beac;border-radius:10px;padding:.5rem;min-height:9rem;display:flex;flex-direction:column;gap:.5rem;}

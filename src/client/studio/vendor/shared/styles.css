@@ -7263,6 +7263,9 @@ select {
 }
 .reference-board-toggle:hover { color: var(--accent); }
 .reference-tile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.85rem; }
+/* Shared DSH task queue chip (0.2.64) */
+.dsh-task-chip { display: inline-flex; align-items: center; gap: .3rem; padding: .2rem .6rem; border-radius: 999px; background: #e8b64a; color: #2c2a26; font-size: .75rem; font-weight: 650; border: none; }
+.dsh-task-chip.error { background: #c0392b; color: #fff; }
 /* Ask-DSH inline field request (0.2.61): button rides the field's label row, top right. */
 .field:has(.ask-dsh) { position: relative; }
 .ask-dsh { position: absolute; top: 0; right: 0; display: flex; flex-direction: column; gap: 0.35rem; align-items: flex-end; z-index: 3; }

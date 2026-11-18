@@ -10,6 +10,7 @@ import { AssetImportDialog } from "../library/AssetImportDialog";
 import { CastingPage } from "../casting/CastingPage";
 import { SetDesignPage } from "../set/SetDesignPage";
 import { PropsPage } from "../props/PropsPage";
+import { useTaskQueue } from "../../shared/hooks/useTaskQueue";
 
 type PreparedAssetCategory = Exclude<LibraryKind, "layouts" | "costumes">;
 type AssetCategory = "library" | PreparedAssetCategory;
@@ -58,6 +59,9 @@ function requestPrompt(kind: PreparedAssetCategory, projectName: string, name: s
 }
 
 export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: string) => Promise<void> }) {
+  // Ask-DSH field/story requests ride one FIFO queue (same pattern as the Footage AI-tag queue).
+  const askQueue = useTaskQueue(sendAssetRequest);
+  const askRequest = (text: string, label: string) => askQueue.enqueue(text, label);
   const { projectId, project } = useProject();
   const [category, setCategory] = useState<AssetCategory>("library");
   const [importKind, setImportKind] = useState<PreparedAssetCategory | null>(null);
@@ -170,12 +174,18 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
                   >
                     Import {IMPORT_LABELS[workflowCategory]}
                   </button>
+                  {askQueue.tasks.length ? (
+                    <span className="dsh-task-chip">DSH queue: {askQueue.tasks.map((t) => t.label).join(" · ")}</span>
+                  ) : null}
+                  {askQueue.queueError ? (
+                    <button type="button" className="dsh-task-chip error" onClick={askQueue.clearQueueError}>⚠ {askQueue.queueError} (dismiss)</button>
+                  ) : null}
                 </div>
                 {/* Plugin: actors/scenes/props show the full generation studio (Casting, Set, Props). Queued jobs go to the DSH session agent, which generates with a reviewed local ComfyUI workflow and imports results under the same job token. */}
                 {workflowCategory === "actors" || workflowCategory === "scenes" || workflowCategory === "props" ? (
-                  workflowCategory === "actors" ? <CastingPage onOpenLibrary={() => setCategory("library")} sendRequest={sendAssetRequest} initialEditId={editTarget?.kind === "actors" ? editTarget.id : undefined} />
-                    : workflowCategory === "scenes" ? <SetDesignPage onOpenLibrary={() => setCategory("library")} sendRequest={sendAssetRequest} initialEditId={editTarget?.kind === "scenes" ? editTarget.id : undefined} />
-                    : <PropsPage onOpenLibrary={() => setCategory("library")} sendRequest={sendAssetRequest} initialEditId={editTarget?.kind === "props" ? editTarget.id : undefined} />
+                  workflowCategory === "actors" ? <CastingPage onOpenLibrary={() => setCategory("library")} sendRequest={askRequest} initialEditId={editTarget?.kind === "actors" ? editTarget.id : undefined} />
+                    : workflowCategory === "scenes" ? <SetDesignPage onOpenLibrary={() => setCategory("library")} sendRequest={askRequest} initialEditId={editTarget?.kind === "scenes" ? editTarget.id : undefined} />
+                    : <PropsPage onOpenLibrary={() => setCategory("library")} sendRequest={askRequest} initialEditId={editTarget?.kind === "props" ? editTarget.id : undefined} />
                 ) : (
                   <div className="asset-guidance-card">
                     <div className="workspace-kicker">{IMPORT_LABELS[workflowCategory]} preparation</div>

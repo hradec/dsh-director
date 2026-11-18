@@ -9,7 +9,7 @@ interface Props {
   // Kept for the AssetWorkspace prop contract; browsing lives in the Library tab.
   onOpenLibrary: () => void;
   initialEditId?: string;
-  sendRequest?: (text: string) => Promise<void>;
+  sendRequest?: (text: string, label: string) => void;
 }
 
 // Filesystem-first: no more reference-sheet generation form. This page edits one
