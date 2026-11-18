@@ -2,11 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Lightbox } from "../../shared/components/Lightbox";
 import type { OutputSlot } from "../../shared/api/types";
 import {
-  attachAssetSource,
   deleteAssetFile,
   refNoteOf,
   refTagsOf,
-  scanAssetSources,
   setAssetRef,
   type RefMetaEntry,
   type ReferenceAsset,
@@ -29,9 +27,11 @@ interface Props {
   onAsset: (asset: ReferenceAsset) => void;
   /** Called after a file delete so the page can re-fetch its asset list. */
   onDeleted?: () => void;
+  /** The single DSH door (agent-task queue) for tile auto-tag and note edits. */
+  sendRequest?: (text: string, label: string) => void;
 }
 
-export function ReferenceBoard({ kind, asset, onAsset, onDeleted }: Props) {
+export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest }: Props) {
   // Local mirror of ref_meta: tag/note writes update from the server's returned tags,
   // which is where approved/brainstorming exclusivity was enforced.
   const [refMeta, setRefMeta] = useState<Record<string, RefMetaEntry>>(asset.ref_meta ?? {});
@@ -45,14 +45,13 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted }: Props) {
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [sourcePath, setSourcePath] = useState("");
+  const [noteAskKey, setNoteAskKey] = useState<string | null>(null);
+  const [noteAskDraft, setNoteAskDraft] = useState("");
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   useEffect(() => {
     setTagDrafts({});
     setNoteDrafts({});
-    setNotice(null);
     setLightboxIndex(null);
     setFilter("");
   }, [asset.id]);
@@ -175,37 +174,6 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted }: Props) {
     }
   }
 
-  async function rescan() {
-    setBusyKey("sources");
-    setError(null);
-    try {
-      const out = await scanAssetSources(kind, asset.id);
-      onAsset(out.asset);
-      setNotice(out.added === 1 ? "Rescan added 1 new reference." : `Rescan added ${out.added} new references.`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusyKey(null);
-    }
-  }
-
-  async function attach() {
-    const path = sourcePath.trim();
-    if (!path) return;
-    setBusyKey("sources");
-    setError(null);
-    try {
-      const out = await attachAssetSource(kind, asset.id, path);
-      onAsset(out.asset);
-      setSourcePath("");
-      setNotice(out.added === 1 ? "Attached folder added 1 new reference." : `Attached folder added ${out.added} new references.`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusyKey(null);
-    }
-  }
-
   function libTile(slot: BoardSlot) {
     const video = /\.(mp4|mov|webm)$/i.test(slot.filename ?? "");
     const src = slot.thumb ?? (video ? null : slot.url);
@@ -227,6 +195,13 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted }: Props) {
         </div>
       </div>
     );
+  }
+
+  function askNote(slot: BoardSlot, instruction: string) {
+    const fence = String.fromCharCode(34, 34, 34);
+    const message = `Director Studio — rewrite the note of the reference "${slot.key}" of the ${kind} "${asset.name}" (asset_id ${asset.id}). Current note:\n${fence}\n${noteDrafts[slot.key] ?? slot.note ?? ""}\n${fence}\nHuman request: ${instruction}\nApply the new note with the director_studio asset.tag action (note = …) and state the result in one line.`;
+    sendRequest?.(message, `note ${slot.filename ?? slot.key}`);
+    setNoteAskKey(null);
   }
 
   function tile(slot: BoardSlot) {
@@ -285,16 +260,64 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted }: Props) {
               }
             }}
           />
+          {sendRequest ? (
+            <button
+              type="button"
+              className="btn secondary sm"
+              title="Ask a DSH worker to look at this image and add descriptive tags"
+              onClick={() =>
+                sendRequest(
+                  `Director Studio — auto-tag the reference "QKEY" of the QKIND "QNAME" (asset_id QID). View the image at QPATH with read_image, then add 3-8 tags that actually fit with the director_studio asset.tag action (tags_add; content words like head, body, full body, frontal, side, calm, roaring) — never add or remove "approved"/"brainstorming" yourself. Report the tags you added.`.replace("QKEY", slot.key).replace("QKIND", kind).replace("QNAME", asset.name).replace("QID", asset.id).replace("QPATH", slot.path ?? slot.key),
+                  `auto-tag ${slot.filename ?? slot.key}`,
+                )
+              }
+            >
+              DSH tag
+            </button>
+          ) : null}
         </div>
-        <textarea
-          className="reference-note"
-          rows={2}
-          placeholder="Note (saved on blur)…"
-          aria-label={`Note for ${slot.key}`}
-          value={noteDrafts[slot.key] ?? slot.note}
-          onChange={(event) => setNoteDrafts((drafts) => ({ ...drafts, [slot.key]: event.target.value }))}
-          onBlur={() => void saveNote(slot.key)}
-        />
+        <div className="reference-note-row">
+          <textarea
+            className="reference-note"
+            rows={2}
+            placeholder="Note (saved on blur)…"
+            aria-label={`Note for ${slot.key}`}
+            value={noteDrafts[slot.key] ?? slot.note}
+            onChange={(event) => setNoteDrafts((drafts) => ({ ...drafts, [slot.key]: event.target.value }))}
+            onBlur={() => void saveNote(slot.key)}
+          />
+          {sendRequest ? (
+            <button
+              type="button"
+              className="btn secondary sm"
+              title="Ask DSH to rewrite this reference note"
+              onClick={() => {
+                setNoteAskKey(noteAskKey === slot.key ? null : slot.key);
+                setNoteAskDraft("");
+              }}
+            >
+              DSH note
+            </button>
+          ) : null}
+        </div>
+        {noteAskKey === slot.key ? (
+          <div className="reference-note-ask">
+            <input
+              autoFocus
+              className="reference-tag-add"
+              style={{ width: "14rem" }}
+              placeholder="what should the note say…"
+              value={noteAskDraft}
+              onChange={(event) => setNoteAskDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && noteAskDraft.trim()) askNote(slot, noteAskDraft.trim());
+              }}
+            />
+            <button type="button" className="btn primary sm" disabled={!noteAskDraft.trim()} onClick={() => askNote(slot, noteAskDraft.trim())}>
+              Send
+            </button>
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -344,47 +367,6 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted }: Props) {
         ) : null}
       </section>
 
-      <div className="reference-sources">
-        <span className="reference-board-title">Source folders</span>
-        {asset.sources?.length ? (
-          <ul className="reference-source-list">
-            {asset.sources.map((source) => (
-              <li key={source}>
-                <code>{source}</code>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="empty-copy">No source folders attached yet.</p>
-        )}
-        <div className="reference-source-actions">
-          <button type="button" className="btn secondary sm" disabled={busyKey === "sources"} onClick={() => void rescan()}>
-            Rescan
-          </button>
-          <input
-            className="reference-source-input"
-            placeholder="workspace folder, e.g. nelare-designs"
-            aria-label="Source folder path"
-            value={sourcePath}
-            onChange={(event) => setSourcePath(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                void attach();
-              }
-            }}
-          />
-          <button
-            type="button"
-            className="btn secondary sm"
-            disabled={busyKey === "sources" || !sourcePath.trim()}
-            onClick={() => void attach()}
-          >
-            Attach folder
-          </button>
-          {notice ? <span className="field-hint">{notice}</span> : null}
-        </div>
-      </div>
 
       {lightboxIndex != null && visibleSlots[lightboxIndex]?.url ? (
         <Lightbox

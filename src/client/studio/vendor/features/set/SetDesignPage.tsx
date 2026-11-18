@@ -193,6 +193,7 @@ export function SetDesignPage({ initialEditId, sendRequest }: Props) {
               setScenes((list) => list.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
             }
             onDeleted={refresh}
+            sendRequest={sendRequest}
           />
         ) : (
           <p className="empty-copy">Select a scene above to view and manage its references.</p>

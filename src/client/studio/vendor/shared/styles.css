@@ -7323,6 +7323,9 @@ select {
   padding: 0.25rem 0.45rem;
 }
 .reference-tag-add { width: 6.5rem; }
+.reference-note-row { display: flex; gap: 0.35rem; align-items: flex-start; }
+.reference-note-row .reference-note { flex: 1; }
+.reference-note-ask { display: flex; gap: 0.35rem; align-items: center; margin-top: 0.3rem; }
 .reference-filter-input { width: min(22rem, 100%); }
 .reference-note {
   width: 100%;

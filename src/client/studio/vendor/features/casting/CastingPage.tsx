@@ -193,6 +193,7 @@ export function CastingPage({ initialEditId, sendRequest }: Props) {
               setActors((list) => list.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
             }
             onDeleted={refresh}
+            sendRequest={sendRequest}
           />
         ) : (
           <p className="empty-copy">Select an actor above to view and manage its references.</p>
