@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { patchAsset } from "../../shared/api/assets";
 import { useProject } from "../../shared/project/ProjectContext";
+import { AskDshField } from "../../shared/components/AskDshField";
 import { ReferenceBoard } from "../assets/ReferenceBoard";
 import { listScenes, type SceneRecord } from "./api";
 
@@ -8,11 +9,12 @@ interface Props {
   // Kept for the AssetWorkspace prop contract; browsing lives in the Library tab.
   onOpenLibrary: () => void;
   initialEditId?: string;
+  sendRequest?: (text: string) => Promise<void>;
 }
 
 // Filesystem-first: no more multi-angle generation form. This page edits one
 // library scene's identity text and manages every stored image as a tagged reference.
-export function SetDesignPage({ initialEditId }: Props) {
+export function SetDesignPage({ initialEditId, sendRequest }: Props) {
   const { projectId } = useProject();
 
   const [scenes, setScenes] = useState<SceneRecord[]>([]);
@@ -114,6 +116,17 @@ export function SetDesignPage({ initialEditId }: Props) {
                 onBlur={() => void save("name", name)}
                 placeholder="e.g. Audition_Room"
               />
+              {editId && sendRequest ? (
+                <AskDshField
+                  field="Name"
+                  value={name}
+                  kind="scenes"
+                  kindLabel="scene"
+                  name={name}
+                  assetId={editId}
+                  send={sendRequest}
+                />
+              ) : null}
             </label>
             <label className="field">
               <span>Description (story)</span>
@@ -124,6 +137,17 @@ export function SetDesignPage({ initialEditId }: Props) {
                 onBlur={() => void save("description", description)}
                 placeholder="What this place is in the story — mood, history, what happens here…"
               />
+              {editId && sendRequest ? (
+                <AskDshField
+                  field="Description (story)"
+                  value={description}
+                  kind="scenes"
+                  kindLabel="scene"
+                  name={name}
+                  assetId={editId}
+                  send={sendRequest}
+                />
+              ) : null}
             </label>
             <label className="field">
               <span>Notes (for the models)</span>
@@ -134,6 +158,17 @@ export function SetDesignPage({ initialEditId }: Props) {
                 onBlur={() => void save("notes", notes)}
                 placeholder="Layout, lighting, continuity guidance DSH should keep across views…"
               />
+              {editId && sendRequest ? (
+                <AskDshField
+                  field="Notes (for the models)"
+                  value={notes}
+                  kind="scenes"
+                  kindLabel="scene"
+                  name={name}
+                  assetId={editId}
+                  send={sendRequest}
+                />
+              ) : null}
             </label>
             {savedField ? (
               <span className="field-hint">

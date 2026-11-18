@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { patchAsset } from "../../shared/api/assets";
 import { useProject } from "../../shared/project/ProjectContext";
+import { AskDshField } from "../../shared/components/AskDshField";
 import { ReferenceBoard } from "../assets/ReferenceBoard";
 import { listProps, type PropRecord } from "./api";
 
@@ -8,11 +9,12 @@ interface Props {
   // Kept for the AssetWorkspace prop contract; browsing lives in the Library tab.
   onOpenLibrary: () => void;
   initialEditId?: string;
+  sendRequest?: (text: string) => Promise<void>;
 }
 
 // Filesystem-first: no more reference-sheet generation form. This page edits one
 // library prop's identity text and manages every stored image as a tagged reference.
-export function PropsPage({ initialEditId }: Props) {
+export function PropsPage({ initialEditId, sendRequest }: Props) {
   const { projectId } = useProject();
 
   const [props, setProps] = useState<PropRecord[]>([]);
@@ -114,6 +116,17 @@ export function PropsPage({ initialEditId }: Props) {
                 onBlur={() => void save("name", name)}
                 placeholder="e.g. Folding knife"
               />
+              {editId && sendRequest ? (
+                <AskDshField
+                  field="Name"
+                  value={name}
+                  kind="props"
+                  kindLabel="prop"
+                  name={name}
+                  assetId={editId}
+                  send={sendRequest}
+                />
+              ) : null}
             </label>
             <label className="field">
               <span>Description (story)</span>
@@ -124,6 +137,17 @@ export function PropsPage({ initialEditId }: Props) {
                 onBlur={() => void save("description", description)}
                 placeholder="What this object is in the story — owner, significance, where it appears…"
               />
+              {editId && sendRequest ? (
+                <AskDshField
+                  field="Description (story)"
+                  value={description}
+                  kind="props"
+                  kindLabel="prop"
+                  name={name}
+                  assetId={editId}
+                  send={sendRequest}
+                />
+              ) : null}
             </label>
             <label className="field">
               <span>Notes (for the models)</span>
@@ -134,6 +158,17 @@ export function PropsPage({ initialEditId }: Props) {
                 onBlur={() => void save("notes", notes)}
                 placeholder="Logo, material, color, wear continuity DSH must keep…"
               />
+              {editId && sendRequest ? (
+                <AskDshField
+                  field="Notes (for the models)"
+                  value={notes}
+                  kind="props"
+                  kindLabel="prop"
+                  name={name}
+                  assetId={editId}
+                  send={sendRequest}
+                />
+              ) : null}
             </label>
             {savedField ? (
               <span className="field-hint">

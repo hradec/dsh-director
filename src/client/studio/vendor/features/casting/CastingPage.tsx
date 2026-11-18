@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { patchAsset } from "../../shared/api/assets";
 import { useProject } from "../../shared/project/ProjectContext";
+import { AskDshField } from "../../shared/components/AskDshField";
 import { ReferenceBoard } from "../assets/ReferenceBoard";
 import { listActors, type ActorRecord } from "./api";
 
@@ -8,11 +9,12 @@ interface Props {
   // Kept for the AssetWorkspace prop contract; browsing lives in the Library tab.
   onOpenLibrary: () => void;
   initialEditId?: string;
+  sendRequest?: (text: string) => Promise<void>;
 }
 
 // Filesystem-first: this page no longer generates. It edits one library actor's
 // identity text and manages every stored image as a tagged reference.
-export function CastingPage({ initialEditId }: Props) {
+export function CastingPage({ initialEditId, sendRequest }: Props) {
   const { projectId } = useProject();
 
   const [actors, setActors] = useState<ActorRecord[]>([]);
@@ -114,6 +116,17 @@ export function CastingPage({ initialEditId }: Props) {
                 onBlur={() => void save("name", name)}
                 placeholder="e.g. Lead_Female_A"
               />
+              {editId && sendRequest ? (
+                <AskDshField
+                  field="Name"
+                  value={name}
+                  kind="actors"
+                  kindLabel="actor"
+                  name={name}
+                  assetId={editId}
+                  send={sendRequest}
+                />
+              ) : null}
             </label>
             <label className="field">
               <span>Description (story)</span>
@@ -124,6 +137,17 @@ export function CastingPage({ initialEditId }: Props) {
                 onBlur={() => void save("description", description)}
                 placeholder="Who this character is in the story — background, role, relationships…"
               />
+              {editId && sendRequest ? (
+                <AskDshField
+                  field="Description (story)"
+                  value={description}
+                  kind="actors"
+                  kindLabel="actor"
+                  name={name}
+                  assetId={editId}
+                  send={sendRequest}
+                />
+              ) : null}
             </label>
             <label className="field">
               <span>Notes (for the models)</span>
@@ -134,6 +158,17 @@ export function CastingPage({ initialEditId }: Props) {
                 onBlur={() => void save("notes", notes)}
                 placeholder="Guidance DSH follows when generating or casting this actor…"
               />
+              {editId && sendRequest ? (
+                <AskDshField
+                  field="Notes (for the models)"
+                  value={notes}
+                  kind="actors"
+                  kindLabel="actor"
+                  name={name}
+                  assetId={editId}
+                  send={sendRequest}
+                />
+              ) : null}
             </label>
             {savedField ? (
               <span className="field-hint">

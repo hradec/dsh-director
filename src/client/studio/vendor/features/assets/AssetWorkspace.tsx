@@ -173,9 +173,9 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
                 </div>
                 {/* Plugin: actors/scenes/props show the full generation studio (Casting, Set, Props). Queued jobs go to the DSH session agent, which generates with a reviewed local ComfyUI workflow and imports results under the same job token. */}
                 {workflowCategory === "actors" || workflowCategory === "scenes" || workflowCategory === "props" ? (
-                  workflowCategory === "actors" ? <CastingPage onOpenLibrary={() => setCategory("library")} initialEditId={editTarget?.kind === "actors" ? editTarget.id : undefined} />
-                    : workflowCategory === "scenes" ? <SetDesignPage onOpenLibrary={() => setCategory("library")} initialEditId={editTarget?.kind === "scenes" ? editTarget.id : undefined} />
-                    : <PropsPage onOpenLibrary={() => setCategory("library")} initialEditId={editTarget?.kind === "props" ? editTarget.id : undefined} />
+                  workflowCategory === "actors" ? <CastingPage onOpenLibrary={() => setCategory("library")} sendRequest={sendAssetRequest} initialEditId={editTarget?.kind === "actors" ? editTarget.id : undefined} />
+                    : workflowCategory === "scenes" ? <SetDesignPage onOpenLibrary={() => setCategory("library")} sendRequest={sendAssetRequest} initialEditId={editTarget?.kind === "scenes" ? editTarget.id : undefined} />
+                    : <PropsPage onOpenLibrary={() => setCategory("library")} sendRequest={sendAssetRequest} initialEditId={editTarget?.kind === "props" ? editTarget.id : undefined} />
                 ) : (
                   <div className="asset-guidance-card">
                     <div className="workspace-kicker">{IMPORT_LABELS[workflowCategory]} preparation</div>
