@@ -265,6 +265,7 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest }:
               type="button"
               className="btn secondary sm"
               title="Ask a DSH worker to look at this image and add descriptive tags"
+              aria-label="DSH auto-tag this reference"
               onClick={() =>
                 sendRequest(
                   `Director Studio — auto-tag the reference "QKEY" of the QKIND "QNAME" (asset_id QID). View the image at QPATH with read_image, then add 3-8 tags that actually fit with the director_studio asset.tag action (tags_add; content words like head, body, full body, frontal, side, calm, roaring) — never add or remove "approved"/"brainstorming" yourself. Report the tags you added.`.replace("QKEY", slot.key).replace("QKIND", kind).replace("QNAME", asset.name).replace("QID", asset.id).replace("QPATH", slot.path ?? slot.key),
@@ -272,7 +273,7 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest }:
                 )
               }
             >
-              DSH tag
+              DSH
             </button>
           ) : null}
         </div>
@@ -291,12 +292,13 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest }:
               type="button"
               className="btn secondary sm"
               title="Ask DSH to rewrite this reference note"
+              aria-label="DSH rewrite this reference note"
               onClick={() => {
                 setNoteAskKey(noteAskKey === slot.key ? null : slot.key);
                 setNoteAskDraft("");
               }}
             >
-              DSH note
+              DSH
             </button>
           ) : null}
         </div>
