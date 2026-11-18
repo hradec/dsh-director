@@ -162,9 +162,11 @@ export function FootageBoard({lib='footage'}={}){
   const matches=useCallback((f)=>parsed.conds.every((c)=>c(f)),[parsed]);
   const pending=parsed.smartQ.some((q)=>smart[q]==='pending');
   const fname=filter.trim().toLowerCase();
-  const card=(f)=><div key={f.path} className={`footage-card${sel.has(f.path)?' footage-selected':''}`} role="button" tabIndex={0} title={`Click to ${lib==='images'?'view':'play'} · right-click for the path`}
-    onClick={()=>{if(menu){setMenu(null);return;}setPlaying(f);}}
-    onKeyDown={(e)=>{if(e.key==='Enter')setPlaying(f);}}
+  const openCard=(f)=>{setPlaying(f);if(f.seen===false){setData((d)=>d?{...d,files:d.files.map((x)=>x.path===f.path?{...x,seen:true}:x)}:d);void post(api('/seen'),'POST',{path:f.path}).catch(()=>{});}};
+  const news=((data?.files)??[]).filter((f)=>f.seen===false&&matches(f));
+  const card=(f)=><div key={f.path} className={`footage-card${sel.has(f.path)?' footage-selected':''}${f.seen===false?' footage-new':''}`} role="button" tabIndex={0} title={`Click to ${lib==='images'?'view':'play'} · right-click for the path`}
+    onClick={()=>{if(menu){setMenu(null);return;}openCard(f);}}
+    onKeyDown={(e)=>{if(e.key==='Enter')openCard(f);}}
     onContextMenu={(e)=>{e.preventDefault();setMenu({x:e.clientX,y:e.clientY,file:f});}}>
     <button type="button" className={`footage-pick${sel.has(f.path)?' on':''}`} aria-label={`Select ${f.path}`} aria-pressed={sel.has(f.path)}
       title={sel.has(f.path)?'Deselect':'Select for batch actions'} onClick={(e)=>{e.stopPropagation();toggleSel(f.path);}}>{sel.has(f.path)?'✓':''}</button>
@@ -243,6 +245,10 @@ export function FootageBoard({lib='footage'}={}){
       </section>;
     })}</div>:null}
     </div>
+    {news.length?<section className="footage-group footage-group-wide">
+      <div className="footage-group-head"><span className="footage-group-toggle">✦ New — not opened yet <span className="muted tiny">{`(${news.length})`}</span></span></div>
+      <div className="footage-group-body"><div className="footage-grid">{news.map((f)=>card(f))}</div></div>
+    </section>:null}
     {importOpen?<div className="footage-dialog" role="dialog" onClick={()=>setImportOpen(false)}>
       <div className="footage-dialog-body" onClick={(e)=>e.stopPropagation()}>
         <h3>{`Import into ${dirName}`}</h3>

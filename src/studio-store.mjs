@@ -212,7 +212,8 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
     let rel,name,n=1;do{name=n===1?`${stem}${ext}`:`${stem}-${n}${ext}`;rel=[dir,name].filter(Boolean).join('/');n++;}while(rels.includes(rel));
     await mkdir(dirname(join(libRootDir(kind),rel)),{recursive:true});
     await writeFile(join(libRootDir(kind),rel),bytes);
-    const stored=await readLibJson(kind);stored.files[rel]={tags:normFootageTags(tags),added_at:stamp()};await writeLibJson(kind,stored);
+    // seen:false → the board outlines it NEW until it is opened (legacy entries without the flag count as seen)
+    const stored=await readLibJson(kind);stored.files[rel]={tags:normFootageTags(tags),added_at:stamp(),seen:false};await writeLibJson(kind,stored);
     return {path:rel,tags:stored.files[rel].tags};}
   async function load(){
     if(state)return state;
@@ -389,7 +390,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
     async listLib(kind){const spec=libSpec(kind),stored=await readLibJson(kind),rels=await listLibraryFiles(kind),files=[];
       for(const rel of rels){let info;try{info=await stat(join(libRootDir(kind),rel));}catch{continue;}
         const meta=stored.files[rel]??{};
-        files.push({path:rel,name:rel.split('/').pop(),tags:normFootageTags(meta.tags),added_at:typeof meta.added_at==='string'?meta.added_at:info.mtime.toISOString(),size:info.size,mtime:info.mtime.toISOString()});}
+        files.push({path:rel,name:rel.split('/').pop(),tags:normFootageTags(meta.tags),seen:meta.seen!==false,added_at:typeof meta.added_at==='string'?meta.added_at:info.mtime.toISOString(),size:info.size,mtime:info.mtime.toISOString()});}
       files.sort((a,b)=>b.mtime.localeCompare(a.mtime));return {files,groups:stored.groups,order:stored.order,open:stored.open};},
     async libRoot(kind){return libRootDir(kind);},
     async addLib(kind,input={}){const spec=libSpec(kind),raw=String(input.path??'').trim();if(!raw)throw new StudioStoreError(`A source ${spec.type==='image'?'image':'video'} path is required.`);
@@ -429,6 +430,10 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
     async setLibOrder(kind,input={}){const order=Array.isArray(input.order)?[...new Set(input.order.map(row=>safeText(row,140)).filter(Boolean))]:[];
       return change(async()=>{const stored=await readLibJson(kind);stored.order=order;await writeLibJson(kind,stored);return {order};});},
     // Expand/collapse state of groups survives refresh and tab close/reopen (kept in the index file, per group id).
+    async setLibSeen(kind,input={}){const rel=normFootageRel(input.path);if(!rel)throw new StudioStoreError('A library file path is required.');
+      return change(async()=>{const stored=await readLibJson(kind);
+        if(!stored.files[rel]&&!(await listLibraryFiles(kind)).includes(rel))throw new StudioStoreError('No such library file.',404);
+        stored.files[rel]={...(stored.files[rel]??{}),seen:true,seen_at:stamp()};await writeLibJson(kind,stored);return {path:rel,seen:true};});},
     async setLibOpen(kind,input={}){const id=safeText(input.id,140);if(!id)throw new StudioStoreError('A group id is required.');const expanded=Boolean(input.expanded);
       return change(async()=>{const stored=await readLibJson(kind);if(expanded)stored.open[id]=true;else delete stored.open[id];await writeLibJson(kind,stored);return {open:stored.open};});},
     // Delete = move the real file to the OS trash (see moveToTrash) + drop its index entry. Never a bare unlink.

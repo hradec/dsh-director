@@ -553,3 +553,21 @@ test('comfy api→ui converter: schema widgets, hidden inputs skipped, links by 
   assert.deepEqual(m.widgets_values,['hello'],'unknown classes still get a loadable node with the prompt constants');
   assert.ok(ui.nodes.find((node)=>node.type==='VAELoader').pos[0]<k.pos[0],'producers placed left of consumers');
 });
+
+test('new/unwatched (0.2.78): library files start unseen, seen on open, legacy entries never flagged',async t=>{
+  const {base,root}=await setup(t);
+  const src=join(root,'src-new');await mkdir(src,{recursive:true});
+  execFileSync('ffmpeg',['-y','-v','error','-f','lavfi','-i','color=c=green:s=64x64:d=0.2:r=10','-c:v','libx264','-pix_fmt','yuv420p',join(src,'fresh.mp4')]);
+  assert.equal((await json(base,'/api/footage/folder',{method:'POST',body:JSON.stringify({path:src})})).status,200);
+  let list=await (await json(base,'/api/footage')).json();
+  const fresh=list.files.find((f)=>f.path.endsWith('fresh.mp4'));
+  assert.equal(fresh.seen,false,'newly added file is unseen → board outlines it NEW and lists it in the New section');
+  assert.equal((await json(base,'/api/footage/seen',{method:'POST',body:JSON.stringify({path:fresh.path})})).status,200);
+  list=await (await json(base,'/api/footage')).json();
+  assert.equal(list.files.find((f)=>f.path===fresh.path).seen,true,'opening clears the NEW status for good');
+  const metaPath=join(root,'media','footage.json');
+  const meta=JSON.parse(await readFile(metaPath,'utf8'));delete meta.files[fresh.path].seen;
+  await writeFile(metaPath,JSON.stringify(meta));
+  list=await (await json(base,'/api/footage')).json();
+  assert.equal(list.files.find((f)=>f.path===fresh.path).seen,true,'entries written before the flag existed count as seen — the board never retro-flags the old library');
+});

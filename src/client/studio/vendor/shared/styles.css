@@ -7395,6 +7395,8 @@ select {
 .footage-group-toggle{display:inline-flex;align-items:center;gap:.35rem;background:none;border:0;padding:.2rem 0;color:var(--text);font:inherit;font-weight:600;font-size:.9rem;cursor:pointer}
 .footage-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:.6rem}
 .footage-card{position:relative;border:1px solid var(--border-strong);border-radius:7px;overflow:hidden;cursor:pointer;background:color-mix(in srgb,var(--text) 4%,transparent)}
+.footage-new{outline:2px dashed color-mix(in srgb,var(--accent) 80%,transparent);outline-offset:-3px}
+.footage-new::after{content:"NEW";position:absolute;top:.35rem;right:.35rem;z-index:2;padding:.1rem .35rem;border-radius:5px;background:var(--accent);color:var(--bg);font-size:.58rem;font-weight:700;letter-spacing:.04em;pointer-events:none}
 .footage-card video{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;background:#000}
 .footage-card-foot{display:grid;gap:.25rem;padding:.35rem .45rem;font-size:.75rem}
 .footage-path{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}

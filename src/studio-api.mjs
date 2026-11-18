@@ -342,7 +342,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         sendJson(res,200,{shots,sequences,takes,clips,episodes:(await storyStoreFor(store).story()).episodes});return;
       }
       // Footage & Images libraries: /api/footage* over media/ (video) and /api/images* over images/ — one shared block, kind from the URL segment.
-      match=/^\/api\/(footage|images)(?:\/(open|delete|comfy|order|thumb|folder|refs|group|smart|tag-ai))?$/.exec(path);
+      match=/^\/api\/(footage|images)(?:\/(open|delete|comfy|order|thumb|folder|refs|group|smart|tag-ai|seen))?$/.exec(path);
       if(match){
         const seg=match[1],kind=seg==='images'?'images':'footage',sub=match[2]??'';
         if(!sub&&req.method==='GET'){
@@ -354,6 +354,8 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         if(sub==='delete'&&req.method==='POST'){const b=await readJson(req,controller.signal);
           const results=[];for(const p of Array.isArray(b.paths)?b.paths:[]){try{results.push(await store.deleteLib(kind,{path:p}));}catch(e){results.push({path:String(p),error:String(e.message||e)});}}
           sendJson(res,200,{results});return;}
+        // A card was opened: its NEW/unwatched outline goes away for good.
+        if(sub==='seen'&&req.method==='POST'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.setLibSeen(kind,{path:b.path}));return;}
         // "Open in ComfyUI": ComfyUI embeds the whole graph in the saved file (mp4 container tags; PNG tEXt chunks) — UI `workflow` first, else API `prompt`.
         // probe:true → just presence (the menu greys the item out). Full call → extract, hand JSON to the browser, push it into the first ComfyUI that answers.
         if(sub==='comfy'&&req.method==='POST'){
