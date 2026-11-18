@@ -35,6 +35,7 @@ function CardFace({story,item,onOpen,onDragStart,draggable}){
       {item.kind==='canon'?<span className="dsh-story-badge gray">canon · locked</span>:null}
       {issues.length?<span className="dsh-story-badge red">⚠ {issues.length}</span>:null}
     </div>
+    {item.body?<div className="dsh-story-excerpt">{item.body}</div>:null}
   </div>;
 }
 
@@ -72,7 +73,7 @@ function Drawer({story,item,onClose,onSaved,sendDshRequest}){
       <button className="btn ghost sm" onClick={()=>save({kind:'open'})}>Reopen</button>
       <button className="btn ghost sm" onClick={()=>save({kind:'superseded'})}>Strike</button>
       <button className="btn ghost sm" onClick={()=>save({body,handle})}>Save text</button>
-      <button className="btn ghost sm" onClick={()=>setAskOpen(!askOpen)}>Ask DSH…</button>
+      <button className="btn secondary sm" onClick={()=>setAskOpen(!askOpen)}>Ask DSH…</button>
       {askOpen?<div className="dsh-story-ask"><input className="dsh-story-input" value={askDraft} placeholder="what to change in the text…" onChange={(e)=>setAskDraft(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();askSend();}}}/><button className="btn primary sm" onClick={askSend}>Send</button></div>:null}
       <button className="btn ghost sm" style={{color:'#c0392b'}} onClick={()=>postJson(`/api/story/decision/${item.id}`,{__delete:1}).then(onSaved)}>Delete</button>
     </div>}
@@ -243,7 +244,8 @@ const STYLE=`
 .dsh-story-colhead{font-weight:700;font-size:.8rem;text-transform:lowercase;display:flex;justify-content:space-between;align-items:center;}
 .dsh-story-arc{display:flex;flex-direction:column;gap:.4rem;margin-top:.3rem;}
 .dsh-story-arclabel{font-size:.7rem;color:#7d766b;letter-spacing:.04em;}
-.dsh-story-card{background:#fff;border:1px solid #d4cbbb;border-radius:8px;padding:.45rem .55rem;box-shadow:0 1px 3px rgba(0,0,0,.08);}
+.dsh-story-card{background:#fff;border:1px solid #d4cbbb;border-radius:8px;padding:.55rem .65rem;min-height:130px;box-shadow:0 1px 3px rgba(0,0,0,.08);}
+.dsh-story-excerpt{margin-top:.4rem;color:#5f584e;font-size:.82rem;line-height:1.35;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;}
 .dsh-story-card.grab{cursor:grab;}
 .dsh-story-card.struck .dsh-story-handle{text-decoration:line-through;color:#9a938a;}
 .dsh-story-card.conflicted{border-color:#c0392b;box-shadow:0 0 0 2px rgba(192,57,43,.25);}
