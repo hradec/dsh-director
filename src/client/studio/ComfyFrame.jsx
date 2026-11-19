@@ -175,6 +175,9 @@ export function ComfyFrame({sessionId}){
   useEffect(()=>{if(host){localStorage.setItem('dsh-comfy-host',host);G.activeHost=host;}},[host]);
   useEffect(()=>{const cb=(h)=>{if(h===host)setLinked(true);};G.helloCbs.add(cb);if(G.linked.get(host))setLinked(true);return()=>G.helloCbs.delete(cb);},[host]);
   useEffect(()=>{G.noteSink=setNote;return()=>{if(G.noteSink===setNote)G.noteSink=null;};},[setNote]);
+  // The dialog lives inside the React tab while our frame boxes are body-level z50 — without this,
+  // the picker renders BEHIND ComfyUI (backdrop darkens, panel invisible). Park frames low while open.
+  useEffect(()=>{for(const rec of G.frames.values())rec.box.style.zIndex=picker?'1':'50';},[picker]);
 
   // Persistent-frame lifecycle: point at host ONLY when the host actually changed (tab switches must not
   // re-navigate), cover the anchor rect, show; on unmount hide — never remove (removal = reload = minutes).
