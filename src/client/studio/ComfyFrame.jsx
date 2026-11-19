@@ -62,7 +62,12 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'&&!G.
     if(d.type==='iframe-nav'){if(G.noteSink)G.noteSink(`ComfyUI page (re)load: browser says initiator='${d.kind}' — 'reload' means the browser/you re-navigated the SAME url (F5, ⟳, crash or memory restore); 'navigate' means Director Studio pointed the frame at it`);return;}
     if(d.type==='pick-done'){if(G.noteSink)G.noteSink(`Loaded "${d.name}${d.subfolder?d.subfolder+'/':''}" into the node (input root).`);return;}
     if(d.type==='pick-error'){if(G.noteSink)G.noteSink(`Pick upload failed: ${d.why}`);return;}
-    if(d.type==='diag-result'){if(G.noteSink)G.noteSink((d.lines&&d.lines[0]&&d.lines[0].includes('[')?'DOM audit: ':'Preview audit: ')+(d.lines||[]).join(' | '));return;}
+    if(d.type==='diag-result'){
+      // audits accumulate (the second response used to erase the first before it could be copied)
+      G.auditLines=(G.auditLines||[]).concat(d.lines||[]);
+      if(G.auditLines.length>14)G.auditLines=G.auditLines.slice(-14);
+      if(G.noteSink)G.noteSink('Audit: '+G.auditLines.join(' | '));
+      return;}
     if(d.type==='iframe-error'){if(G.noteSink)G.noteSink(`ComfyUI JS error: ${d.msg}${d.at?` (${d.at})`:''}`);return;}
     if(d.type==='iframe-leaving'){if(G.noteSink)G.noteSink(`ComfyUI (${G.activeHost}) announced it is leaving the page at ${new Date().toLocaleTimeString()}`);return;}
     if(d.type==='bridge-hello'){markHello(h);return;}
@@ -304,7 +309,7 @@ export function ComfyFrame({sessionId}){
 
   return <div className="comfy-frame-tab">
     <div className="comfy-frame-bar">
-      <button type="button" className="btn sm ghost" title="Audit every LoadImage/LoadVideo in the frame: filename + what /view answers inside it" onClick={()=>{sendBridge(host,{type:'diag'});setTimeout(()=>sendBridge(host,{type:'diag-dom'}),300);}}>🩺</button>
+      <button type="button" className="btn sm ghost" title="Audit every LoadImage/LoadVideo in the frame: filename + what /view answers inside it" onClick={()=>{G.auditLines=[];sendBridge(host,{type:'diag'});setTimeout(()=>sendBridge(host,{type:'diag-dom'}),300);}}>🩺</button>
       {hosts.map((h)=><button key={h} type="button" className={`btn sm ${h===host?'primary':'ghost'}`} style={h===host?{color:'#ff8c3b',fontWeight:700}:undefined} onClick={()=>switchHost(h)}>{h.replace(/^https?:\/\//,'')}</button>)}
       {!hosts.length?<span className="muted tiny">no endpoints — set them in Studio settings (gear → ComfyUI)</span>:null}
       <button type="button" className="btn ghost sm" title="Reload this endpoint's frame" onClick={()=>{const f=G.frames.get(host)?.frame;if(f){G.linked.set(host,false);setLinked(false);f.dataset.src='';writeSrc(f,'about:blank','user clicked reload button');writeSrc(f,host,'user clicked reload button');}}}>⟳</button>

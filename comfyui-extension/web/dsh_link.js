@@ -87,7 +87,20 @@ window.addEventListener("message", async (ev) => {
                 const sub = v && v.includes("/") ? "&subfolder=" + encodeURIComponent(v.split("/").slice(0, -1).join("/")) + "&filename=" + encodeURIComponent(v.split("/").pop()) : "&filename=" + encodeURIComponent(v || "");
                 let st = "n/a";
                 try { const r = await fetch("/view?" + sub + "&type=input"); st = r.status + " " + (r.headers.get("content-type") || ""); } catch (e) { st = "ERR " + e.message; }
-                lines.push((n.type === "LoadImage" ? "IMG " : "VID ") + v + " -> " + st);
+                // v1.14: previews are CANVAS-drawn from Image objects on the node — inspect those, not the DOM
+                let im = "no-imgs";
+                const imgs = n.imgs || n.image || null;
+                if (imgs) {
+                    const arr = Array.isArray(imgs) ? imgs : [imgs];
+                    const real = arr.filter((x) => x && (x.complete !== undefined));
+                    im = real.length
+                        ? real.map((x) => (x.complete && x.naturalWidth ? "LOADED " + x.naturalWidth + "x" + x.naturalHeight : "WAIT/FAIL nw=" + x.naturalWidth + " comp=" + x.complete)).join(",")
+                        : "keys:" + Object.keys(n).filter((k) => /img|image|thumb|preview/i.test(k)).join("/");
+                } else {
+                    im = "keys:" + Object.keys(n).filter((k) => /img|image|thumb|preview|media/i.test(k)).join("/") + "|widgets:" + (n.widgets || []).map((w) => w.type + ":" + w.name).join(",");
+                }
+                const rect = (n.size || []).map(Math.round).join("x");
+                lines.push((n.type === "LoadImage" ? "IMG " : "VID ") + v + " -> " + st + " || " + im + " size=" + rect);
                 if (lines.length >= 8) break;
             }
             toParent({ type: "diag-result", lines });
