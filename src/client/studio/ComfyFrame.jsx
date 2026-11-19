@@ -60,6 +60,7 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'&&!G.
     const d=e.data;if(!d||d.ns!==NS||d.v!==V)return;
     const h=G.activeHost,o=originOf(h);if(!o||e.origin!==o)return;
     if(d.type==='iframe-nav'){if(G.noteSink)G.noteSink(`ComfyUI page (re)load: browser says initiator='${d.kind}' — 'reload' means the browser/you re-navigated the SAME url (F5, ⟳, crash or memory restore); 'navigate' means Director Studio pointed the frame at it`);return;}
+    if(d.type==='diag-result'){if(G.noteSink)G.noteSink('Preview audit: '+(d.lines||[]).join(' | '));return;}
     if(d.type==='iframe-error'){if(G.noteSink)G.noteSink(`ComfyUI JS error: ${d.msg}${d.at?` (${d.at})`:''}`);return;}
     if(d.type==='iframe-leaving'){if(G.noteSink)G.noteSink(`ComfyUI (${G.activeHost}) announced it is leaving the page at ${new Date().toLocaleTimeString()}`);return;}
     if(d.type==='bridge-hello'){markHello(h);return;}
@@ -300,6 +301,7 @@ export function ComfyFrame({sessionId}){
 
   return <div className="comfy-frame-tab">
     <div className="comfy-frame-bar">
+      <button type="button" className="btn sm ghost" title="Audit every LoadImage/LoadVideo in the frame: filename + what /view answers inside it" onClick={()=>sendBridge(host,{type:'diag'})}>🩺</button>
       {hosts.map((h)=><button key={h} type="button" className={`btn sm ${h===host?'primary':'ghost'}`} style={h===host?{color:'#ff8c3b',fontWeight:700}:undefined} onClick={()=>switchHost(h)}>{h.replace(/^https?:\/\//,'')}</button>)}
       {!hosts.length?<span className="muted tiny">no endpoints — set them in Studio settings (gear → ComfyUI)</span>:null}
       <button type="button" className="btn ghost sm" title="Reload this endpoint's frame" onClick={()=>{const f=G.frames.get(host)?.frame;if(f){G.linked.set(host,false);setLinked(false);f.dataset.src='';writeSrc(f,'about:blank','user clicked reload button');writeSrc(f,host,'user clicked reload button');}}}>⟳</button>
