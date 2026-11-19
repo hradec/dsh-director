@@ -16,6 +16,7 @@
 !/scripts/
 !/test/
 !/docs/
+!/comfyui-extension/
 
 # Generated artifacts / dependencies. Build locally; never commit them.
 node_modules/

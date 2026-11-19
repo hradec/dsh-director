@@ -1,0 +1,256 @@
+// dsh-studio-link bridge: Director Studio (DSH) <-> this ComfyUI tab.
+// Two modes: iframe inside the DSH sidebar (postMessage with the parent page)
+// and standalone (this tab talks to the DSH HTTP API directly; needs the CORS
+// change listed in BRIDGE_CONTRACT.md). Contract ns "dsh-studio", v 1.
+
+const { app } = window.comfyAPI.app;
+
+const NS = "dsh-studio";
+const V = 1;
+const INIF = "dsh"; // input subfolder everything is staged into
+
+const isInIframe = window.parent !== window;
+const pendingPicks = new Map(); // reqId -> node
+let reqSeq = 0;
+
+function setting(id, fallback) {
+    return app.ui.settings.getSettingValue(id, fallback);
+}
+function dshOrigin() { return setting("DSHStudio.dshOrigin", "http://127.0.0.1:3081").replace(/\/+$/, ""); }
+function dshSession() { return setting("DSHStudio.session", ""); }
+
+// ---- parent messaging (iframe mode) -------------------------------------
+function toParent(msg) {
+    if (!isInIframe) return;
+    // The setting names the DIRECTOR STUDIO (parent page) origin, not ComfyUI's own; registered
+    // default was "" which made postMessage throw and killed the handshake (BRIDGE_CONTRACT v1.3).
+    // Empty/"*" = post anywhere: the DSH parent authenticates sender origins against its endpoint list.
+    const origin = setting("DSHStudio.parentOrigin", "") || "*";
+    window.parent.postMessage({ ...msg, ns: NS, v: V }, origin);
+}
+
+window.addEventListener("message", async (ev) => {
+    const m = ev.data;
+    if (!m || m.ns !== NS || m.v !== V) return;
+    switch (m.type) {
+        case "bridge-ready":
+            await refreshNodeOptions();
+            break;
+        case "pick-result": {
+            const node = pendingPicks.get(m.reqId);
+            pendingPicks.delete(m.reqId);
+            if (!node || !m.file) break;
+            const w = node.widgets.find((x) => x.type === "combo");
+            if (w) { w.value = INIF + "/" + m.file; node.setDirtyCanvas(true, true); }
+            break;
+        }
+        case "upload-pick": { // v1.11: parent ships the library bytes; we upload them to OUR origin's input root
+            // (same machine as the node — no dsh/ subfolder oddities, no cross-origin CORS wall from the parent page)
+            try {
+                const fd = new FormData();
+                fd.append("image", new Blob([m.data]), m.name);
+                fd.append("overwrite", "true");
+                const r = await fetch("/upload/image", { method: "POST", body: fd });
+                if (!r.ok) { toParent({ type: "pick-error", reqId: m.reqId, why: "upload/image " + r.status }); break; }
+                const j = await r.json();
+                const node = pendingPicks.get(m.reqId);
+                pendingPicks.delete(m.reqId);
+                if (node) {
+                    const w = (node.widgets || []).find((x) => x.type === "combo" && (x.name === "image" || x.name === "file"));
+                    if (w) { w.value = j.name; node.setDirtyCanvas(true, true); }
+                }
+                toParent({ type: "pick-done", reqId: m.reqId, name: j.name, subfolder: j.subfolder || "" });
+            } catch (e) { toParent({ type: "pick-error", reqId: m.reqId, why: String(e.message || e) }); }
+            break;
+        }
+        case "diag": { // v1.10: self-audit every LoadImage/LoadVideo — value + what /view ACTUALLY answers inside this frame
+            const lines = [];
+            for (const n of app.graph._nodes) {
+                if (n.type !== "LoadImage" && n.type !== "LoadVideo") continue;
+                const v = n.widgets && n.widgets[0] && n.widgets[0].value;
+                const sub = v && v.includes("/") ? "&subfolder=" + encodeURIComponent(v.split("/").slice(0, -1).join("/")) + "&filename=" + encodeURIComponent(v.split("/").pop()) : "&filename=" + encodeURIComponent(v || "");
+                let st = "n/a";
+                try { const r = await fetch("/view?" + sub + "&type=input"); st = r.status + " " + (r.headers.get("content-type") || ""); } catch (e) { st = "ERR " + e.message; }
+                lines.push((n.type === "LoadImage" ? "IMG " : "VID ") + v + " -> " + st);
+                if (lines.length >= 8) break;
+            }
+            toParent({ type: "diag-result", lines });
+            break;
+        }
+        case "keepalive": // v1.9: parent heartbeat — force a full node repaint so Chrome's freeze of
+            // off-screen iframes can't leave the visible canvas without image previews
+            try { app.graph.setDirtyCanvas(true, true); } catch {}
+            break;
+        case "load-workflow": // v1.2: parent right-click "Open in ComfyUI" (UI-format graph); v1.4 optional m.name names the workflow tab after the source video
+            try {
+                const g = typeof m.workflow === "string" ? JSON.parse(m.workflow) : m.workflow;
+                app.loadGraphData(g, true, false, m.name || undefined);
+                toParent({ type: "workflow-loaded" });
+            } catch (e) {
+                toParent({ type: "workflow-error", error: String(e) });
+            }
+            break;
+        case "staged":
+            await refreshNodeOptions();
+            renameAssetOutputs(m.slug, m.payload);
+            break;
+        case "stage-file": // parent hands a DSH file URL; the upload POST must come from OUR origin
+            try {
+                const blob = await (await fetch(m.url)).blob();
+                await uploadStaged(m.name, blob);
+                toParent({ type: "stage-done", name: m.name });
+            } catch (e) {
+                toParent({ type: "stage-error", name: m.name, error: String(e) });
+            }
+            break;
+    }
+});
+
+// ---- ComfyUI-side upload + node-def refresh ------------------------------
+async function uploadStaged(name, blob) {
+    const fd = new FormData();
+    fd.append("image", blob, name);
+    fd.append("type", "input");
+    fd.append("subfolder", INIF);
+    fd.append("overwrite", "true");
+    const r = await fetch("/upload/image", { method: "POST", body: fd });
+    if (!r.ok) throw new Error("upload/image " + r.status);
+    return r.json();
+}
+
+async function refreshNodeOptions() {
+    // INPUT_TYPES rescans input/dsh/ per object_info request, so refetching the
+    // defs is enough to teach existing nodes about newly staged assets/files.
+    for (const cls of ["DSStudioAsset", "DSStudioImage"]) {
+        const r = await fetch("/object_info/" + cls);
+        if (!r.ok) continue;
+        const def = (await r.json())[cls];
+        const opts = def?.input?.required?.asset?.[0] || def?.input?.required?.file?.[0];
+        if (!opts) continue;
+        for (const node of app.graph._nodes) {
+            if (node.type !== cls) continue;
+            for (const w of node.widgets || []) {
+                if (w.name === "asset" || w.name === "file") {
+                    w.options.values = opts;
+                    if (!opts.includes(w.value)) { w.value = opts[0]; node.setDirtyCanvas(true, true); }
+                }
+            }
+        }
+    }
+}
+
+function renameAssetOutputs(slug, payload) {
+    // Cosmetic: label the fixed video_/audio_ sockets with this asset's keys.
+    if (!payload) return;
+    for (const node of app.graph._nodes) {
+        if (node.type !== "DSStudioAsset") continue;
+        const w = node.widgets.find((x) => x.name === "asset");
+        if (!w || w.value !== slug) continue;
+        const vids = payload.videos || [];
+        const auds = payload.audio || [];
+        for (let i = 0; i < 3; i++) {
+            if (node.outputs[1 + i]) node.outputs[1 + i].name = vids[i] ? "video · " + (vids[i].key || vids[i].file) : "video_" + (i + 1) + " (unused)";
+            if (node.outputs[4 + i]) node.outputs[4 + i].name = auds[i] ? "audio · " + (auds[i].key || auds[i].file) : "audio_" + (i + 1) + " (unused)";
+        }
+        node.setDirtyCanvas(true, true);
+    }
+}
+
+// ---- flows ---------------------------------------------------------------
+async function stageAsset(slug) {
+    if (isInIframe) {
+        toParent({ type: "stage-asset", slug });
+        return;
+    }
+    // standalone: fetch the sidecar + its media from DSH directly (CORS per contract).
+    const base = dshOrigin();
+    const sess = dshSession();
+    const libUrl = `${base}/director-studio/api/library?kind=assets&session=${encodeURIComponent(sess)}`;
+    // ponytail: exact assets-list payload shape is pinned by BRIDGE_CONTRACT.md v1;
+    // if the dsh-director session renames it, this one call is the edit point.
+    const entry = (await (await fetch(libUrl)).json()).assets?.find((a) => a.slug === slug);
+    if (!entry) return;
+    for (const grp of ["images", "videos", "audio"]) {
+        for (const item of entry[grp] || []) {
+            const blob = await (await fetch(`${base}/director-studio/api/file?path=${encodeURIComponent(item.abs)}&session=${encodeURIComponent(sess)}`)).blob();
+            await uploadStaged(item.file || item.name, blob);
+        }
+    }
+    const sc = { slug, ...entry };
+    const fd = new FormData();
+    fd.append("image", new Blob([JSON.stringify(sc)], { type: "application/json" }), `asset_${slug}.json`);
+    fd.append("type", "input");
+    fd.append("subfolder", INIF);
+    fd.append("overwrite", "true");
+    await fetch("/upload/image", { method: "POST", body: fd });
+    await refreshNodeOptions();
+    renameAssetOutputs(slug, entry);
+}
+
+function requestPick(node) {
+    const reqId = "req" + (++reqSeq);
+    pendingPicks.set(reqId, node);
+    toParent({ type: "pick-request", reqId, kind: node.type === "LoadVideo" ? "footage" : "images" });
+}
+
+// ---- node wiring ----------------------------------------------------------
+app.registerExtension({
+    name: "dsh.studio.link",
+    settings: [
+        { id: "DSHStudio.dshOrigin", name: "DSH base URL (standalone mode)", type: "string", defaultValue: "http://127.0.0.1:3081" },
+        { id: "DSHStudio.session", name: "DSH director-studio session token", type: "string", defaultValue: "" },
+        { id: "DSHStudio.parentOrigin", name: "Director Studio origin (empty = any)", type: "string", defaultValue: "" },
+    ],
+    setup() {
+        toParent({ type: "bridge-hello" });
+        // v1.6: confession — WHY did this page just load? Navigation Timing distinguishes a browser
+        // reload (F5, our ⟳, crash-reload, memory-saver restore = 'reload') from fresh navigation
+        // (parent writing src = 'navigate'). Parent logs it as a note.
+        try {
+            const n = performance.getEntriesByType("navigation")[0];
+            if (n) toParent({ type: "iframe-nav", kind: n.type });
+        } catch {}
+        window.addEventListener("beforeunload", () => {
+            try { toParent({ type: "iframe-leaving" }); } catch {}
+        });
+        // v1.8: ship the frame's JS errors to the parent's note line — the parent cannot read a
+        // cross-origin iframe console, and 'preview broken only when embedded' demanded eyes inside.
+        window.addEventListener("error", (e) => {
+            try { toParent({ type: "iframe-error", msg: String(e.message), at: String(e.filename).split("/").pop() + ":" + e.lineno }); } catch {}
+        });
+        window.addEventListener("unhandledrejection", (e) => {
+            try { toParent({ type: "iframe-error", msg: "promise: " + String(e.reason && e.reason.message || e.reason) }); } catch {}
+        });
+    },
+    beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name === "DSStudioAsset") {
+            const onCreated = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                const r = onCreated ? onCreated.apply(this, arguments) : undefined;
+                this.addWidget("button", "⬇ Stage from Director Studio", null, () => {
+                    const w = this.widgets.find((x) => x.name === "asset");
+                    stageAsset(w ? w.value : "");
+                });
+                return r;
+            };
+        }
+        // v1.12: LoadImage/LoadVideo wiring DISABLED per user request — re-enable by restoring:
+        //   if (nodeData.name === "LoadImage" || nodeData.name === "LoadVideo") {
+        if (false) {
+            // v1.7: an on-node button (the v1.5 combo hijack lost to the frontend's own upload widget
+            // interception — it fires the OS dialog before any wrapped callback). Button always works.
+            const onCreated = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                const r = onCreated ? onCreated.apply(this, arguments) : undefined;
+                this.addWidget("button", "\u2B07 Pick from Director Studio", null, () => requestPick(this));
+                return r;
+            };
+            const extra = nodeType.prototype.getExtraMenuOptions;
+            nodeType.prototype.getExtraMenuOptions = function (opts) {
+                const r = extra ? extra.apply(this, arguments) : undefined;
+                opts.push({ content: "Pick from Director Studio", callback: () => requestPick(this) });
+                return r;
+            };
+        }
+    },
+});
