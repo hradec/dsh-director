@@ -184,7 +184,7 @@ export function ComfyFrame({sessionId}){
   useEffect(()=>{G.picker=picker;
     // vendor styles.css restyles .btn/.primary GLOBALLY — it turns the tab bar into orange pills.
     // Mount it only while the pick dialog is open (StudioRoot owns it when the studio view is mounted).
-    if(!picker||document.querySelector('style[data-director=media]')&&document.querySelector('main.footage-board'))return;   // studio view already styles its own boards
+    if(!picker)return;   // duplicate with StudioRoot's copy while the studio is mounted is harmless: identical sheet, same rules
     const el=document.createElement('style');el.dataset.director='vendor-picker';el.textContent=vcss;document.head.append(el);
     return()=>el.remove();
   },[picker]);   // frames keep z50: the portal dialog (z70/71) lives in the SAME body layer and wins — sinking frames caused the near-black flash
