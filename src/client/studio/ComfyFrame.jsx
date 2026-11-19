@@ -11,53 +11,55 @@ const IMAGE_RE=/\.(png|jpe?g|webp|gif|bmp)$/i,AUDIO_RE=/\.(wav|mp3|flac|ogg|m4a)
 const ASSET_KINDS=['actors','scenes','props','costumes','layouts','voices'];
 const originOf=(h)=>{try{return new URL(h).origin;}catch{return ''};};
 // One persistent iframe PER ComfyUI endpoint in document.body — switching hosts shows/hides frames instead of re-navigating.
-const floatFrames=new Map();         // host URL → {box,frame}
-const bridgeLinked=new Map();        // host URL → the extension said bridge-hello
 
-let activeHost=(typeof localStorage!=='undefined'?localStorage.getItem('dsh-comfy-host'):null)??'';   // last-used endpoint, even while the tab is closed
-let hostsCache=[];                                            // for bridge-ready payloads
-const pendingLoad=new Map();                                  // host → queued load-workflow msgs awaiting bridge-hello
-const helloCbs=new Set();
-const deferred=[];                                            // workflows awaiting the first ComfyUI tab mount
-let openComfyTab=null;                                        // set by index.jsx from ctx.sidebarRight.openTab
-let noteSink=null;                                            // mounted ComfyFrame setNote, for module-originated lines
 let ackTimer=0;
 function clearAck(){if(ackTimer){clearTimeout(ackTimer);ackTimer=0;}}
 function armAck(){
   // diagnostic only (no gate): if the endpoint never acks a load, say so — 242/243 still run an extension
   // without the v1.2-iframe load-workflow case (their custom_nodes copy predates the edit / nfsshare not mounted at install time)
   clearAck();
-  ackTimer=setTimeout(()=>{ackTimer=0;if(noteSink)noteSink('ComfyUI never confirmed the workflow load — this endpoint likely runs an older dsh-studio-link: 242/243 need install.sh re-run + ComfyUI restart (their /extensions/dsh-studio-link/dsh_link.js has no load-workflow)');},15000);
+  ackTimer=setTimeout(()=>{ackTimer=0;if(G.noteSink)G.noteSink('ComfyUI never confirmed the workflow load — this endpoint likely runs an older dsh-studio-link: 242/243 need install.sh re-run + ComfyUI restart (their /extensions/dsh-studio-link/dsh_link.js has no load-workflow)');},15000);
 }
-export function setComfyTabOpener(fn){openComfyTab=fn;}
+
+// ALL mutable bridge state lives on globalThis: the harness RE-RUNS the plugin factory (session
+// switch, re-activation) — a fresh module instance with per-instance Maps could not see the frames
+// already in the DOM, silently created new ones and forced a full ComfyUI re-boot with no src write
+// and no DOM removal for forensics to catch (the line 'a NEW ComfyUI frame element was created
+// mid-page' proved exactly this). Shared state across instances = re-instantiation REUSES live frames.
+const G=globalThis.__DSH_COMFY_STATE__??(globalThis.__DSH_COMFY_STATE__={
+  frames:new Map(), linked:new Map(), pending:new Map(), deferred:[], helloCbs:new Set(), srcWrites:[],
+  activeHost:(typeof localStorage!=='undefined'?localStorage.getItem('dsh-comfy-host'):null)??'',
+  hostsCache:[], warmed:false, listener:false, noteSink:null, openTab:null, moduleSid:'',
+});
+export function setComfyTabOpener(fn){G.openTab=fn;}
 
 function sendBridge(h,msg){
-  const frame=floatFrames.get(h)?.frame,o=originOf(h);
+  const frame=G.frames.get(h)?.frame,o=originOf(h);
   if(!frame?.isConnected||!o)return false;
   frame.contentWindow?.postMessage({ns:NS,v:V,...msg},o);return true;
 }
 
 function markHello(h){
-  bridgeLinked.set(h,true);
-  sendBridge(h,{type:'bridge-ready',hosts:hostsCache});
+  G.linked.set(h,true);
+  sendBridge(h,{type:'bridge-ready',hosts:G.hostsCache});
   // latest-wins: stale queued loads from earlier attempts must NOT replay (replaying looked like the canvas reloading right after a load)
-  const m=pendingLoad.get(h);
-  if(m){pendingLoad.delete(h);sendBridge(h,m);armAck();}
-  for(const cb of helloCbs)cb(h);
+  const m=G.pending.get(h);
+  if(m){G.pending.delete(h);sendBridge(h,m);armAck();}
+  for(const cb of G.helloCbs)cb(h);
 }
 
 // Right-click "Open in ComfyUI" lane — lives at module scope so it answers even when the sidebar
 // ComfyUI tab is closed: the endpoint's frame is kept alive after first visit, or booted hidden on demand.
 // hello catcher (module scope so closed-tab frames still register), DOM-guarded: importing the
 // bundle must not execute UI side effects — build.test pins that invariant.
-if(typeof window!=='undefined'&&typeof window.addEventListener==='function'){
+if(typeof window!=='undefined'&&typeof window.addEventListener==='function'&&!G.listener){G.listener=true;
   window.addEventListener('message',(e)=>{
     const d=e.data;if(!d||d.ns!==NS||d.v!==V)return;
-    const h=activeHost,o=originOf(h);if(!o||e.origin!==o)return;
+    const h=G.activeHost,o=originOf(h);if(!o||e.origin!==o)return;
     if(d.type==='bridge-hello'){markHello(h);return;}
-    if(d.type==='workflow-loaded'){clearAck();if(noteSink)noteSink('ComfyUI loaded the workflow into its canvas ✓');return;}
+    if(d.type==='workflow-loaded'){clearAck();if(G.noteSink)G.noteSink('ComfyUI loaded the workflow into its canvas ✓');return;}
     // verbatim from the iframe — no local guesswork about what the graph did
-    if(d.type==='workflow-error'){clearAck();if(noteSink)noteSink(`ComfyUI rejected the workflow: ${d.error??'unknown error'}`);}
+    if(d.type==='workflow-error'){clearAck();if(G.noteSink)G.noteSink(`ComfyUI rejected the workflow: ${d.error??'unknown error'}`);}
   });
 }
 
@@ -65,19 +67,18 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'){
 // background, so a later right-click lands on a running ComfyUI canvas instead of paying its
 // cold-start minute inside the tab (the "dont force comfyui to refresh" complaint).
 // Browser-only: skipped unless a real document exists (lazy-factory tests provide neither).
-let warmed=false;
 async function warmComfyFrame(){
-  if(warmed)return;
-  moduleSid=globalThis.__DSH_DIRECTOR_SESSION__||(typeof localStorage!=='undefined'?localStorage.getItem('dsh-director-session'):null)||'';
-  if(!moduleSid)return;                                       // retry once a session is known (component mount re-fetches settings itself)
-  warmed=true;
+  if(G.warmed)return;
+  G.moduleSid=globalThis.__DSH_DIRECTOR_SESSION__||(typeof localStorage!=='undefined'?localStorage.getItem('dsh-director-session'):null)||'';
+  if(!G.moduleSid)return;                                       // retry once a session is known (component mount re-fetches settings itself)
+  G.warmed=true;
   try{
     const v=await apiFetch('/api/library/app-settings');
     const list=String(v?.comfy?.urls??'').split('\n').map((x)=>x.trim()).filter(Boolean);
     if(!list.length)return;
-    hostsCache=list;
-    const h=activeHost&&list.includes(activeHost)?activeHost:list[0];
-    activeHost=h;
+    G.hostsCache=list;
+    const h=G.activeHost&&list.includes(G.activeHost)?G.activeHost:list[0];
+    G.activeHost=h;
     const rec=ensureFrame(h);
     if(rec.frame.dataset.src!==h){rec.frame.dataset.src=h;writeSrc(rec.frame,h,'warmComfyFrame +4s boot');}
   }catch{}
@@ -86,34 +87,33 @@ if(typeof window!=='undefined'&&typeof document!=='undefined'&&typeof document.b
 
 globalThis.__DSH_COMFY_BRIDGE__=(msg)=>{
   if(!msg)return false;
-  if(msg.type!=='load-workflow'){const h=activeHost;return h&&bridgeLinked.get(h)?sendBridge(h,msg):false;}
+  if(msg.type!=='load-workflow'){const h=G.activeHost;return h&&G.linked.get(h)?sendBridge(h,msg):false;}
   // Send to the CURRENT sidebar ComfyUI endpoint; no tab open yet → open it and let the component boot
   // the first configured endpoint (its settings fetch owns host choice). openTab is what the harness offers.
-  const h=activeHost;
-  if(h&&floatFrames.get(h)?.frame.isConnected){
-    openComfyTab?.();
-    if(bridgeLinked.get(h)){const ok=sendBridge(h,msg);if(ok)armAck();return ok;}
-    pendingLoad.set(h,msg);armAck();return true;   // latest-wins: one parked load per host, delivered on hello (or the note explains)
+  const h=G.activeHost;
+  if(h&&G.frames.get(h)?.frame.isConnected){
+    G.openTab?.();
+    if(G.linked.get(h)){const ok=sendBridge(h,msg);if(ok)armAck();return ok;}
+    G.pending.set(h,msg);armAck();return true;   // latest-wins: one parked load per host, delivered on hello (or the note explains)
 
   }
-  if(!openComfyTab)return false;   // no tab system available — caller falls back to clipboard/new tab
-  deferred.push(msg);openComfyTab();return true;
+  if(!G.openTab)return false;   // no tab system available — caller falls back to clipboard/new tab
+  G.deferred.push(msg);G.openTab();return true;
 };
 
-const srcWrites=[];                                           // postmortem: every src assignment, why, and stack
-function writeSrc(f,src,why){srcWrites.push({t:Date.now(),src:String(src),why,stack:new Error().stack});f.src=src;}
+function writeSrc(f,src,why){G.srcWrites.push({t:Date.now(),src:String(src),why,stack:new Error().stack});f.src=src;}
 let observed=false;
 function observeRemoval(){                                    // does the APP rip our box out of the DOM? log it (turn-end re-render was the user-observed trigger)
   if(observed||typeof MutationObserver!=='function'||typeof document==='undefined')return;observed=true;
-  new MutationObserver((ms)=>{for(const m of ms)for(const n of m.removedNodes)for(const [h,rec] of floatFrames)if(n===rec.box){
+  new MutationObserver((ms)=>{for(const m of ms)for(const n of m.removedNodes)for(const [h,rec] of G.frames)if(n===rec.box){
     const t=new Date().toLocaleTimeString();
     globalThis.__DSH_FRAME_LOG__=(globalThis.__DSH_FRAME_LOG__??[]).concat([{t,host:h,event:'box-removed'}]);
-    if(noteSink)noteSink(`${h}: frame box REMOVED from page DOM at ${t} (by the app, not by our code) — re-attaching`);
+    if(G.noteSink)G.noteSink(`${h}: frame box REMOVED from page DOM at ${t} (by the app, not by our code) — re-attaching`);
   }}).observe(document.body,{childList:true});
 }
 function ensureFrame(host){
   const livePage=typeof document!=='undefined'&&!!document.body;   // module tests run without body; creation audits are browser-only
-  const rec=floatFrames.get(host);
+  const rec=G.frames.get(host);
   if(rec?.frame.isConnected)return rec;
   // Harness re-renders can DETACH our body-level box; re-attach the SAME element — a detached-then-
   // re-appended iframe keeps its document (no reload). Only a truly absent frame may be created:
@@ -121,7 +121,7 @@ function ensureFrame(host){
   if(rec){if(!rec.box.isConnected)document.body.appendChild(rec.box);return rec;}
   // Element CREATED while the page lives = the old box vanished invisibly (browser purge, outerHTML
   // rewrite, adopted node): the only reload path the load-counter and body-observer can't see. Make it speak.
-  if(livePage){globalThis.__DSH_FRAME_LOG__=(globalThis.__DSH_FRAME_LOG__??[]).concat([{t:Date.now(),host,event:'frame-created',stack:new Error().stack}]);if(noteSink)noteSink(`${host}: a NEW ComfyUI frame element was created mid-page (old one disappeared without any src write or DOM-removal notice) — see console stack`);}
+  if(livePage){globalThis.__DSH_FRAME_LOG__=(globalThis.__DSH_FRAME_LOG__??[]).concat([{t:Date.now(),host,event:'frame-created',stack:new Error().stack}]);if(G.noteSink)G.noteSink(`${host}: a NEW ComfyUI frame element was created mid-page (old one disappeared without any src write or DOM-removal notice) — see console stack`);}
   const box=document.createElement('div');box.className='comfy-frame-floating';
   // NEVER display:none: Chrome memory-saver DISCARDS hidden iframe documents and reloads them on show —
   // the "ComfyUI refreshed out of the blue, 2 minutes gone" complaints. Off-screen-but-rendered survives.
@@ -130,20 +130,19 @@ function ensureFrame(host){
   let loads=0;
   frame.addEventListener('load',()=>{loads++;if(loads>1){
     console.warn(`[comfy-frame] ${host} load #${loads}`,new Error().stack);
-    const recent=srcWrites.filter((w)=>Date.now()-w.t<4000);
+    const recent=G.srcWrites.filter((w)=>Date.now()-w.t<4000);
     const verdict=recent.length?`a src write caused it: ${recent[recent.length-1].why}`:'NO src write — the browser reloaded the document itself (discard/OOM) or a removed+re-created element';
     globalThis.__DSH_FRAME_LOG__=(globalThis.__DSH_FRAME_LOG__??[]).concat([{t:Date.now(),host,n:loads,verdict}]);
-    if(noteSink)noteSink(`ComfyUI (${host}) reloaded on its own: ${verdict}`);
+    if(G.noteSink)G.noteSink(`ComfyUI (${host}) reloaded on its own: ${verdict}`);
   }});
   observeRemoval();
 
   box.append(frame);document.body.append(box);
-  const out={box,frame};floatFrames.set(host,out);return out;
+  const out={box,frame};G.frames.set(host,out);return out;
 }
 
-let moduleSid='';                                             // component keeps this fresh; localStorage seeds it so a tab that opens BEFORE any studio view still authenticates
 async function apiFetch(p,init){
-  const url='/director-studio'+p+(moduleSid?`${p.includes('?')?'&':'?'}session=${encodeURIComponent(moduleSid)}`:'');
+  const url='/director-studio'+p+(G.moduleSid?`${p.includes('?')?'&':'?'}session=${encodeURIComponent(G.moduleSid)}`:'');
   const r=await fetch(url,init);
   const v=await r.json().catch(()=>null);
   if(!r.ok)throw new Error(v?.detail??`${p} → HTTP ${r.status}`);
@@ -154,12 +153,12 @@ export function ComfyFrame({sessionId}){
   const [hosts,setHosts]=useState([]);
   const [host,setHost]=useState(()=>localStorage.getItem('dsh-comfy-host')??'');
   const [note,setNote]=useState('');
-  const [linked,setLinked]=useState(()=>bridgeLinked.get(localStorage.getItem('dsh-comfy-host')??'')??false);
+  const [linked,setLinked]=useState(()=>G.linked.get(localStorage.getItem('dsh-comfy-host')??'')??false);
   const [picker,setPicker]=useState(null);           // {reqId,kind,files,error?}
   const anchorRef=useRef(null);
   const stagingRef=useRef({});                       // slug → sidecar waiting for stage-images-done
   const sid=sessionId||globalThis.__DSH_DIRECTOR_SESSION__||(typeof localStorage!=='undefined'?localStorage.getItem('dsh-director-session'):null)||'';
-  moduleSid=sid;
+  G.moduleSid=sid;
   if(sid&&typeof localStorage!=='undefined')localStorage.setItem('dsh-director-session',sid);
   if(sid)globalThis.__DSH_DIRECTOR_SESSION__=sid;
 
@@ -167,12 +166,12 @@ export function ComfyFrame({sessionId}){
 
   useEffect(()=>{if(!sid)return;apiFetch('/api/library/app-settings').then((v)=>{
     const list=String(v?.comfy?.urls??'').split('\n').map((s)=>s.trim()).filter(Boolean);
-    setHosts(list);hostsCache=list;setHost((h)=>h||list[0]||'');
+    setHosts(list);G.hostsCache=list;setHost((h)=>h||list[0]||'');
     if(!list.length)setNote('No ComfyUI endpoints configured — add them in the Studio settings gear (ComfyUI tab).');
   }).catch((e)=>setNote(`Could not read Studio settings: ${e.message}`));},[sid]);
-  useEffect(()=>{if(host){localStorage.setItem('dsh-comfy-host',host);activeHost=host;}},[host]);
-  useEffect(()=>{const cb=(h)=>{if(h===host)setLinked(true);};helloCbs.add(cb);if(bridgeLinked.get(host))setLinked(true);return()=>helloCbs.delete(cb);},[host]);
-  useEffect(()=>{noteSink=setNote;return()=>{if(noteSink===setNote)noteSink=null;};},[setNote]);
+  useEffect(()=>{if(host){localStorage.setItem('dsh-comfy-host',host);G.activeHost=host;}},[host]);
+  useEffect(()=>{const cb=(h)=>{if(h===host)setLinked(true);};G.helloCbs.add(cb);if(G.linked.get(host))setLinked(true);return()=>G.helloCbs.delete(cb);},[host]);
+  useEffect(()=>{G.noteSink=setNote;return()=>{if(G.noteSink===setNote)G.noteSink=null;};},[setNote]);
 
   // Persistent-frame lifecycle: point at host ONLY when the host actually changed (tab switches must not
   // re-navigate), cover the anchor rect, show; on unmount hide — never remove (removal = reload = minutes).
@@ -180,10 +179,10 @@ export function ComfyFrame({sessionId}){
     if(!host)return;
     const rec=ensureFrame(host);
     if(rec.frame.dataset.src!==host){rec.frame.dataset.src=host;writeSrc(rec.frame,host,'component [host] effect mount/switch');}
-    const m=deferred.pop();   // latest-wins
-    if(m){if(bridgeLinked.get(host))sendBridge(host,m);else pendingLoad.set(host,m);}
+    const m=G.deferred.pop();   // latest-wins
+    if(m){if(G.linked.get(host))sendBridge(host,m);else G.pending.set(host,m);}
     // z-index 50: above harness sidebar chrome, below our own dialogs (settings 60, picker 70)
-    const sync=()=>{const a=anchorRef.current;if(!a)return;const r=a.getBoundingClientRect();for(const [h,other] of floatFrames)if(other.box.isConnected)other.box.style.left=h===host?`${r.left}px`:'-99999px';if(!rec.box.isConnected)return;Object.assign(rec.box.style,{position:'fixed',left:`${r.left}px`,top:`${r.top}px`,width:`${r.width}px`,height:`${r.height}px`,zIndex:'50'});};
+    const sync=()=>{const a=anchorRef.current;if(!a)return;const r=a.getBoundingClientRect();for(const [h,other] of G.frames)if(other.box.isConnected)other.box.style.left=h===host?`${r.left}px`:'-99999px';if(!rec.box.isConnected)return;Object.assign(rec.box.style,{position:'fixed',left:`${r.left}px`,top:`${r.top}px`,width:`${r.width}px`,height:`${r.height}px`,zIndex:'50'});};
     sync();
     const ro=new ResizeObserver(sync);if(anchorRef.current)ro.observe(anchorRef.current);
     window.addEventListener('resize',sync);window.addEventListener('scroll',sync,true);
@@ -268,13 +267,13 @@ export function ComfyFrame({sessionId}){
     window.addEventListener('message',onMsg);return()=>window.removeEventListener('message',onMsg);
   },[hosts,host,sid]);
 
-  const switchHost=(h)=>{if(h===host)return;setHost(h);bridgeLinked.set(h,false);setLinked(false);stagingRef.current={};};
+  const switchHost=(h)=>{if(h===host)return;setHost(h);G.linked.set(h,false);setLinked(false);stagingRef.current={};};
 
   return <div className="comfy-frame-tab">
     <div className="comfy-frame-bar">
       {hosts.map((h)=><button key={h} type="button" className={`btn sm ${h===host?'primary':'ghost'}`} onClick={()=>switchHost(h)}>{h.replace(/^https?:\/\//,'')}</button>)}
       {!hosts.length?<span className="muted tiny">no endpoints — set them in Studio settings (gear → ComfyUI)</span>:null}
-      <button type="button" className="btn ghost sm" title="Reload this endpoint's frame" onClick={()=>{const f=floatFrames.get(host)?.frame;if(f){bridgeLinked.set(host,false);setLinked(false);f.dataset.src='';writeSrc(f,'about:blank','user clicked reload button');writeSrc(f,host,'user clicked reload button');}}}>⟳</button>
+      <button type="button" className="btn ghost sm" title="Reload this endpoint's frame" onClick={()=>{const f=G.frames.get(host)?.frame;if(f){G.linked.set(host,false);setLinked(false);f.dataset.src='';writeSrc(f,'about:blank','user clicked reload button');writeSrc(f,host,'user clicked reload button');}}}>⟳</button>
       <span className="muted tiny" title="client build running in this page — if it disagrees with the shipped version, the page has NOT reloaded yet">v{__DSH_VERSION__}</span>
       <span className="muted tiny" title={linked?'set by the dsh-studio-link extension inside ComfyUI':'If this never flips to ✓: open ComfyUI settings (gear) inside the frame, find DSHStudio.comfyOrigin, set it to '+location.origin+' , then hit ⟳ — see BRIDGE_CONTRACT v1.3'}>{linked?'bridge ✓':'awaiting dsh-studio-link bridge-hello…'}</span>
     </div>
