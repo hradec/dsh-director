@@ -4,7 +4,36 @@ test('built lazy browser factory exposes activation without executing UI side ef
   execFileSync(process.execPath,['scripts/build.mjs']);
   let factory;const require=createRequire(import.meta.url);
   vm.runInNewContext(await readFile('lib/client.js','utf8'),{window:{__ModuleLoader__:{load(row){assert.equal(row.id,'dsh-director');factory=row.factory;}}}});
-  const client=factory(require);assert.equal(typeof client.apply,'function');assert.deepEqual(Array.from(client.inject),['slots','conversation','connection','sessions','sidebarRightTabs','documentPreviews']);
+  const client=factory(require);assert.equal(typeof client.apply,'function');assert.deepEqual(Array.from(client.inject),['slots','conversation','connection','sessions','sidebarRight','sidebarRightTabs','documentPreviews']);
+});
+
+test('declared sidebar service activates every Studio tab and opens ComfyUI after activation',async()=>{
+  execFileSync(process.execPath,['scripts/build.mjs']);
+  let factory,active=true;const require=createRequire(import.meta.url),opened=[],tabs=[],disposers=[];
+  const sandbox={window:{__ModuleLoader__:{load(row){factory=row.factory;}}}};
+  vm.runInNewContext(await readFile('lib/client.js','utf8'),sandbox);
+  const client=factory(require);
+  const sidebarRight={openTab(kind,options){assert.equal(this,sidebarRight);opened.push({kind,options});}};
+  const ctx=new Proxy({
+    effect(fn,label){if(label==='director ComfyUI tab opener'||label?.startsWith('director Studio'))disposers.push(fn());},
+    inject(){},
+    slots:{inject(_seat,register){return register();},register(){return ()=>{};}},
+    sidebarRight,
+    sidebarRightTabs:{register(definition){tabs.push(definition.kind);return ()=>{};}},
+  },{get(target,name){
+    if(name!=='effect'&&name!=='inject'){
+      assert.ok(client.inject.includes(name),`cannot get property "${name}" without inject`);
+      assert.ok(active,`cannot get required service "${name}" in inactive context`);
+    }
+    return target[name];
+  }});
+  client.apply(ctx);active=false;
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(tabs.length,8);assert.ok(tabs.includes('director-studio-comfy'));
+  assert.equal(sandbox.__DSH_COMFY_BRIDGE__({type:'load-workflow',workflow:{nodes:[]}}),true);
+  assert.deepEqual(JSON.parse(JSON.stringify(opened)),[{kind:'director-studio-comfy',options:{params:{}}}]);
+  for(const dispose of disposers.reverse())dispose?.();
+  assert.equal(sandbox.__DSH_COMFY_BRIDGE__({type:'load-workflow',workflow:{nodes:[]}}),false,'disposed plugin must release its sidebar opener');
 });
 
 test('the single Director Studio ask door queues every request as an agent task with no connection or GPU gates',async()=>{

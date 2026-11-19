@@ -174,6 +174,9 @@ export function ComfyFrame({sessionId}){
       const d=e.data;if(!d||d.ns!==NS||d.v!==V)return;
       const o=originOf(host);if(!o||e.origin!==o)return;   // only from the currently embedded host
       if(d.type==='bridge-hello')return;   // handled at module scope (markHello)
+      if(d.type==='workflow-loaded'){setNote('ComfyUI loaded the workflow into its canvas ✓');return;}
+      // Surface the iframe's own failure verbatim — no local guesswork about what the graph did.
+      if(d.type==='workflow-error'){setNote(`ComfyUI rejected the workflow: ${d.error??'unknown error'}`);return;}
       if(d.type==='library-request'){
         const k=d.kind;
         const grab=k==='assets'?Promise.all(ASSET_KINDS.map((kind)=>apiFetch(`/api/library?kind=${kind}`).then((items)=>({kind,items})))).then((kinds)=>({kinds}))

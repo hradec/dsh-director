@@ -1,6 +1,7 @@
 import {MediaCard} from './MediaCard.jsx';
 import {askDshAgent} from './studio/agent-queue.jsx';
 import {GpuUsageSettings} from './GpuUsageSettings.jsx';
+import {setComfyTabOpener} from './studio/ComfyFrame.jsx';
 import {PresetAwareGpuStatus} from './GpuStatus.jsx';
 import {AssetsTab,ComfyTab,FootageTab,ImagesTab,MediaTab,ProductionTab,StoryTab,TimelineTab} from './studio/StudioSidebar.jsx';
 import {createMediaBody,MEDIA_KINDS} from './MediaBodies.jsx';
@@ -8,7 +9,7 @@ import {startMediaPathFixer} from './markdown-media.mjs';
 import {startMediaFenceTakeover} from './media-fence-enhancer.mjs';
 import css from './media.css';
 export const name='dsh-director-ui';
-export const inject=['slots','conversation','connection','sessions','sidebarRightTabs','documentPreviews'];
+export const inject=['slots','conversation','connection','sessions','sidebarRight','sidebarRightTabs','documentPreviews'];
 export function apply(ctx){
   ctx.effect(()=>startMediaPathFixer(document),'director markdown media path repair');
   ctx.effect(()=>startMediaFenceTakeover(document),'director GenUI media fence takeover');
@@ -44,7 +45,11 @@ export function apply(ctx){
      {id:'dsh-director-studio-story',kind:'director-studio-story',title:()=>'Story',Body:StoryTab,guide:[{id:'story',order:50,title:()=>'Story',description:()=>'Decision cards, canon floor, story beats on two clocks — the wall that remembers what you decided.'}]},
      {id:'dsh-director-studio-media',kind:'director-studio-media',title:()=>'Media',Body:MediaTab,guide:[{id:'media',order:35,title:()=>'Media',description:()=>'Every image and video of this session as cards: Images/Videos/Both filter, same-title version stacks, click to zoom or play.'}]},
    ];
-   if(ctx.sidebarRight?.openTab)import('./studio/ComfyFrame.jsx').then((m)=>m.setComfyTabOpener(()=>ctx.sidebarRight.openTab('director-studio-comfy',{params:{}})));
+   const sidebarRight=ctx.sidebarRight;
+   ctx.effect(()=>{
+     setComfyTabOpener(()=>sidebarRight.openTab('director-studio-comfy',{params:{}}));
+     return ()=>setComfyTabOpener(null);
+   },'director ComfyUI tab opener');
    if(ctx.sidebarRightTabs?.register)for(const definition of studioTabs){
      const Body=definition.Body;
      ctx.effect(()=>ctx.sidebarRightTabs.register(definition),`director Studio ${definition.kind} type`);
