@@ -79,7 +79,7 @@ async function warmComfyFrame(){
     const h=activeHost&&list.includes(activeHost)?activeHost:list[0];
     activeHost=h;
     const rec=ensureFrame(h);
-    if(rec.frame.dataset.src!==h){rec.frame.dataset.src=h;rec.frame.src=h;}
+    if(rec.frame.dataset.src!==h){rec.frame.dataset.src=h;writeSrc(rec.frame,h,'warmComfyFrame +4s boot');}
   }catch{}
 }
 if(typeof window!=='undefined'&&typeof document!=='undefined'&&typeof document.body!=='undefined'&&typeof setTimeout==='function')setTimeout(warmComfyFrame,4000);
@@ -100,6 +100,17 @@ globalThis.__DSH_COMFY_BRIDGE__=(msg)=>{
   deferred.push(msg);openComfyTab();return true;
 };
 
+const srcWrites=[];                                           // postmortem: every src assignment, why, and stack
+function writeSrc(f,src,why){srcWrites.push({t:Date.now(),src:String(src),why,stack:new Error().stack});f.src=src;}
+let observed=false;
+function observeRemoval(){                                    // does the APP rip our box out of the DOM? log it (turn-end re-render was the user-observed trigger)
+  if(observed||typeof MutationObserver!=='function'||typeof document==='undefined')return;observed=true;
+  new MutationObserver((ms)=>{for(const m of ms)for(const n of m.removedNodes)for(const [h,rec] of floatFrames)if(n===rec.box){
+    const t=new Date().toLocaleTimeString();
+    globalThis.__DSH_FRAME_LOG__=(globalThis.__DSH_FRAME_LOG__??[]).concat([{t,host:h,event:'box-removed'}]);
+    if(noteSink)noteSink(`${h}: frame box REMOVED from page DOM at ${t} (by the app, not by our code) — re-attaching`);
+  }}).observe(document.body,{childList:true});
+}
 function ensureFrame(host){
   const rec=floatFrames.get(host);
   if(rec?.frame.isConnected)return rec;
@@ -112,7 +123,15 @@ function ensureFrame(host){
   // the "ComfyUI refreshed out of the blue, 2 minutes gone" complaints. Off-screen-but-rendered survives.
   Object.assign(box.style,{position:'fixed',left:'-99999px',top:'0px',width:'900px',height:'700px',zIndex:'50'});
   const frame=document.createElement('iframe');frame.className='comfy-frame';frame.title='ComfyUI — '+host;
-  let loads=0;frame.addEventListener('load',()=>{loads++;if(loads>1){console.warn(`[comfy-frame] ${host} load #${loads} — an UNEXPECTED (re)load happened`,new Error().stack);globalThis.__DSH_FRAME_LOG__=(globalThis.__DSH_FRAME_LOG__??[]).concat([{t:Date.now(),host,n:loads}]);}});
+  let loads=0;
+  frame.addEventListener('load',()=>{loads++;if(loads>1){
+    console.warn(`[comfy-frame] ${host} load #${loads}`,new Error().stack);
+    const recent=srcWrites.filter((w)=>Date.now()-w.t<4000);
+    const verdict=recent.length?`a src write caused it: ${recent[recent.length-1].why}`:'NO src write — the browser reloaded the document itself (discard/OOM) or a removed+re-created element';
+    globalThis.__DSH_FRAME_LOG__=(globalThis.__DSH_FRAME_LOG__??[]).concat([{t:Date.now(),host,n:loads,verdict}]);
+    if(noteSink)noteSink(`ComfyUI (${host}) reloaded on its own: ${verdict}`);
+  }});
+  observeRemoval();
 
   box.append(frame);document.body.append(box);
   const out={box,frame};floatFrames.set(host,out);return out;
@@ -156,7 +175,7 @@ export function ComfyFrame({sessionId}){
   useEffect(()=>{
     if(!host)return;
     const rec=ensureFrame(host);
-    if(rec.frame.dataset.src!==host){rec.frame.dataset.src=host;rec.frame.src=host;}
+    if(rec.frame.dataset.src!==host){rec.frame.dataset.src=host;writeSrc(rec.frame,host,'component [host] effect mount/switch');}
     const m=deferred.pop();   // latest-wins
     if(m){if(bridgeLinked.get(host))sendBridge(host,m);else pendingLoad.set(host,m);}
     // z-index 50: above harness sidebar chrome, below our own dialogs (settings 60, picker 70)
@@ -251,7 +270,7 @@ export function ComfyFrame({sessionId}){
     <div className="comfy-frame-bar">
       {hosts.map((h)=><button key={h} type="button" className={`btn sm ${h===host?'primary':'ghost'}`} onClick={()=>switchHost(h)}>{h.replace(/^https?:\/\//,'')}</button>)}
       {!hosts.length?<span className="muted tiny">no endpoints — set them in Studio settings (gear → ComfyUI)</span>:null}
-      <button type="button" className="btn ghost sm" title="Reload this endpoint's frame" onClick={()=>{const f=floatFrames.get(host)?.frame;if(f){bridgeLinked.set(host,false);setLinked(false);f.src='about:blank';f.dataset.src='';f.src=host;}}}>⟳</button>
+      <button type="button" className="btn ghost sm" title="Reload this endpoint's frame" onClick={()=>{const f=floatFrames.get(host)?.frame;if(f){bridgeLinked.set(host,false);setLinked(false);f.dataset.src='';writeSrc(f,'about:blank','user clicked reload button');writeSrc(f,host,'user clicked reload button');}}}>⟳</button>
       <span className="muted tiny" title={linked?'set by the dsh-studio-link extension inside ComfyUI':'If this never flips to ✓: open ComfyUI settings (gear) inside the frame, find DSHStudio.comfyOrigin, set it to '+location.origin+' , then hit ⟳ — see BRIDGE_CONTRACT v1.3'}>{linked?'bridge ✓':'awaiting dsh-studio-link bridge-hello…'}</span>
     </div>
     <div ref={anchorRef} className="comfy-frame-anchor"/>
