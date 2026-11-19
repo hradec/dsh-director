@@ -53,7 +53,8 @@ export function ComfyFrame({sessionId}){
   useEffect(()=>{
     const frame=ensureFrame();
     if(host&&frame.dataset.src!==host){frame.dataset.src=host;frame.src=host;}
-    const sync=()=>{const a=anchorRef.current;if(!a||!floatHost)return;const r=a.getBoundingClientRect();Object.assign(floatHost.style,{position:'fixed',left:`${r.left}px`,top:`${r.top}px`,width:`${r.width}px`,height:`${r.height}px`,display:'block',zIndex:'4'});};
+    // z-index 50: above harness sidebar chrome, below our own dialogs (settings 60, picker 70)
+    const sync=()=>{const a=anchorRef.current;if(!a||!floatHost)return;const r=a.getBoundingClientRect();Object.assign(floatHost.style,{position:'fixed',left:`${r.left}px`,top:`${r.top}px`,width:`${r.width}px`,height:`${r.height}px`,display:'block',zIndex:'50'});};
     sync();
     const ro=new ResizeObserver(sync);if(anchorRef.current)ro.observe(anchorRef.current);
     window.addEventListener('resize',sync);window.addEventListener('scroll',sync,true);
