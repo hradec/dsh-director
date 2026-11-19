@@ -7397,18 +7397,6 @@ select {
 .footage-card{position:relative;border:1px solid var(--border-strong);border-radius:7px;overflow:hidden;cursor:pointer;background:color-mix(in srgb,var(--text) 4%,transparent)}
 .footage-new{outline:2px dashed color-mix(in srgb,var(--accent) 80%,transparent);outline-offset:-3px}
 .footage-new::after{content:"NEW";position:absolute;top:.35rem;right:.35rem;z-index:2;padding:.1rem .35rem;border-radius:5px;background:var(--accent);color:var(--bg);font-size:.58rem;font-weight:700;letter-spacing:.04em;pointer-events:none}
-/* ComfyUI sidebar tab (bridge contract v1) */
-.comfy-frame-tab{display:flex;flex-direction:column;height:100%;min-height:0;gap:.5rem}
-.comfy-frame-bar{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}
-.comfy-frame{flex:1;width:100%;min-height:0;border:1px solid var(--border-strong,#6b6157);border-radius:8px;background:#1f1d1b}
-.comfy-frame-note{font-size:.78rem;opacity:.85}
-.comfy-picker-backdrop{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.45)}
-.comfy-picker{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:71;width:min(46rem,92vw);max-height:80vh;overflow:auto;background:var(--bg-panel,#efe7da);border:1px solid var(--border-strong,#6b6157);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);color:var(--text,#231f1a);padding:.7rem;display:flex;flex-direction:column;gap:.6rem}
-.comfy-picker-head{display:flex;justify-content:space-between;align-items:center;font-weight:600}
-.comfy-picker-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(9.5rem,1fr));gap:.6rem}
-.comfy-pick-card{display:flex;flex-direction:column;gap:.25rem;padding:.4rem;border:1px solid var(--border-strong,#6b6157);border-radius:8px;background:var(--bg,#e4dbcd);cursor:pointer;text-align:left}
-.comfy-pick-card img{width:100%;height:7rem;object-fit:cover;border-radius:5px}
-.comfy-pick-card span{font-size:.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 .footage-card video{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;background:#000}
 .footage-card-foot{display:grid;gap:.25rem;padding:.35rem .45rem;font-size:.75rem}

@@ -141,3 +141,16 @@ button[data-director-send-paused]{opacity:.4;cursor:not-allowed;pointer-events:n
 .dsh-fence-reset{padding:2px 9px;font-size:12px;border:1px solid var(--dsw-alias-border-l2,#bbb);border-radius:7px;background:transparent;color:inherit;cursor:pointer}
 .dsh-fence-card .image-canvas,.dsh-fence-card .image-compare-stage{cursor:grab}
 .dsh-fence-notes{font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary,#63666b);display:flex;flex-direction:column;gap:4px}.dsh-fence-notes p{margin:0}
+
+/* ComfyUI sidebar tab (bridge contract v1) — lives in the MAIN document, media.css is the sheet injected there */
+.comfy-frame-tab{display:flex;flex-direction:column;height:100%;min-height:0;gap:.5rem}
+.comfy-frame-bar{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}
+.comfy-frame{flex:1;width:100%;min-height:0;border:1px solid var(--border-strong,#6b6157);border-radius:8px;background:#1f1d1b}
+.comfy-frame-note{font-size:.78rem;opacity:.85}
+.comfy-picker-backdrop{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.45)}
+.comfy-picker{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:71;width:min(46rem,92vw);max-height:80vh;overflow:auto;background:var(--bg-panel,#efe7da);border:1px solid var(--border-strong,#6b6157);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);color:var(--text,#231f1a);padding:.7rem;display:flex;flex-direction:column;gap:.6rem}
+.comfy-picker-head{display:flex;justify-content:space-between;align-items:center;font-weight:600}
+.comfy-picker-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(9.5rem,1fr));gap:.6rem}
+.comfy-pick-card{display:flex;flex-direction:column;gap:.25rem;padding:.4rem;border:1px solid var(--border-strong,#6b6157);border-radius:8px;background:var(--bg,#e4dbcd);cursor:pointer;text-align:left}
+.comfy-pick-card img{width:100%;height:7rem;object-fit:cover;border-radius:5px}
+.comfy-pick-card span{font-size:.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
