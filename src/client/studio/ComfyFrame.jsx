@@ -66,7 +66,9 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'&&!G.
       // audits accumulate (the second response used to erase the first before it could be copied)
       G.auditLines=(G.auditLines||[]).concat(d.lines||[]);
       if(G.auditLines.length>14)G.auditLines=G.auditLines.slice(-14);
-      if(G.noteSink)G.noteSink('Audit: '+G.auditLines.join(' | '));
+      if(G.noteSink)G.noteSink('Audit dumped to Downloads (dsh-audit-*.txt) — paste me nothing, I can read it.');
+      // the note line physically cannot hold the full audit — hand it to a file download instead
+      const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([G.auditLines.join('\n')],{type:'text/plain'}));a.download='dsh-audit-'+new Date().toISOString().replace(/[:.]/g,'-')+'.txt';a.click();
       return;}
     if(d.type==='iframe-error'){if(G.noteSink)G.noteSink(`ComfyUI JS error: ${d.msg}${d.at?` (${d.at})`:''}`);return;}
     if(d.type==='iframe-leaving'){if(G.noteSink)G.noteSink(`ComfyUI (${G.activeHost}) announced it is leaving the page at ${new Date().toLocaleTimeString()}`);return;}

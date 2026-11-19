@@ -76,7 +76,7 @@ window.addEventListener("message", async (ev) => {
                 lines.push(name + " [" + state + " rect " + Math.round(r.width) + "x" + Math.round(r.height) + " inVP " + (r.top >= 0 && r.top < innerHeight) + "]");
                 if (lines.length >= 10) break;
             }
-            toParent({ type: "diag-result", lines: lines.length ? lines : ["no /view media elements in DOM at all"] });
+            toParent({ type: "diag-result", lines: lines.length ? lines : ["dom: no /view media elements"] });   // 'dom:' tag = v1.15 present; untagged old text meant an STALE frame
             break;
         }
         case "diag": { // v1.10: self-audit every LoadImage/LoadVideo — value + what /view ACTUALLY answers inside this frame
@@ -100,7 +100,7 @@ window.addEventListener("message", async (ev) => {
                     im = "keys:" + Object.keys(n).filter((k) => /img|image|thumb|preview|media/i.test(k)).join("/") + "|widgets:" + (n.widgets || []).map((w) => w.type + ":" + w.name).join(",");
                 }
                 const rect = (n.size || []).map(Math.round).join("x");
-                lines.push((n.type === "LoadImage" ? "IMG " : "VID ") + v + " -> " + st + " || " + im + " size=" + rect);
+                lines.push("v1.15 IMG/VID " + v + " -> " + st + " || " + im + " size=" + rect);
                 if (lines.length >= 8) break;
             }
             toParent({ type: "diag-result", lines });
