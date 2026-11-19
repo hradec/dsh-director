@@ -10,7 +10,7 @@ const hasTag=(file,name)=>(file.tags??[]).some((t)=>String(t).toLowerCase()===St
 // The file url carries the on-disk absolute path in its ?path= param — that is what "copy path" puts on the clipboard.
 const fsPath=(file)=>{try{const p=new URL(file.url,location.origin).searchParams.get('path');return p?decodeURIComponent(p):file.url;}catch{return file.url;}};
 
-export function FootageBoard({lib='footage'}={}){
+export function FootageBoard({lib='footage',pickMode=false,onPick}={}){
   // One board serves both libraries: lib='footage' (media/, videos) and lib='images' (images/, pictures) — identical routes, menus, tags, groups, tasks.
   const api=(p='')=>`/api/${lib}${p}`;
   const noun=lib==='images'?'image':'video';
@@ -165,19 +165,19 @@ export function FootageBoard({lib='footage'}={}){
   const openCard=(f)=>{setPlaying(f);if(f.seen===false){setData((d)=>d?{...d,files:d.files.map((x)=>x.path===f.path?{...x,seen:true}:x)}:d);void post(api('/seen'),'POST',{path:f.path}).catch(()=>{});}};
   const news=((data?.files)??[]).filter((f)=>f.seen===false&&matches(f));
   const card=(f)=><div key={f.path} className={`footage-card${sel.has(f.path)?' footage-selected':''}${f.seen===false?' footage-new':''}`} role="button" tabIndex={0} title={`Click to ${lib==='images'?'view':'play'} · right-click for the path`}
-    onClick={()=>{if(menu){setMenu(null);return;}openCard(f);}}
-    onKeyDown={(e)=>{if(e.key==='Enter')openCard(f);}}
-    onContextMenu={(e)=>{e.preventDefault();setMenu({x:e.clientX,y:e.clientY,file:f});}}>
-    <button type="button" className={`footage-pick${sel.has(f.path)?' on':''}`} aria-label={`Select ${f.path}`} aria-pressed={sel.has(f.path)}
-      title={sel.has(f.path)?'Deselect':'Select for batch actions'} onClick={(e)=>{e.stopPropagation();toggleSel(f.path);}}>{sel.has(f.path)?'✓':''}</button>
+    onClick={()=>{if(menu){setMenu(null);return;}if(pickMode){onPick?.(f);return;}openCard(f);}}   // pickMode (ComfyUI pick dialog): click = choose, nothing else
+    onKeyDown={(e)=>{if(e.key==='Enter'){if(pickMode){onPick?.(f);return;}openCard(f);}}}
+    onContextMenu={(e)=>{if(pickMode)return;e.preventDefault();setMenu({x:e.clientX,y:e.clientY,file:f});}}>
+    {pickMode?null:<button type="button" className={`footage-pick${sel.has(f.path)?' on':''}`} aria-label={`Select ${f.path}`} aria-pressed={sel.has(f.path)}
+      title={sel.has(f.path)?'Deselect':'Select for batch actions'} onClick={(e)=>{e.stopPropagation();toggleSel(f.path);}}>{sel.has(f.path)?'✓':''}</button>}
     {f.empty?<div className="footage-empty" title="The file on disk has no content — nothing to play.">0-byte file</div>:<img src={f.thumb??f.url} alt="" loading="lazy" draggable="false"/>}
     <div className="footage-card-foot">
       <span className="footage-path" title={f.path}>{f.path}</span>
       <div className="footage-chips" onClick={(e)=>{e.stopPropagation();setMenu(null);}}>
-        {(f.tags??[]).map((tag)=><span key={tag} className="footage-chip">{tag}<button type="button" className="footage-chip-x" title={`Remove tag “${tag}”`} aria-label={`Remove tag ${tag} from ${f.path}`} onClick={()=>removeTag(f.path,tag)}>✕</button></span>)}
-        <input className="footage-tag-add" placeholder="+ tag ↵" aria-label={`Add tag to ${f.path}`} value={tagDrafts[f.path]??''}
+        {(f.tags??[]).map((tag)=><span key={tag} className="footage-chip">{pickMode?null:<button type="button" className="footage-chip-x" title={`Remove tag “${tag}”`} aria-label={`Remove tag ${tag} from ${f.path}`} onClick={()=>removeTag(f.path,tag)}>✕</button>}{tag}</span>)}
+        {pickMode?null:<input className="footage-tag-add" placeholder="+ tag ↵" aria-label={`Add tag to ${f.path}`} value={tagDrafts[f.path]??''}
           onChange={(e)=>setTagDrafts((d)=>({...d,[f.path]:e.target.value}))}
-          onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();void addTag(f.path);}}}/>
+          onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();void addTag(f.path);}}}/>}
       </div>
     </div>
   </div>;
@@ -216,10 +216,10 @@ export function FootageBoard({lib='footage'}={}){
     <div className="footage-bar">
       <input className="footage-filter" type="search" placeholder="Filter: tag nelare+chicken · [last hour] · [today] · [free text]↵" aria-label={`Filter ${lib} by tag`} value={filter} onChange={(e)=>setFilter(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter'){e.preventDefault();void runSmart(parsed.smartQ);}}}/>
       {pending?<span className="field-hint">asking the LLM about [ … ]…</span>:null}
-      {fname&&(data?.groups??[]).includes(fname)
+      {pickMode?null:fname&&(data?.groups??[]).includes(fname)
         ?<button type="button" className="btn ghost sm" title={`Remove the custom group “${fname}” (the ${noun}s and their tags stay)`} onClick={()=>{void deleteGroup(fname);}}>✕</button>
         :<button type="button" className="btn primary sm" title={fname&&(data?.assets??[]).some((a)=>a.name.toLowerCase()===fname)?'Asset groups come from the Assets tab — manage them there':`Turn “${fname||'the filter text'}” into a permanent tag group`} disabled={!fname} onClick={()=>void addGroup()}>+</button>}
-      <button type="button" className="btn sm" title={`Import a ${noun} file or folder into ${dirName}`} onClick={()=>setImportOpen(true)}>Import…</button>
+      {pickMode?null:<button type="button" className="btn sm" title={`Import a ${noun} file or folder into ${dirName}`} onClick={()=>setImportOpen(true)}>Import…</button>}
       <button type="button" className="btn sm" title="Reload the board — files, tags, groups and layout" onClick={()=>void load()}>⟳</button>
       {tasks.length?<span className="footage-tasks" title="Background tasks run one at a time">⏳ {tasks.length>1?`${tasks.length} tasks · `:''}{tasks[0].label}{tasks[0].progress?` (${tasks[0].progress})`:''}{tasks.length>1?'…':''}</span>:null}
       {notice?<span className="field-hint">{notice}</span>:null}

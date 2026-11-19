@@ -152,6 +152,9 @@ button[data-director-send-paused]{opacity:.4;cursor:not-allowed;pointer-events:n
 .comfy-picker-backdrop{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.45)}
 .comfy-picker{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:71;width:min(46rem,92vw);max-height:80vh;overflow:auto;background:var(--bg-panel,#efe7da);border:1px solid var(--border-strong,#6b6157);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);color:var(--text,#231f1a);padding:.7rem;display:flex;flex-direction:column;gap:.6rem}
 .comfy-picker-head{display:flex;justify-content:space-between;align-items:center;font-weight:600}
+.comfy-picker-wide{width:min(76rem,96vw)}
+.comfy-picker-board{flex:1;min-height:0;display:flex}
+.comfy-picker-board .footage-board{max-height:none}
 .comfy-picker-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(9.5rem,1fr));gap:.6rem}
 .comfy-pick-card{display:flex;flex-direction:column;gap:.25rem;padding:.4rem;border:1px solid var(--border-strong,#6b6157);border-radius:8px;background:var(--bg,#e4dbcd);cursor:pointer;text-align:left}
 .comfy-pick-card img{width:100%;height:7rem;object-fit:cover;border-radius:5px}
