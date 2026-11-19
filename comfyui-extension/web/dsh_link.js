@@ -293,7 +293,7 @@ app.registerExtension({
             const u = typeof input === "string" ? input : (input && input.url) || "";
             const path = u.startsWith("http") ? new URL(u).pathname : u;
             const who = await resolveUser();
-            if (who && /^\/(view|upload|userdata|prompt|history)([?/]|$)/.test(path)) {
+            if (who && /^\/(view|upload|userdata|prompt|history|object_info|extensions\/)([?/]|$)/.test(path)) {   // v1.20: object_info too — INPUT_TYPES scans the USER's input dir, so the dropdown list is identity-scoped
                 init = init || {};
                 const h = new Headers(init.headers || (typeof input !== "string" && input.headers) || {});
                 if (!h.has("comfy-user")) h.set("comfy-user", who);
