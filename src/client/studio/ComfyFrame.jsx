@@ -199,13 +199,7 @@ export function ComfyFrame({sessionId}){
     return()=>clearInterval(beat);
   },[host,linked]);
 
-  // Keep-alive (bridge v1.9): node previews vanish on the linked embed until a repaint (workflow-tab switch
-  // brought the studio-picked one right back). 20s heartbeat forces app.graph.setDirtyCanvas(true,true) inside.
-  useEffect(()=>{
-    if(!host||!G.linked.get(host))return;
-    const beat=setInterval(()=>sendBridge(host,{type:'keepalive'}),20000);
-    return()=>clearInterval(beat);
-  },[host,linked]);
+
   // Persistent-frame lifecycle: point at host ONLY when the host actually changed (tab switches must not
   // re-navigate), cover the anchor rect, show; on unmount hide — never remove (removal = reload = minutes).
   useEffect(()=>{
@@ -269,8 +263,7 @@ export function ComfyFrame({sessionId}){
         if(!G.linked.get(host)){setNote('Bridge not linked on this host — pick cannot upload.');return;}
         const fr=await fetch(file.url);if(!fr.ok){setNote(`Could not read library file (${fr.status}).`);return;}
         const buf=await fr.arrayBuffer();
-        const target=new URL(host);
-        window.postMessage({type:'upload-pick',reqId:p.reqId,name:file.name,data:buf},target.origin);
+        sendBridge(host,{type:'upload-pick',reqId:p.reqId,name:file.name,data:buf});   // MUST go to the frame's contentWindow, not our own window
         return;
       }catch(e){setNote(`Pick upload failed: ${String(e.message||e)}`);}
     })();
