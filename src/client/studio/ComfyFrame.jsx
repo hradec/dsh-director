@@ -47,6 +47,26 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'){
   });
 }
 
+// Warm the first configured endpoint shortly after page load: the frame boots HIDDEN in the
+// background, so a later right-click lands on a running ComfyUI canvas instead of paying its
+// cold-start minute inside the tab (the "dont force comfyui to refresh" complaint).
+// Browser-only: skipped unless a real document exists (lazy-factory tests provide neither).
+let warmed=false;
+async function warmComfyFrame(){
+  if(warmed)return;warmed=true;
+  try{
+    const v=await apiFetch('/api/library/app-settings');
+    const list=String(v?.comfy?.urls??'').split('\n').map((x)=>x.trim()).filter(Boolean);
+    if(!list.length)return;
+    hostsCache=list;
+    const h=activeHost&&list.includes(activeHost)?activeHost:list[0];
+    activeHost=h;
+    const rec=ensureFrame(h);
+    if(rec.frame.dataset.src!==h){rec.frame.dataset.src=h;rec.frame.src=h;}
+  }catch{}
+}
+if(typeof window!=='undefined'&&typeof document!=='undefined'&&typeof document.body!=='undefined'&&typeof setTimeout==='function')setTimeout(warmComfyFrame,4000);
+
 globalThis.__DSH_COMFY_BRIDGE__=(msg)=>{
   if(!msg)return false;
   if(msg.type!=='load-workflow'){const h=activeHost;return h&&bridgeLinked.get(h)?sendBridge(h,msg):false;}
