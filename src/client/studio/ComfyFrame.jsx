@@ -107,8 +107,13 @@ function ensureFrame(host){
   // re-appended iframe keeps its document (no reload). Only a truly absent frame may be created:
   // recreating what merely got detached cost the user a full 2-minute ComfyUI boot every time.
   if(rec){if(!rec.box.isConnected)document.body.appendChild(rec.box);return rec;}
-  const box=document.createElement('div');box.className='comfy-frame-floating';box.style.display='none';
+  const box=document.createElement('div');box.className='comfy-frame-floating';
+  // NEVER display:none: Chrome memory-saver DISCARDS hidden iframe documents and reloads them on show —
+  // the "ComfyUI refreshed out of the blue, 2 minutes gone" complaints. Off-screen-but-rendered survives.
+  Object.assign(box.style,{position:'fixed',left:'-99999px',top:'0px',width:'900px',height:'700px',zIndex:'50'});
   const frame=document.createElement('iframe');frame.className='comfy-frame';frame.title='ComfyUI — '+host;
+  let loads=0;frame.addEventListener('load',()=>{loads++;if(loads>1){console.warn(`[comfy-frame] ${host} load #${loads} — an UNEXPECTED (re)load happened`,new Error().stack);globalThis.__DSH_FRAME_LOG__=(globalThis.__DSH_FRAME_LOG__??[]).concat([{t:Date.now(),host,n:loads}]);}});
+
   box.append(frame);document.body.append(box);
   const out={box,frame};floatFrames.set(host,out);return out;
 }
@@ -155,12 +160,12 @@ export function ComfyFrame({sessionId}){
     const m=deferred.pop();   // latest-wins
     if(m){if(bridgeLinked.get(host))sendBridge(host,m);else pendingLoad.set(host,m);}
     // z-index 50: above harness sidebar chrome, below our own dialogs (settings 60, picker 70)
-    const sync=()=>{const a=anchorRef.current;if(!a)return;const r=a.getBoundingClientRect();for(const [h,other] of floatFrames)if(other.box.isConnected)other.box.style.display=h===host?'block':'none';if(!rec.box.isConnected)return;Object.assign(rec.box.style,{position:'fixed',left:`${r.left}px`,top:`${r.top}px`,width:`${r.width}px`,height:`${r.height}px`,zIndex:'50'});};
+    const sync=()=>{const a=anchorRef.current;if(!a)return;const r=a.getBoundingClientRect();for(const [h,other] of floatFrames)if(other.box.isConnected)other.box.style.left=h===host?`${r.left}px`:'-99999px';if(!rec.box.isConnected)return;Object.assign(rec.box.style,{position:'fixed',left:`${r.left}px`,top:`${r.top}px`,width:`${r.width}px`,height:`${r.height}px`,zIndex:'50'});};
     sync();
     const ro=new ResizeObserver(sync);if(anchorRef.current)ro.observe(anchorRef.current);
     window.addEventListener('resize',sync);window.addEventListener('scroll',sync,true);
     const iv=setInterval(sync,1500);   // pane opens/collapses don't all resize the anchor — ponytail: cheap poll
-    return()=>{ro.disconnect();window.removeEventListener('resize',sync);window.removeEventListener('scroll',sync,true);clearInterval(iv);rec.box.style.display='none';};
+    return()=>{ro.disconnect();window.removeEventListener('resize',sync);window.removeEventListener('scroll',sync,true);clearInterval(iv);rec.box.style.left='-99999px';};
   },[host]);
 
   const stageAsset=async(slug)=>{

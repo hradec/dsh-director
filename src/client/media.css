@@ -147,7 +147,7 @@ button[data-director-send-paused]{opacity:.4;cursor:not-allowed;pointer-events:n
 .comfy-frame-bar{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}
 .comfy-frame{display:block;width:100%;height:100%;border:1px solid var(--border-strong,#6b6157);border-radius:8px;background:#1f1d1b}
 .comfy-frame-anchor{flex:1;width:100%;min-height:0}
-.comfy-frame-floating{margin:0}   /* position/size set inline; hidden via display:none which never reloads an iframe */
+.comfy-frame-floating{margin:0}   /* position set inline; inactive frames parked at left:-99999px (never display:none — memory-saver discards hidden iframes and silently reloads them) */
 .comfy-frame-note{font-size:.78rem;opacity:.85}
 .comfy-picker-backdrop{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.45)}
 .comfy-picker{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:71;width:min(46rem,92vw);max-height:80vh;overflow:auto;background:var(--bg-panel,#efe7da);border:1px solid var(--border-strong,#6b6157);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);color:var(--text,#231f1a);padding:.7rem;display:flex;flex-direction:column;gap:.6rem}
