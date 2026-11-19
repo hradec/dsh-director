@@ -571,3 +571,27 @@ test('new/unwatched (0.2.78): library files start unseen, seen on open, legacy e
   list=await (await json(base,'/api/footage')).json();
   assert.equal(list.files.find((f)=>f.path===fresh.path).seen,true,'entries written before the flag existed count as seen — the board never retro-flags the old library');
 });
+
+test('bridge half (0.2.81): comfy-upload server relay + CORS read lanes',async t=>{
+  const seen=[];
+  const fetchImpl=async(u,init)=>{if(String(u)==='http://comfy.test/upload/image'){seen.push(init);return new Response(JSON.stringify({name:'x.mp4',subfolder:'dsh',type:'input'}),{status:200,headers:{'content-type':'application/json'}});}return new Response('{}');};
+  const {base,root}=await setup(t,{fetchImpl});
+  await mkdir(join(root,'media'),{recursive:true});await writeFile(join(root,'media','x.mp4'),Buffer.concat([Buffer.alloc(4),Buffer.from('ftyp'),Buffer.from('major')]));
+  const rel=await (await json(base,'/api/comfy-upload',{method:'POST',body:JSON.stringify({path:'x.mp4',comfy_origin:'http://comfy.test'})})).json();
+  assert.deepEqual({name:rel.name,subfolder:rel.subfolder},{name:'x.mp4',subfolder:'dsh'},'ComfyUI reply passes through verbatim');
+  assert.equal(seen.length,1);
+  const fd=seen[0].body;
+  assert.ok(fd instanceof FormData,'multipart relay');
+  assert.equal(fd.get('subfolder'),'dsh');assert.equal(fd.get('type'),'input');assert.equal(fd.get('overwrite'),'true');
+  const file=fd.get('image');assert.equal(file.name,'x.mp4');
+  assert.equal((await json(base,'/api/comfy-upload',{method:'POST',body:JSON.stringify({path:join(root,'media','x.mp4'),comfy_origin:'http://comfy.test'})})).status,200,'absolute paths relay too');
+  assert.equal((await json(base,'/api/comfy-upload',{method:'POST',body:JSON.stringify({path:'nope.mp4',comfy_origin:'http://comfy.test'})})).status,404);
+  assert.equal((await json(base,'/api/comfy-upload',{method:'POST',body:JSON.stringify({path:'x.mp4',comfy_origin:'ftp://nope'})})).status,400,'origin must be http(s)');
+  // CORS: read lanes open to the ComfyUI page; everything else untouched
+  for(const p of ['/api/library?kind=actors','/api/footage','/api/images','/api/footage/thumb?path=x','/api/file?path=x']){
+    const r=await json(base,p);assert.equal(r.headers.get('access-control-allow-origin'),'*',`CORS GET ${p}`);}
+  const opt=await fetch(base.replace('/director-studio','')+'/director-studio/api/file',{method:'OPTIONS'});
+  assert.equal(opt.status,204);assert.equal(opt.headers.get('access-control-allow-origin'),'*','preflight on bridge lanes');
+  const opt2=await fetch(`${base}/api/agent-task`,{method:'OPTIONS'});
+  assert.equal(opt2.headers.get('access-control-allow-origin'),null,'no CORS off-lane');
+});

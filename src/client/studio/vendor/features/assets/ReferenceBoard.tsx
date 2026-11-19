@@ -116,6 +116,8 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
       if (!res.ok) throw new Error(v?.detail ?? `comfy ${res.status}`);
       // A silent writeText rejection used to leave an old graph on the clipboard — pasting loaded the WRONG workflow; fall back to execCommand, then to a JSON download.
       const payload: string = v.ui ?? v.json;   // UI format when converted — the canvas paste path only takes UI graphs
+      // Bridge contract v1: sidebar ComfyUI tab open + linked → load in place, skip the clipboard lane.
+      if (globalThis.__DSH_COMFY_BRIDGE__?.({ type: "load-workflow", workflow: payload })) { setNotice("Workflow loaded straight into the ComfyUI sidebar tab ✓"); return; }
       let copied = true;
       try { await navigator.clipboard.writeText(payload); } catch {
         copied = false;

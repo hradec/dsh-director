@@ -4,7 +4,7 @@ import {storyStoreFor} from './story-store.mjs';
 import {Readable} from 'node:stream';
 import {createReadStream,statSync,fstatSync,realpathSync,readdirSync,readFileSync,rmSync,existsSync,mkdirSync,writeFileSync,openSync,closeSync,readSync,utimesSync} from 'node:fs';
 import {execFile} from 'node:child_process';
-import {isAbsolute,join,sep,extname} from 'node:path';
+import {isAbsolute,join,sep,extname,basename} from 'node:path';
 import {apiToUi} from './comfy-api-to-ui.mjs';
 import {homedir,tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
@@ -247,7 +247,10 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       const rejection=requestRejection(req);if(rejection!==undefined){res.writeHead(rejection);res.end();return;}
       const url=new URL(req.url,'http://localhost');if(!url.pathname.startsWith('/director-studio')){sendJson(res,404,{detail:'Not found.'});return;}
       const path=url.pathname.slice('/director-studio'.length)||'/';if(!path.startsWith('/api/')){sendJson(res,404,{detail:'Not found.'});return;}
-      if(req.method==='OPTIONS'){res.writeHead(204,{Allow:'GET, HEAD, POST, PATCH, DELETE, OPTIONS'});res.end();return;}
+      // Bridge contract v1 (BRIDGE_CONTRACT.md): the ComfyUI page (iframe or standalone) fetches these GETs cross-origin from the browser; auth model unchanged (?session=), CORS only on the read lanes.
+      const isBridgePath=(p)=>p==='/api/file'||p==='/api/footage/thumb'||p.startsWith('/api/library')||p==='/api/footage'||p==='/api/images';
+      if(req.method==='OPTIONS'){res.writeHead(204,{Allow:'GET, HEAD, POST, PATCH, DELETE, OPTIONS',...(isBridgePath(path)?{'access-control-allow-origin':'*','access-control-allow-methods':'GET, HEAD, OPTIONS','access-control-allow-headers':'content-type'}:{})});res.end();return;}
+      if(isBridgePath(path)&&(req.method==='GET'||req.method==='HEAD'))res.setHeader('access-control-allow-origin','*');
       if(req.method==='GET'&&path==='/api/health'){
         let reachable=false,comfyError=null;try{const base=typeof comfyBaseUrl==='function'?await comfyBaseUrl():comfyBaseUrl;const response=await fetchImpl(`${base}/system_stats`,{signal:controller.signal,redirect:'error'});reachable=response.ok;if(!response.ok)comfyError=`HTTP ${response.status}`;}catch(error){comfyError=error.message;}
         sendJson(res,200,{ok:true,comfy_reachable:reachable,comfy_error:comfyError});return;
@@ -342,6 +345,24 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         sendJson(res,200,{shots,sequences,takes,clips,episodes:(await storyStoreFor(store).story()).episodes});return;
       }
       // Footage & Images libraries: /api/footage* over media/ (video) and /api/images* over images/ — one shared block, kind from the URL segment.
+      // Bridge contract: footage/big files move DSH→ComfyUI input/dsh/ by the SERVER (the Comfy box can never reach 127.0.0.1:3081); the browser only passes names.
+      if(path==='/api/comfy-upload'&&req.method==='POST'){
+        const b=await readJson(req,controller.signal);
+        const raw=String(b.path??'').trim();const origin=String(b.comfy_origin??'').trim().replace(/\/+$/,'');
+        if(!raw){sendJson(res,400,{detail:'A file path is required.'});return;}
+        if(!/^https?:\/\//.test(origin)){sendJson(res,400,{detail:'comfy_origin must be an http(s) origin.'});return;}
+        const candidates=[raw,join(await store.libRoot('footage'),raw),join(await store.libRoot('images'),raw)];
+        const abs=candidates.find((c)=>existsSync(c));
+        if(!abs){sendJson(res,404,{detail:'File not found.'});return;}
+        const bytes=readFileSync(abs);
+        const form=new FormData();
+        form.append('image',new Blob([bytes]),basename(abs));
+        form.append('subfolder','dsh');form.append('type','input');form.append('overwrite','true');
+        const r=await fetchImpl(`${origin}/upload/image`,{method:'POST',body:form,signal:controller.signal}).catch(()=>null);
+        if(!r){sendJson(res,502,{detail:`ComfyUI at ${origin} refused the upload connection.`});return;}
+        const v=await r.json().catch(()=>null);
+        if(!r.ok){sendJson(res,r.status,{detail:v??`upload/image responded HTTP ${r.status}`});return;}
+        sendJson(res,200,v??{});return;}
       match=/^\/api\/(footage|images)(?:\/(open|delete|comfy|order|thumb|folder|refs|group|smart|tag-ai|seen))?$/.exec(path);
       if(match){
         const seg=match[1],kind=seg==='images'?'images':'footage',sub=match[2]??'';

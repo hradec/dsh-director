@@ -21,6 +21,9 @@ export function StoryTab({sessionId,sendDshRequest}={}){return <StudioTab area="
 export function TimelineTab({sessionId,sendDshRequest}={}){return <StudioTab area="timeline" label="Timeline" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
 export function FootageTab({sessionId,sendDshRequest}={}){return <StudioTab area="footage" label="Footage" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
 export function ImagesTab({sessionId,sendDshRequest}={}){return <StudioTab area="images" label="Images" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
+import {ComfyFrame} from './ComfyFrame.jsx';
+// The ComfyUI sidebar tab (bridge contract v1): iframe of the project's ComfyUI + parent-side postMessage glue.
+export function ComfyTab({sessionId}={}){return <ComfyFrame sessionId={sessionId}/>}
 // The media rail as its own sidebar tab: visible in the Start launcher, no Studio area needed.
 export function MediaTab({sessionId}={}){
   useEffect(()=>{globalThis.__DSH_DIRECTOR_SESSION__=sessionId??'';},[sessionId]);

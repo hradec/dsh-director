@@ -197,6 +197,8 @@ export function FootageBoard({lib='footage'}={}){
       const v=await post(api('/comfy'),'POST',{path:f.path});
       // A silent writeText rejection used to leave yesterday's graph on the clipboard, so pasting loaded the WRONG workflow (the "always an H3 image workflow" report).
       const payload=v.ui??v.json;   // UI format when converted — the canvas paste path only takes UI graphs
+      // Bridge contract v1: when the sidebar ComfyUI tab is open and its extension linked, load the graph right there — no clipboard, no extra tab.
+      if(globalThis.__DSH_COMFY_BRIDGE__?.({type:'load-workflow',workflow:payload})){setNotice('Workflow loaded straight into the ComfyUI sidebar tab ✓');return;}
       let copied=true;
       try{await navigator.clipboard.writeText(payload);}catch{
         copied=false;
