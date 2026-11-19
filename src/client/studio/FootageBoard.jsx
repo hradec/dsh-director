@@ -231,7 +231,16 @@ export function FootageBoard({lib='footage'}={}){
     <div className="footage-scroll">
     {!data&&!error?<div className="muted">{`Loading ${lib}…`}</div>:null}
     {data&&!data.files.length?<p className="empty-copy">{`No ${noun}s in ${dirName} yet — import them with Import… or register them from a session.`}</p>:null}
-    {groups.length?<div className="footage-groups">{groups.map((g)=>{
+    {(groups.length||news.length)?<div className="footage-groups">
+    {news.length?<section className="footage-group footage-group-wide">
+      <div className="footage-group-head">
+        <button type="button" className="footage-group-toggle" aria-expanded={open['new']??data?.open?.['new']??true} onClick={()=>toggleOpen('new',!(open['new']??data?.open?.['new']??true))}>✦ New — not opened yet <span className="muted tiny">{`(${news.length})`}</span>{(open['new']??data?.open?.['new']??true)?' ▾':' ▸'}</button>
+      </div>
+      <div className="footage-group-body">
+        {(open['new']??data?.open?.['new']??true)?<div className="footage-grid">{news.map((f)=>card(f))}</div>:<div className="footage-strip" aria-hidden="true">{news.slice(0,6).map((f)=><img key={f.path} src={f.thumb??f.url} alt="" loading="lazy" draggable="false"/>)}</div>}
+      </div>
+    </section>:null}
+    {groups.map((g)=>{
       const shown=g.members.filter(matches);
       if(parsed.text&&!shown.length)return null;
       const expanded=open[g.id]??data?.open?.[g.id]??Boolean(parsed.text&&shown.length);
@@ -253,10 +262,6 @@ export function FootageBoard({lib='footage'}={}){
       </section>;
     })}</div>:null}
     </div>
-    {news.length?<section className="footage-group footage-group-wide">
-      <div className="footage-group-head"><span className="footage-group-toggle">✦ New — not opened yet <span className="muted tiny">{`(${news.length})`}</span></span></div>
-      <div className="footage-group-body"><div className="footage-grid">{news.map((f)=>card(f))}</div></div>
-    </section>:null}
     {importOpen?<div className="footage-dialog" role="dialog" onClick={()=>setImportOpen(false)}>
       <div className="footage-dialog-body" onClick={(e)=>e.stopPropagation()}>
         <h3>{`Import into ${dirName}`}</h3>
