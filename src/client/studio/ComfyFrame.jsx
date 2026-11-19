@@ -112,12 +112,16 @@ function observeRemoval(){                                    // does the APP ri
   }}).observe(document.body,{childList:true});
 }
 function ensureFrame(host){
+  const livePage=typeof document!=='undefined'&&!!document.body;   // module tests run without body; creation audits are browser-only
   const rec=floatFrames.get(host);
   if(rec?.frame.isConnected)return rec;
   // Harness re-renders can DETACH our body-level box; re-attach the SAME element — a detached-then-
   // re-appended iframe keeps its document (no reload). Only a truly absent frame may be created:
   // recreating what merely got detached cost the user a full 2-minute ComfyUI boot every time.
   if(rec){if(!rec.box.isConnected)document.body.appendChild(rec.box);return rec;}
+  // Element CREATED while the page lives = the old box vanished invisibly (browser purge, outerHTML
+  // rewrite, adopted node): the only reload path the load-counter and body-observer can't see. Make it speak.
+  if(livePage){globalThis.__DSH_FRAME_LOG__=(globalThis.__DSH_FRAME_LOG__??[]).concat([{t:Date.now(),host,event:'frame-created',stack:new Error().stack}]);if(noteSink)noteSink(`${host}: a NEW ComfyUI frame element was created mid-page (old one disappeared without any src write or DOM-removal notice) — see console stack`);}
   const box=document.createElement('div');box.className='comfy-frame-floating';
   // NEVER display:none: Chrome memory-saver DISCARDS hidden iframe documents and reloads them on show —
   // the "ComfyUI refreshed out of the blue, 2 minutes gone" complaints. Off-screen-but-rendered survives.
