@@ -89,7 +89,8 @@ globalThis.__DSH_COMFY_BRIDGE__=(msg)=>{
   if(h&&floatFrames.get(h)?.frame.isConnected){
     openComfyTab?.();
     if(bridgeLinked.get(h)){const ok=sendBridge(h,msg);if(ok)armAck();return ok;}
-    const q=pendingLoad.get(h)??[];q.push(msg);pendingLoad.set(h,q);return true;   // frame booting — deliver on hello
+    const q=pendingLoad.get(h)??[];q.push(msg);pendingLoad.set(h,q);armAck();return true;   // frame booting or bridge-less — deliver on hello, or say so
+
   }
   if(!openComfyTab)return false;   // no tab system available — caller falls back to clipboard/new tab
   deferred.push(msg);openComfyTab();return true;
