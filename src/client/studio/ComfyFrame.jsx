@@ -60,6 +60,7 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'&&!G.
     const d=e.data;if(!d||d.ns!==NS||d.v!==V)return;
     const h=G.activeHost,o=originOf(h);if(!o||e.origin!==o)return;
     if(d.type==='iframe-nav'){if(G.noteSink)G.noteSink(`ComfyUI page (re)load: browser says initiator='${d.kind}' — 'reload' means the browser/you re-navigated the SAME url (F5, ⟳, crash or memory restore); 'navigate' means Director Studio pointed the frame at it`);return;}
+    if(d.type==='iframe-error'){if(G.noteSink)G.noteSink(`ComfyUI JS error: ${d.msg}${d.at?` (${d.at})`:''}`);return;}
     if(d.type==='iframe-leaving'){if(G.noteSink)G.noteSink(`ComfyUI (${G.activeHost}) announced it is leaving the page at ${new Date().toLocaleTimeString()}`);return;}
     if(d.type==='bridge-hello'){markHello(h);return;}
     if(d.type==='workflow-loaded'){clearAck();if(G.noteSink)G.noteSink('ComfyUI loaded the workflow into its canvas ✓');return;}
