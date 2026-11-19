@@ -132,7 +132,9 @@ function ensureFrame(host){
   const box=document.createElement('div');box.className='comfy-frame-floating';
   // NEVER display:none: Chrome memory-saver DISCARDS hidden iframe documents and reloads them on show —
   // the "ComfyUI refreshed out of the blue, 2 minutes gone" complaints. Off-screen-but-rendered survives.
-  Object.assign(box.style,{position:'fixed',left:'-99999px',top:'0px',width:'900px',height:'700px',zIndex:'50'});
+  // Stacked on-screen with opacity 0 — off-screen parking broke Chrome lazy image loading
+  // (intersection accounts for ancestor frames), so parked frames never fetched node previews.
+  Object.assign(box.style,{position:'fixed',left:'0px',top:'0px',width:'900px',height:'700px',zIndex:'49',opacity:'0',pointerEvents:'none'});
   const frame=document.createElement('iframe');frame.className='comfy-frame';frame.title='ComfyUI — '+host;
   let loads=0;
   frame.addEventListener('load',()=>{loads++;if(loads>1){
@@ -209,12 +211,16 @@ export function ComfyFrame({sessionId}){
     const m=G.deferred.pop();   // latest-wins
     if(m){if(G.linked.get(host))sendBridge(host,m);else G.pending.set(host,m);}
     // z-index 50: above harness sidebar chrome, below our own dialogs (settings 60, picker 70)
-    const sync=()=>{const a=anchorRef.current;if(!a)return;const r=a.getBoundingClientRect();for(const [h,other] of G.frames)if(other.box.isConnected)other.box.style.left=h===host?`${r.left}px`:'-99999px';if(!rec.box.isConnected)return;Object.assign(rec.box.style,{position:'fixed',left:`${r.left}px`,top:`${r.top}px`,width:`${r.width}px`,height:`${r.height}px`,zIndex:'50'});};
+    const sync=()=>{const a=anchorRef.current;if(!a)return;const r=a.getBoundingClientRect();
+      // ALL frames share the anchor rect (stacked); the active one is opaque+z50, others opacity 0+z49.
+      for(const [h,other] of G.frames){if(!other.box.isConnected)continue;
+        Object.assign(other.box.style,{position:'fixed',left:`${r.left}px`,top:`${r.top}px`,width:`${r.width}px`,height:`${r.height}px`,zIndex:h===host?'50':'49',opacity:h===host?'1':'0',pointerEvents:h===host?'auto':'none'});}
+    };
     sync();
     const ro=new ResizeObserver(sync);if(anchorRef.current)ro.observe(anchorRef.current);
     window.addEventListener('resize',sync);window.addEventListener('scroll',sync,true);
     const iv=setInterval(sync,1500);   // pane opens/collapses don't all resize the anchor — ponytail: cheap poll
-    return()=>{ro.disconnect();window.removeEventListener('resize',sync);window.removeEventListener('scroll',sync,true);clearInterval(iv);rec.box.style.left='-99999px';};
+    return()=>{ro.disconnect();window.removeEventListener('resize',sync);window.removeEventListener('scroll',sync,true);clearInterval(iv);rec.box.style.opacity='0';rec.box.style.pointerEvents='none';};
   },[host]);
 
   const stageAsset=async(slug)=>{
