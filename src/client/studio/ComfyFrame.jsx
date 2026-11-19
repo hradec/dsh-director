@@ -236,7 +236,7 @@ export function ComfyFrame({sessionId}){
       {hosts.map((h)=><button key={h} type="button" className={`btn sm ${h===host?'primary':'ghost'}`} onClick={()=>switchHost(h)}>{h.replace(/^https?:\/\//,'')}</button>)}
       {!hosts.length?<span className="muted tiny">no endpoints — set them in Studio settings (gear → ComfyUI)</span>:null}
       <button type="button" className="btn ghost sm" title="Reload this endpoint's frame" onClick={()=>{const f=floatFrames.get(host)?.frame;if(f){bridgeLinked.set(host,false);setLinked(false);f.src='about:blank';f.dataset.src='';f.src=host;}}}>⟳</button>
-      <span className="muted tiny" title="set by the dsh-studio-link extension inside ComfyUI">{linked?'bridge ✓':'awaiting dsh-studio-link bridge-hello…'}</span>
+      <span className="muted tiny" title={linked?'set by the dsh-studio-link extension inside ComfyUI':'If this never flips to ✓: open ComfyUI settings (gear) inside the frame, find DSHStudio.comfyOrigin, set it to '+location.origin+' , then hit ⟳ — see BRIDGE_CONTRACT v1.3'}>{linked?'bridge ✓':'awaiting dsh-studio-link bridge-hello…'}</span>
     </div>
     <div ref={anchorRef} className="comfy-frame-anchor"/>
     {note?<div className="comfy-frame-note">{note}</div>:null}
