@@ -274,7 +274,7 @@ export function ComfyFrame({sessionId}){
 
   return <div className="comfy-frame-tab">
     <div className="comfy-frame-bar">
-      {hosts.map((h)=><button key={h} type="button" className={`btn sm ${h===host?'primary':'ghost'}`} onClick={()=>switchHost(h)}>{h.replace(/^https?:\/\//,'')}</button>)}
+      {hosts.map((h)=><button key={h} type="button" className={`btn sm ${h===host?'primary':'ghost'}`} style={h===host?{color:'#ff8c3b',fontWeight:700}:undefined} onClick={()=>switchHost(h)}>{h.replace(/^https?:\/\//,'')}</button>)}
       {!hosts.length?<span className="muted tiny">no endpoints — set them in Studio settings (gear → ComfyUI)</span>:null}
       <button type="button" className="btn ghost sm" title="Reload this endpoint's frame" onClick={()=>{const f=G.frames.get(host)?.frame;if(f){G.linked.set(host,false);setLinked(false);f.dataset.src='';writeSrc(f,'about:blank','user clicked reload button');writeSrc(f,host,'user clicked reload button');}}}>⟳</button>
       <span className="muted tiny" title="client build running in this page — if it disagrees with the shipped version, the page has NOT reloaded yet">v{__DSH_VERSION__}</span>
