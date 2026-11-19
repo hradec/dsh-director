@@ -5,6 +5,7 @@
 // unmounting hides it. Bridge link state is kept per-host in a module map so remounts know it.
 import {useEffect,useRef,useState} from 'react';
 import React from 'react';
+import {createPortal} from 'react-dom';
 
 const NS='dsh-studio',V=1;
 const IMAGE_RE=/\.(png|jpe?g|webp|gif|bmp)$/i,AUDIO_RE=/\.(wav|mp3|flac|ogg|m4a)$/i;
@@ -230,7 +231,7 @@ export function ComfyFrame({sessionId}){
   };
 
   const openPicker=async(reqId,kind)=>{
-    try{const v=await apiFetch(`/api/${kind==='footage'?'footage':'images'}`);setPicker({reqId,kind,files:v.files??[]});}
+    try{const v=await apiFetch(`/api/${kind==='footage'?'footage':'images'}`);setPicker({reqId,kind,files:v.files??[],openedAt:Date.now()});}
     catch(e){setPicker({reqId,kind,files:[],error:String(e.message||e)});}
   };
   const resolvePick=(file)=>{
@@ -285,12 +286,12 @@ export function ComfyFrame({sessionId}){
     </div>
     <div ref={anchorRef} className="comfy-frame-anchor"/>
     {note?<div className="comfy-frame-note">{note}</div>:null}
-    {picker?<div className="comfy-picker-backdrop" onClick={()=>{const p=picker;setPicker(null);send({type:'pick-result',reqId:p.reqId,file:null});}}>
+    {picker?createPortal(<div className="comfy-picker-backdrop" onClick={()=>{if(Date.now()-(picker.openedAt??0)<500)return;   // the click that opened it must not also close it
+      const p=picker;setPicker(null);send({type:'pick-result',reqId:p.reqId,file:null});}}>
       <div className="comfy-picker" onClick={(e)=>e.stopPropagation()}>
         <div className="comfy-picker-head"><span>Pick {picker.kind} from Director Studio</span><button type="button" className="btn ghost sm" onClick={()=>{const p=picker;setPicker(null);send({type:'pick-result',reqId:p.reqId,file:null});}}>✕</button></div>
         <div className="comfy-picker-grid">{(picker.files??[]).map((f)=><button type="button" key={f.path} className="comfy-pick-card" title={f.path} onClick={()=>resolvePick(f)}>{<img src={f.thumb??f.url} alt="" loading="lazy" draggable="false"/>}<span>{f.name}</span></button>)}</div>
         {picker.error?<div className="comfy-frame-note">{picker.error}</div>:null}
-      </div>
-    </div>:null}
+      </div></div>,document.body):null}
   </div>;
 }
