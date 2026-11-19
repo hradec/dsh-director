@@ -184,7 +184,21 @@ export function ComfyFrame({sessionId}){
   useEffect(()=>{G.picker=picker;
     if(picker&&!document.querySelector('style[data-director=vendor-styles]')){const el=document.createElement('style');el.dataset.director='vendor-styles';el.textContent=vcss;document.head.append(el);}
   },[picker]);   // frames keep z50: the portal dialog (z70/71) lives in the SAME body layer and wins — sinking frames caused the near-black flash
+  // Keep-alive (bridge v1.9): all node previews vanished on the linked embed with values intact and zero
+  // JS errors = Chrome froze the frame's painting; 20s heartbeat forces a full node repaint inside.
+  useEffect(()=>{
+    if(!host||!G.linked.get(host))return;
+    const beat=setInterval(()=>sendBridge(host,{type:'keepalive'}),20000);
+    return()=>clearInterval(beat);
+  },[host,linked]);
 
+  // Keep-alive (bridge v1.9): node previews vanish on the linked embed until a repaint (workflow-tab switch
+  // brought the studio-picked one right back). 20s heartbeat forces app.graph.setDirtyCanvas(true,true) inside.
+  useEffect(()=>{
+    if(!host||!G.linked.get(host))return;
+    const beat=setInterval(()=>sendBridge(host,{type:'keepalive'}),20000);
+    return()=>clearInterval(beat);
+  },[host,linked]);
   // Persistent-frame lifecycle: point at host ONLY when the host actually changed (tab switches must not
   // re-navigate), cover the anchor rect, show; on unmount hide — never remove (removal = reload = minutes).
   useEffect(()=>{
