@@ -69,12 +69,13 @@ export function ComfyFrame({sessionId}){
       if(!item){setNote(`No asset folder "${slug}" in the library.`);return;}
       const meta=item.ref_meta??{};
       const sidecar={slug,contract:1,updated_at:new Date().toISOString(),images:[],videos:[],audio:[],description:item.description??'',notes:item.notes??''};
-      const local=[];   // images ride the browser lane: the extension (same-origin inside the iframe) fetches these URLs and POSTs /upload/image
+      // images ride the browser lane: the extension (same-origin inside the iframe) fetches these URLs and POSTs /upload/image
+      const local=[];
       for(const [key,abs] of Object.entries(item.paths??{})){
         const name=String(abs).split(/[\\/]/).pop(),m=meta[key]??{};
         const rec={key,file:`dsh/${name}`,tags:m.tags??[],note:m.note??''};
         if(IMAGE_RE.test(name)){
-          local.push({...rec,url:`${location.origin}/director-studio/api/file?path=${encodeURIComponent(abs)}&session=${encodeURIComponent(sid)}`});
+          local.push({name,url:abs,url2:`${location.origin}/director-studio/api/file?path=${encodeURIComponent(abs)}&session=${encodeURIComponent(sid)}`});
           sidecar.images.push(rec);
         }else{
           // footage/audio move by the server relay — the Comfy box can never reach 127.0.0.1:3081 itself
@@ -83,8 +84,14 @@ export function ComfyFrame({sessionId}){
           (AUDIO_RE.test(name)?sidecar.audio:sidecar.videos).push(rec);
         }
       }
-      if(local.length&&send({type:'stage-images',slug,items:local})){stagingRef.current[slug]=sidecar;setNote(`Staging "${slug}": ${local.length} image(s) via browser relay, ${sidecar.videos.length+sidecar.audio.length} via server relay.`);}
-      else{send({type:'staged',slug,payload:sidecar});setNote(`Staged "${slug}" (${sidecar.images.length+sidecar.videos.length+sidecar.audio.length} files).`);}
+      if(local.length&&local.every((it)=>send({type:'stage-file',name:it.name,url:it.url2}))){
+        // handshake as SHIPPED in dsh_link.js (v1.2): one stage-file per image, stage-done back per name, then staged
+        stagingRef.current[slug]={sidecar,pending:new Set(local.map((it)=>it.name)),failed:0};
+        setNote(`Staging "${slug}": ${local.length} image(s) via browser relay, ${sidecar.videos.length+sidecar.audio.length} via server relay.`);
+      }else{
+        for(const it of local)try{await apiFetch('/api/comfy-upload',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path:it.url,comfy_origin:host})});}catch{}
+        send({type:'staged',slug,payload:sidecar});setNote(`Staged "${slug}" (${sidecar.images.length+sidecar.videos.length+sidecar.audio.length} files).`);
+      }
     }catch(e){setNote(`stage-asset "${slug}" failed: ${e.message}`);}
   };
 
@@ -100,7 +107,8 @@ export function ComfyFrame({sessionId}){
         // library payloads carry the absolute path inside their same-origin file url
         const abs=new URL(file.url,location.origin).searchParams.get('path')??file.path;
         const v=await apiFetch('/api/comfy-upload',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path:abs,comfy_origin:host})});
-        send({type:'pick-result',reqId:p.reqId,file:`${v.subfolder}/${v.name}`});
+        // v1.2: pick-result.file is the BARE name — the iframe sets the combo to INIF+"/"+file (double prefix otherwise)
+        send({type:'pick-result',reqId:p.reqId,file:v.name});
         setNote(`Picked ${v.subfolder}/${v.name} for the node.`);
       }catch(e){send({type:'pick-result',reqId:p.reqId,file:null});setNote(`Pick failed: ${e.message}`);}
     })();
@@ -119,10 +127,13 @@ export function ComfyFrame({sessionId}){
         return;}
       if(d.type==='stage-asset'){void stageAsset(String(d.slug??''));return;}
       if(d.type==='pick-request'){void openPicker(d.reqId,String(d.kind??'images'));return;}
-      if(d.type==='stage-images-done'){
-        const st=stagingRef.current[d.slug];delete stagingRef.current[d.slug];
-        if(st)send({type:'staged',slug:d.slug,payload:st});
-        setNote(`Staged "${d.slug}" for ComfyUI${(d.failed??[]).length?` (${d.failed.length} image(s) failed)`:''}.`);
+      if(d.type==='stage-done'||d.type==='stage-error'){
+        // stage-file handshake replies carry only the file name — find the slug owning it (ponytail: linear scan, few concurrent stagings)
+        for(const [slug,st] of Object.entries(stagingRef.current)){
+          if(!st.pending?.has(d.name))continue;
+          st.pending.delete(d.name);if(d.type==='stage-error')st.failed++;
+          if(!st.pending.size){delete stagingRef.current[slug];send({type:'staged',slug,payload:st.sidecar});setNote(`Staged "${slug}" for ComfyUI${st.failed?` (${st.failed} image(s) failed)`:''}.`);}
+          return;}
         return;}
     };
     window.addEventListener('message',onMsg);return()=>window.removeEventListener('message',onMsg);

@@ -522,6 +522,23 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       }
       if(path==='/api/library'&&req.method==='GET'){
         const kind=url.searchParams.get('kind')||undefined;
+        // Bridge contract v1.2: kind=assets serves the flat sidecar-shaped list the dsh-studio-link extension
+        // consumes directly (iframe AND standalone modes): {assets:[{slug,images,videos,audio,description,notes}]}.
+        if(kind==='assets'){
+          const IMG=/\.(png|jpe?g|webp|gif|bmp)$/i,AUD=/\.(wav|mp3|flac|ogg|m4a)$/i;
+          const out=[];
+          for(const g of ['actors','costumes','scenes','props','layouts','voices'])for(const item of await store.listAssets({kind:g,project_id:project.id,include_unassigned:true})){
+            const pa=presentAsset(item,sessionId);
+            const entry={slug:String(pa.folder??pa.slug??pa.id??''),description:pa.description??'',notes:pa.notes??'',images:[],videos:[],audio:[]};
+            for(const [key,abs] of Object.entries(pa.paths??{})){
+              const name=String(abs).split(/[\\/]/).pop(),m=(pa.ref_meta??{})[key]??{};
+              const rec={key,file:name,abs,tags:m.tags??[],note:m.note??''};
+              (IMG.test(name)?entry.images:AUD.test(name)?entry.audio:entry.videos).push(rec);
+            }
+            out.push(entry);
+          }
+          sendJson(res,200,{assets:out});return;
+        }
         sendJson(res,200,(await store.listAssets({kind,project_id:project.id,include_unassigned:true})).map(item=>presentAsset(item,sessionId)));return;
       }
       if(path==='/api/library/import'&&req.method==='POST'){

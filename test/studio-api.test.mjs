@@ -595,3 +595,13 @@ test('bridge half (0.2.81): comfy-upload server relay + CORS read lanes',async t
   const opt2=await fetch(`${base}/api/agent-task`,{method:'OPTIONS'});
   assert.equal(opt2.headers.get('access-control-allow-origin'),null,'no CORS off-lane');
 });
+
+test('bridge kind=assets shape (0.2.85)',async t=>{
+  const {base,store,project}=await setup(t);
+  await store.saveAsset({kind:'actors',name:'Mia',project_id:project.id,filename:'mia-bust.png',bytes:Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),Buffer.from('x')])});
+  const v=await (await json(base,'/api/library?kind=assets')).json();
+  assert.ok(Array.isArray(v.assets));
+  const a=v.assets.find((x)=>x.slug&&String(x.slug).startsWith('mia'));assert.ok(a,'slug present');
+  assert.equal(a.images.length,1);assert.ok(a.images[0].abs&&a.images[0].file.endsWith('.png')&&!a.images[0].file.includes('/'),'bare file name + abs');
+  assert.deepEqual([a.videos.length,a.audio.length],[0,0]);
+});
