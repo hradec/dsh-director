@@ -1,13 +1,25 @@
 // Sidebar "ComfyUI" tab — dsh-director half of the dsh-studio bridge (BRIDGE_CONTRACT.md v1).
-// Renders the ComfyUI web app in an iframe (verified embeddable: no frame-blocking headers) and carries the
-// parent side of the postMessage contract: bridge-ready, library-data, the stage-asset handshake, the node
-// picker (pick-request/pick-result) and load-workflow targeting for right-click "Open in ComfyUI".
+// The iframe is a document-body SINGLETON (.comfy-frame-floating): sidebar tab switches unmount this React
+// component, and removing/re-parenting an iframe reloads it — ComfyUI's frontend takes minutes. So the iframe
+// never leaves the body; mounting the tab positions the floating host over the tab's anchor and shows it,
+// unmounting hides it. Bridge link state is kept per-host in a module map so remounts know it.
 import {useEffect,useRef,useState} from 'react';
 import React from 'react';
 
 const NS='dsh-studio',V=1;
 const IMAGE_RE=/\.(png|jpe?g|webp|gif|bmp)$/i,AUDIO_RE=/\.(wav|mp3|flac|ogg|m4a)$/i;
 const ASSET_KINDS=['actors','scenes','props','costumes','layouts','voices'];
+let floatHost=null,floatFrame=null;   // persistent iframe owner in document.body
+const bridgeLinked=new Map();        // host URL → the extension said bridge-hello
+
+function ensureFrame(){
+  if(floatFrame?.isConnected)return floatFrame;
+  if(!floatHost){floatHost=document.createElement('div');floatHost.className='comfy-frame-floating';}
+  if(!floatFrame){floatFrame=document.createElement('iframe');floatFrame.className='comfy-frame';floatFrame.title='ComfyUI';}
+  floatHost.append(floatFrame);
+  if(!floatHost.isConnected)document.body.append(floatHost);
+  return floatFrame;
+}
 
 async function apiFetch(p,init){
   const r=await fetch('/director-studio'+p,init);
@@ -20,14 +32,14 @@ export function ComfyFrame({sessionId}){
   const [hosts,setHosts]=useState([]);
   const [host,setHost]=useState(()=>localStorage.getItem('dsh-comfy-host')??'');
   const [note,setNote]=useState('');
-  const [linked,setLinked]=useState(false);          // the dsh-studio-link extension said bridge-hello
+  const [linked,setLinked]=useState(()=>bridgeLinked.get(localStorage.getItem('dsh-comfy-host')??'')??false);
   const [picker,setPicker]=useState(null);           // {reqId,kind,files,error?}
-  const frameRef=useRef(null);
+  const anchorRef=useRef(null);
   const stagingRef=useRef({});                       // slug → sidecar waiting for stage-images-done
   const sid=sessionId??globalThis.__DSH_DIRECTOR_SESSION__??'';
 
   const originOf=(h)=>{try{return new URL(h).origin;}catch{return ''};};
-  const send=(msg)=>{const w=frameRef.current?.contentWindow,o=originOf(host);if(!w||!o)return false;w.postMessage({ns:NS,v:V,...msg},o);return true;};
+  const send=(msg)=>{const w=floatFrame?.contentWindow,o=originOf(host);if(!w||!o)return false;w.postMessage({ns:NS,v:V,...msg},o);return true;};
 
   useEffect(()=>{apiFetch('/api/library/app-settings').then((v)=>{
     const list=String(v?.comfy?.urls??'').split('\n').map((s)=>s.trim()).filter(Boolean);
@@ -35,6 +47,19 @@ export function ComfyFrame({sessionId}){
     if(!list.length)setNote('No ComfyUI endpoints configured — add them in the Studio settings gear (ComfyUI tab).');
   }).catch((e)=>setNote(`Could not read Studio settings: ${e.message}`));},[]);
   useEffect(()=>{if(host)localStorage.setItem('dsh-comfy-host',host);},[host]);
+
+  // Persistent-frame lifecycle: point at host ONLY when the host actually changed (tab switches must not
+  // re-navigate), cover the anchor rect, show; on unmount hide — never remove (removal = reload = minutes).
+  useEffect(()=>{
+    const frame=ensureFrame();
+    if(host&&frame.dataset.src!==host){frame.dataset.src=host;frame.src=host;}
+    const sync=()=>{const a=anchorRef.current;if(!a||!floatHost)return;const r=a.getBoundingClientRect();Object.assign(floatHost.style,{position:'fixed',left:`${r.left}px`,top:`${r.top}px`,width:`${r.width}px`,height:`${r.height}px`,display:'block',zIndex:'4'});};
+    sync();
+    const ro=new ResizeObserver(sync);if(anchorRef.current)ro.observe(anchorRef.current);
+    window.addEventListener('resize',sync);window.addEventListener('scroll',sync,true);
+    const iv=setInterval(sync,1500);   // pane opens/collapses don't all resize the anchor — ponytail: cheap poll
+    return()=>{ro.disconnect();window.removeEventListener('resize',sync);window.removeEventListener('scroll',sync,true);clearInterval(iv);if(floatHost)floatHost.style.display='none';};
+  },[host]);
 
   const stageAsset=async(slug)=>{
     try{
@@ -84,7 +109,7 @@ export function ComfyFrame({sessionId}){
     const onMsg=(e)=>{
       const d=e.data;if(!d||d.ns!==NS||d.v!==V)return;
       const o=originOf(host);if(!o||e.origin!==o)return;   // only from the currently embedded host
-      if(d.type==='bridge-hello'){setLinked(true);send({type:'bridge-ready',hosts});return;}
+      if(d.type==='bridge-hello'){bridgeLinked.set(host,true);setLinked(true);send({type:'bridge-ready',hosts});return;}
       if(d.type==='library-request'){
         const k=d.kind;
         const grab=k==='assets'?Promise.all(ASSET_KINDS.map((kind)=>apiFetch(`/api/library?kind=${kind}`).then((items)=>({kind,items})))).then((kinds)=>({kinds}))
@@ -109,16 +134,16 @@ export function ComfyFrame({sessionId}){
     return()=>{delete globalThis.__DSH_COMFY_BRIDGE__;};
   },[linked,host]);
 
-  const switchHost=(h)=>{setHost(h);setLinked(false);stagingRef.current={};};
+  const switchHost=(h)=>{if(h===host)return;setHost(h);bridgeLinked.set(h,false);setLinked(false);stagingRef.current={};};
 
   return <div className="comfy-frame-tab">
     <div className="comfy-frame-bar">
       {hosts.map((h)=><button key={h} type="button" className={`btn sm ${h===host?'primary':'ghost'}`} onClick={()=>switchHost(h)}>{h.replace(/^https?:\/\//,'')}</button>)}
       {!hosts.length?<span className="muted tiny">no endpoints — set them in Studio settings (gear → ComfyUI)</span>:null}
-      <button type="button" className="btn ghost sm" title="Reload the embedded ComfyUI" onClick={()=>{setLinked(false);frameRef.current?.contentWindow?.location.replace(host);}}>⟳</button>
+      <button type="button" className="btn ghost sm" title="Reload the embedded ComfyUI" onClick={()=>{if(floatFrame){bridgeLinked.set(host,false);setLinked(false);delete floatFrame.dataset.src;floatFrame.src=host;}}}>⟳</button>
       <span className="muted tiny" title="set by the dsh-studio-link extension inside ComfyUI">{linked?'bridge ✓':'awaiting dsh-studio-link bridge-hello…'}</span>
     </div>
-    {host?<iframe ref={frameRef} className="comfy-frame" title="ComfyUI" src={host}/>:<div className="footage-empty">No ComfyUI endpoint selected.</div>}
+    <div ref={anchorRef} className="comfy-frame-anchor"/>
     {note?<div className="comfy-frame-note">{note}</div>:null}
     {picker?<div className="comfy-picker-backdrop" onClick={()=>{const p=picker;setPicker(null);send({type:'pick-result',reqId:p.reqId,file:null});}}>
       <div className="comfy-picker" onClick={(e)=>e.stopPropagation()}>

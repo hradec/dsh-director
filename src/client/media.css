@@ -145,7 +145,9 @@ button[data-director-send-paused]{opacity:.4;cursor:not-allowed;pointer-events:n
 /* ComfyUI sidebar tab (bridge contract v1) — lives in the MAIN document, media.css is the sheet injected there */
 .comfy-frame-tab{display:flex;flex-direction:column;height:100%;min-height:0;gap:.5rem}
 .comfy-frame-bar{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}
-.comfy-frame{flex:1;width:100%;min-height:0;border:1px solid var(--border-strong,#6b6157);border-radius:8px;background:#1f1d1b}
+.comfy-frame{display:block;width:100%;height:100%;border:1px solid var(--border-strong,#6b6157);border-radius:8px;background:#1f1d1b}
+.comfy-frame-anchor{flex:1;width:100%;min-height:0}
+.comfy-frame-floating{margin:0}   /* position/size set inline; hidden via display:none which never reloads an iframe */
 .comfy-frame-note{font-size:.78rem;opacity:.85}
 .comfy-picker-backdrop{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.45)}
 .comfy-picker{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:71;width:min(46rem,92vw);max-height:80vh;overflow:auto;background:var(--bg-panel,#efe7da);border:1px solid var(--border-strong,#6b6157);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);color:var(--text,#231f1a);padding:.7rem;display:flex;flex-direction:column;gap:.6rem}
