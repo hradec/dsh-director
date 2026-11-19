@@ -178,7 +178,7 @@ export function ComfyFrame({sessionId}){
   useEffect(()=>{G.noteSink=setNote;return()=>{if(G.noteSink===setNote)G.noteSink=null;};},[setNote]);
   // The dialog lives inside the React tab while our frame boxes are body-level z50 — without this,
   // the picker renders BEHIND ComfyUI (backdrop darkens, panel invisible). Park frames low while open.
-  useEffect(()=>{G.picker=picker;for(const rec of G.frames.values())rec.box.style.zIndex=picker?'1':'50';},[picker]);
+  useEffect(()=>{G.picker=picker;},[picker]);   // frames keep z50: the portal dialog (z70/71) lives in the SAME body layer and wins — sinking frames caused the near-black flash
 
   // Persistent-frame lifecycle: point at host ONLY when the host actually changed (tab switches must not
   // re-navigate), cover the anchor rect, show; on unmount hide — never remove (removal = reload = minutes).
