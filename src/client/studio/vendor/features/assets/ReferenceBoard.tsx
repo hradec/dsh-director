@@ -114,9 +114,23 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
       const res = await fetch(`/api/${target.seg}/comfy`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(target.body) });
       const v = await res.json().catch(() => null);
       if (!res.ok) throw new Error(v?.detail ?? `comfy ${res.status}`);
-      try { await navigator.clipboard.writeText(v.ui ?? v.json); } catch { /* clipboard may be blocked; the tab still opens */ }   // UI format when converted — paste needs UI graphs
+      // A silent writeText rejection used to leave an old graph on the clipboard — pasting loaded the WRONG workflow; fall back to execCommand, then to a JSON download.
+      const payload: string = v.ui ?? v.json;   // UI format when converted — the canvas paste path only takes UI graphs
+      let copied = true;
+      try { await navigator.clipboard.writeText(payload); } catch {
+        copied = false;
+        try { const ta = document.createElement("textarea"); ta.value = payload; ta.style.position = "fixed"; ta.style.opacity = "0"; document.body.appendChild(ta); ta.select(); copied = document.execCommand("copy"); ta.remove(); } catch { /* fall through to download */ }
+      }
+      if (!copied) {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
+        a.download = `${String(slot.libPath ?? slot.abs ?? "workflow").split(/[\\/]/).pop()!.replace(/\.[a-z0-9]+$/i, "")}-workflow.json`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        setNotice("Clipboard was blocked — the workflow JSON is DOWNLOADING instead: open it in ComfyUI via File → Open.");
+      }
       if (v.host) window.open(v.host, "_blank");
-      setNotice(v.host ? `ComfyUI opened — paste (Ctrl+V) onto its canvas (converted to editor format${v.ui ? "" : ", raw API graph — use File→Open"})${v.uploaded ? ` · also saved there as ${v.uploaded} (Workflows panel)` : ""}.` : "No ComfyUI answered — the workflow JSON is on your clipboard.");
+      if (copied) setNotice(v.host ? `ComfyUI opened — paste (Ctrl+V) onto its canvas (copied ✓ ${v.ui ? "editor format" : "raw API graph — use File→Open"})${v.uploaded ? ` · also saved there as ${v.uploaded} (Workflows panel)` : ""}.` : "No ComfyUI answered — the workflow JSON is on your clipboard (copied ✓).");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

@@ -195,10 +195,18 @@ export function FootageBoard({lib='footage'}={}){
     // the fetch is local, well inside the popup blocker's activation window.
     try{
       const v=await post(api('/comfy'),'POST',{path:f.path});
-      try{await navigator.clipboard.writeText(v.ui??v.json);}catch{}   // UI format when converted — the canvas paste path only takes UI graphs
+      // A silent writeText rejection used to leave yesterday's graph on the clipboard, so pasting loaded the WRONG workflow (the "always an H3 image workflow" report).
+      const payload=v.ui??v.json;   // UI format when converted — the canvas paste path only takes UI graphs
+      let copied=true;
+      try{await navigator.clipboard.writeText(payload);}catch{
+        copied=false;
+        try{const ta=document.createElement('textarea');ta.value=payload;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();copied=document.execCommand('copy');ta.remove();}catch{}
+      }
+      if(!copied){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([payload],{type:'application/json'}));a.download=`${String(f.path).split(/[\\/]/).pop().replace(/\.[a-z0-9]+$/i,'')}-workflow.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000);}
       const tab=v.host?window.open(v.host,'_blank'):null;
-      if(!tab)setNotice(v.host?'Popup blocked — allow popups, then click again (the workflow is on your clipboard).':'No ComfyUI answered — the workflow JSON is on your clipboard.');
-      setNotice(v.host?`ComfyUI opened — paste (Ctrl+V) onto its canvas (converted to editor format${v.ui?'':', raw API graph — use File→Open'})${v.uploaded?` · also saved there as ${v.uploaded} (Workflows panel)`:''}.`:'No ComfyUI answered on the usual hosts — the workflow JSON is on your clipboard.');
+      if(!copied)setNotice('Clipboard was blocked — the workflow JSON is DOWNLOADING instead: open it in ComfyUI via File → Open.');
+      else setNotice(v.host?`ComfyUI opened — paste (Ctrl+V) onto its canvas (copied ✓ ${v.ui?'editor format':'raw API graph — use File→Open'})${v.uploaded?` · also saved there as ${v.uploaded} (Workflows panel)`:''}.`:'No ComfyUI answered — the workflow JSON is on your clipboard (copied ✓).');
+      if(!tab&&v.host)setNotice('Popup blocked — allow popups, then click again (the workflow is on your clipboard).');
     }catch(e){setError(String(e.message||e));}
   };
   return <main className="panel footage-board" aria-label={lib==='images'?'Images':'Footage'}>
