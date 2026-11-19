@@ -20,6 +20,15 @@ const pendingLoad=new Map();                                  // host → queued
 const helloCbs=new Set();
 const deferred=[];                                            // workflows awaiting the first ComfyUI tab mount
 let openComfyTab=null;                                        // set by index.jsx from ctx.sidebarRight.openTab
+let noteSink=null;                                            // mounted ComfyFrame setNote, for module-originated lines
+let ackTimer=0;
+function clearAck(){if(ackTimer){clearTimeout(ackTimer);ackTimer=0;}}
+function armAck(){
+  // diagnostic only (no gate): if the endpoint never acks a load, say so — 242/243 still run an extension
+  // without the v1.2-iframe load-workflow case (their custom_nodes copy predates the edit / nfsshare not mounted at install time)
+  clearAck();
+  ackTimer=setTimeout(()=>{ackTimer=0;if(noteSink)noteSink('ComfyUI never confirmed the workflow load — this endpoint likely runs an older dsh-studio-link: 242/243 need install.sh re-run + ComfyUI restart (their /extensions/dsh-studio-link/dsh_link.js has no load-workflow)');},15000);
+}
 export function setComfyTabOpener(fn){openComfyTab=fn;}
 
 function sendBridge(h,msg){
@@ -32,7 +41,7 @@ function markHello(h){
   bridgeLinked.set(h,true);
   sendBridge(h,{type:'bridge-ready',hosts:hostsCache});
   const q=pendingLoad.get(h);
-  if(q){pendingLoad.delete(h);for(const m of q)sendBridge(h,m);}
+  if(q){pendingLoad.delete(h);for(const m of q)sendBridge(h,m);armAck();}
   for(const cb of helloCbs)cb(h);
 }
 
@@ -42,8 +51,12 @@ function markHello(h){
 // bundle must not execute UI side effects — build.test pins that invariant.
 if(typeof window!=='undefined'&&typeof window.addEventListener==='function'){
   window.addEventListener('message',(e)=>{
-    const d=e.data;if(!d||d.ns!==NS||d.v!==V||d.type!=='bridge-hello')return;
-    const h=activeHost,o=originOf(h);if(o&&e.origin===o)markHello(h);
+    const d=e.data;if(!d||d.ns!==NS||d.v!==V)return;
+    const h=activeHost,o=originOf(h);if(!o||e.origin!==o)return;
+    if(d.type==='bridge-hello'){markHello(h);return;}
+    if(d.type==='workflow-loaded'){clearAck();if(noteSink)noteSink('ComfyUI loaded the workflow into its canvas ✓');return;}
+    // verbatim from the iframe — no local guesswork about what the graph did
+    if(d.type==='workflow-error'){clearAck();if(noteSink)noteSink(`ComfyUI rejected the workflow: ${d.error??'unknown error'}`);}
   });
 }
 
@@ -75,7 +88,7 @@ globalThis.__DSH_COMFY_BRIDGE__=(msg)=>{
   const h=activeHost;
   if(h&&floatFrames.get(h)?.frame.isConnected){
     openComfyTab?.();
-    if(bridgeLinked.get(h))return sendBridge(h,msg);
+    if(bridgeLinked.get(h)){const ok=sendBridge(h,msg);if(ok)armAck();return ok;}
     const q=pendingLoad.get(h)??[];q.push(msg);pendingLoad.set(h,q);return true;   // frame booting — deliver on hello
   }
   if(!openComfyTab)return false;   // no tab system available — caller falls back to clipboard/new tab
@@ -117,6 +130,7 @@ export function ComfyFrame({sessionId}){
   }).catch((e)=>setNote(`Could not read Studio settings: ${e.message}`));},[]);
   useEffect(()=>{if(host){localStorage.setItem('dsh-comfy-host',host);activeHost=host;}},[host]);
   useEffect(()=>{const cb=(h)=>{if(h===host)setLinked(true);};helloCbs.add(cb);if(bridgeLinked.get(host))setLinked(true);return()=>helloCbs.delete(cb);},[host]);
+  useEffect(()=>{noteSink=setNote;return()=>{if(noteSink===setNote)noteSink=null;};},[setNote]);
 
   // Persistent-frame lifecycle: point at host ONLY when the host actually changed (tab switches must not
   // re-navigate), cover the anchor rect, show; on unmount hide — never remove (removal = reload = minutes).
@@ -193,10 +207,7 @@ export function ComfyFrame({sessionId}){
     const onMsg=(e)=>{
       const d=e.data;if(!d||d.ns!==NS||d.v!==V)return;
       const o=originOf(host);if(!o||e.origin!==o)return;   // only from the currently embedded host
-      if(d.type==='bridge-hello')return;   // handled at module scope (markHello)
-      if(d.type==='workflow-loaded'){setNote('ComfyUI loaded the workflow into its canvas ✓');return;}
-      // Surface the iframe's own failure verbatim — no local guesswork about what the graph did.
-      if(d.type==='workflow-error'){setNote(`ComfyUI rejected the workflow: ${d.error??'unknown error'}`);return;}
+      if(d.type==='bridge-hello'||d.type==='workflow-loaded'||d.type==='workflow-error')return;   // module scope owns these
       if(d.type==='library-request'){
         const k=d.kind;
         const grab=k==='assets'?Promise.all(ASSET_KINDS.map((kind)=>apiFetch(`/api/library?kind=${kind}`).then((items)=>({kind,items})))).then((kinds)=>({kinds}))
