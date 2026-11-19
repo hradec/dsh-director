@@ -154,7 +154,7 @@ export function ComfyFrame({sessionId}){
   const [host,setHost]=useState(()=>localStorage.getItem('dsh-comfy-host')??'');
   const [note,setNote]=useState('');
   const [linked,setLinked]=useState(()=>G.linked.get(localStorage.getItem('dsh-comfy-host')??'')??false);
-  const [picker,setPicker]=useState(null);           // {reqId,kind,files,error?}
+  const [picker,setPicker]=useState(()=>G.picker??null);   // survives tab re-mounts (factory re-runs were killing the open dialog)           // {reqId,kind,files,error?}
   const anchorRef=useRef(null);
   const stagingRef=useRef({});                       // slug → sidecar waiting for stage-images-done
   const sid=sessionId||globalThis.__DSH_DIRECTOR_SESSION__||(typeof localStorage!=='undefined'?localStorage.getItem('dsh-director-session'):null)||'';
@@ -177,7 +177,7 @@ export function ComfyFrame({sessionId}){
   useEffect(()=>{G.noteSink=setNote;return()=>{if(G.noteSink===setNote)G.noteSink=null;};},[setNote]);
   // The dialog lives inside the React tab while our frame boxes are body-level z50 — without this,
   // the picker renders BEHIND ComfyUI (backdrop darkens, panel invisible). Park frames low while open.
-  useEffect(()=>{for(const rec of G.frames.values())rec.box.style.zIndex=picker?'1':'50';},[picker]);
+  useEffect(()=>{G.picker=picker;for(const rec of G.frames.values())rec.box.style.zIndex=picker?'1':'50';},[picker]);
 
   // Persistent-frame lifecycle: point at host ONLY when the host actually changed (tab switches must not
   // re-navigate), cover the anchor rect, show; on unmount hide — never remove (removal = reload = minutes).
