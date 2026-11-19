@@ -60,6 +60,8 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'&&!G.
     const d=e.data;if(!d||d.ns!==NS||d.v!==V)return;
     const h=G.activeHost,o=originOf(h);if(!o||e.origin!==o)return;
     if(d.type==='iframe-nav'){if(G.noteSink)G.noteSink(`ComfyUI page (re)load: browser says initiator='${d.kind}' — 'reload' means the browser/you re-navigated the SAME url (F5, ⟳, crash or memory restore); 'navigate' means Director Studio pointed the frame at it`);return;}
+    if(d.type==='pick-done'){if(G.noteSink)G.noteSink(`Loaded "${d.name}${d.subfolder?d.subfolder+'/':''}" into the node (input root).`);return;}
+    if(d.type==='pick-error'){if(G.noteSink)G.noteSink(`Pick upload failed: ${d.why}`);return;}
     if(d.type==='diag-result'){if(G.noteSink)G.noteSink('Preview audit: '+(d.lines||[]).join(' | '));return;}
     if(d.type==='iframe-error'){if(G.noteSink)G.noteSink(`ComfyUI JS error: ${d.msg}${d.at?` (${d.at})`:''}`);return;}
     if(d.type==='iframe-leaving'){if(G.noteSink)G.noteSink(`ComfyUI (${G.activeHost}) announced it is leaving the page at ${new Date().toLocaleTimeString()}`);return;}
@@ -262,13 +264,15 @@ export function ComfyFrame({sessionId}){
     if(file===null)return;
     void (async()=>{
       try{
-        // library payloads carry the absolute path inside their same-origin file url
-        const abs=new URL(file.url,location.origin).searchParams.get('path')??file.path;
-        const v=await apiFetch('/api/comfy-upload',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path:abs,comfy_origin:host})});
-        // v1.2: pick-result.file is the BARE name — the iframe sets the combo to INIF+"/"+file (double prefix otherwise)
-        send({type:'pick-result',reqId:p.reqId,file:v.name});
-        setNote(`Picked ${v.subfolder}/${v.name} for the node.`);
-      }catch(e){send({type:'pick-result',reqId:p.reqId,file:null});setNote(`Pick failed: ${e.message}`);}
+        // v1.11: the FRAME uploads to its own input root — no dsh/ subfolder (red outlines, missing from
+        // dropdowns), no cross-origin CORS wall. Bytes come from our own /api/file url.
+        if(!G.linked.get(host)){setNote('Bridge not linked on this host — pick cannot upload.');return;}
+        const fr=await fetch(file.url);if(!fr.ok){setNote(`Could not read library file (${fr.status}).`);return;}
+        const buf=await fr.arrayBuffer();
+        const target=new URL(host);
+        window.postMessage({type:'upload-pick',reqId:p.reqId,name:file.name,data:buf},target.origin);
+        return;
+      }catch(e){setNote(`Pick upload failed: ${String(e.message||e)}`);}
     })();
   };
 
