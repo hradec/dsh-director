@@ -9,9 +9,52 @@ import React from 'react';
 const NS='dsh-studio',V=1;
 const IMAGE_RE=/\.(png|jpe?g|webp|gif|bmp)$/i,AUDIO_RE=/\.(wav|mp3|flac|ogg|m4a)$/i;
 const ASSET_KINDS=['actors','scenes','props','costumes','layouts','voices'];
+const originOf=(h)=>{try{return new URL(h).origin;}catch{return ''};};
 // One persistent iframe PER ComfyUI endpoint in document.body — switching hosts shows/hides frames instead of re-navigating.
 const floatFrames=new Map();         // host URL → {box,frame}
 const bridgeLinked=new Map();        // host URL → the extension said bridge-hello
+
+let activeHost=(typeof localStorage!=='undefined'?localStorage.getItem('dsh-comfy-host'):null)??'';   // last-used endpoint, even while the tab is closed
+let hostsCache=[];                                            // for bridge-ready payloads
+const pendingLoad=new Map();                                  // host → queued load-workflow msgs awaiting bridge-hello
+const helloCbs=new Set();
+
+function sendBridge(h,msg){
+  const frame=floatFrames.get(h)?.frame,o=originOf(h);
+  if(!frame?.isConnected||!o)return false;
+  frame.contentWindow?.postMessage({ns:NS,v:V,...msg},o);return true;
+}
+
+function markHello(h){
+  bridgeLinked.set(h,true);
+  sendBridge(h,{type:'bridge-ready',hosts:hostsCache});
+  const q=pendingLoad.get(h);
+  if(q){pendingLoad.delete(h);for(const m of q)sendBridge(h,m);}
+  for(const cb of helloCbs)cb(h);
+}
+
+// Right-click "Open in ComfyUI" lane — lives at module scope so it answers even when the sidebar
+// ComfyUI tab is closed: the endpoint's frame is kept alive after first visit, or booted hidden on demand.
+// hello catcher (module scope so closed-tab frames still register), DOM-guarded: importing the
+// bundle must not execute UI side effects — build.test pins that invariant.
+if(typeof window!=='undefined'&&typeof window.addEventListener==='function'){
+  window.addEventListener('message',(e)=>{
+    const d=e.data;if(!d||d.ns!==NS||d.v!==V||d.type!=='bridge-hello')return;
+    const h=activeHost,o=originOf(h);if(o&&e.origin===o)markHello(h);
+  });
+}
+
+globalThis.__DSH_COMFY_BRIDGE__=(msg)=>{
+  const h=activeHost;if(!h||!msg)return false;
+  if(msg.type!=='load-workflow')return bridgeLinked.get(h)?sendBridge(h,msg):false;
+  if(floatFrames.get(h)?.frame.isConnected){
+    if(bridgeLinked.get(h))return sendBridge(h,msg);
+    const q=pendingLoad.get(h)??[];q.push(msg);pendingLoad.set(h,q);return true;   // frame booting — deliver on hello
+  }
+  const rec=ensureFrame(h);
+  if(rec.frame.dataset.src!==h){rec.frame.dataset.src=h;rec.frame.src=h;}
+  const q=pendingLoad.get(h)??[];q.push(msg);pendingLoad.set(h,q);return true;
+};
 
 function ensureFrame(host){
   const rec=floatFrames.get(host);
@@ -39,15 +82,15 @@ export function ComfyFrame({sessionId}){
   const stagingRef=useRef({});                       // slug → sidecar waiting for stage-images-done
   const sid=sessionId??globalThis.__DSH_DIRECTOR_SESSION__??'';
 
-  const originOf=(h)=>{try{return new URL(h).origin;}catch{return ''};};
-  const send=(msg)=>{const w=floatFrames.get(host)?.frame.contentWindow,o=originOf(host);if(!w||!o)return false;w.postMessage({ns:NS,v:V,...msg},o);return true;};
+  const send=(msg)=>sendBridge(host,msg);
 
   useEffect(()=>{apiFetch('/api/library/app-settings').then((v)=>{
     const list=String(v?.comfy?.urls??'').split('\n').map((s)=>s.trim()).filter(Boolean);
-    setHosts(list);setHost((h)=>h||list[0]||'');
+    setHosts(list);hostsCache=list;setHost((h)=>h||list[0]||'');
     if(!list.length)setNote('No ComfyUI endpoints configured — add them in the Studio settings gear (ComfyUI tab).');
   }).catch((e)=>setNote(`Could not read Studio settings: ${e.message}`));},[]);
-  useEffect(()=>{if(host)localStorage.setItem('dsh-comfy-host',host);},[host]);
+  useEffect(()=>{if(host){localStorage.setItem('dsh-comfy-host',host);activeHost=host;}},[host]);
+  useEffect(()=>{const cb=(h)=>{if(h===host)setLinked(true);};helloCbs.add(cb);if(bridgeLinked.get(host))setLinked(true);return()=>helloCbs.delete(cb);},[host]);
 
   // Persistent-frame lifecycle: point at host ONLY when the host actually changed (tab switches must not
   // re-navigate), cover the anchor rect, show; on unmount hide — never remove (removal = reload = minutes).
@@ -120,7 +163,7 @@ export function ComfyFrame({sessionId}){
     const onMsg=(e)=>{
       const d=e.data;if(!d||d.ns!==NS||d.v!==V)return;
       const o=originOf(host);if(!o||e.origin!==o)return;   // only from the currently embedded host
-      if(d.type==='bridge-hello'){bridgeLinked.set(host,true);setLinked(true);send({type:'bridge-ready',hosts});return;}
+      if(d.type==='bridge-hello')return;   // handled at module scope (markHello)
       if(d.type==='library-request'){
         const k=d.kind;
         const grab=k==='assets'?Promise.all(ASSET_KINDS.map((kind)=>apiFetch(`/api/library?kind=${kind}`).then((items)=>({kind,items})))).then((kinds)=>({kinds}))
@@ -141,14 +184,7 @@ export function ComfyFrame({sessionId}){
     window.addEventListener('message',onMsg);return()=>window.removeEventListener('message',onMsg);
   },[hosts,host,sid]);
 
-  // Right-click "Open in ComfyUI" in Footage/Images/Assets boards calls this when the tab is mounted and linked:
-  // the graph loads directly in the embedded ComfyUI instead of the clipboard+new-tab dance.
-  useEffect(()=>{
-    globalThis.__DSH_COMFY_BRIDGE__=(msg)=>{if(!linked||!host)return false;return send(msg);};
-    return()=>{delete globalThis.__DSH_COMFY_BRIDGE__;};
-  },[linked,host]);
-
-  const switchHost=(h)=>{if(h===host)return;setHost(h);bridgeLinked.set(h,false);setLinked(false);stagingRef.current={};};
+      if(d.type==='bridge-hello'){markHello(host);return;}   // module-level: also serves closed-tab frames  const switchHost=(h)=>{if(h===host)return;setHost(h);bridgeLinked.set(h,false);setLinked(false);stagingRef.current={};};
 
   return <div className="comfy-frame-tab">
     <div className="comfy-frame-bar">
