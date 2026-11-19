@@ -40,8 +40,9 @@ function sendBridge(h,msg){
 function markHello(h){
   bridgeLinked.set(h,true);
   sendBridge(h,{type:'bridge-ready',hosts:hostsCache});
-  const q=pendingLoad.get(h);
-  if(q){pendingLoad.delete(h);for(const m of q)sendBridge(h,m);armAck();}
+  // latest-wins: stale queued loads from earlier attempts must NOT replay (replaying looked like the canvas reloading right after a load)
+  const m=pendingLoad.get(h);
+  if(m){pendingLoad.delete(h);sendBridge(h,m);armAck();}
   for(const cb of helloCbs)cb(h);
 }
 
@@ -89,7 +90,7 @@ globalThis.__DSH_COMFY_BRIDGE__=(msg)=>{
   if(h&&floatFrames.get(h)?.frame.isConnected){
     openComfyTab?.();
     if(bridgeLinked.get(h)){const ok=sendBridge(h,msg);if(ok)armAck();return ok;}
-    const q=pendingLoad.get(h)??[];q.push(msg);pendingLoad.set(h,q);armAck();return true;   // frame booting or bridge-less — deliver on hello, or say so
+    pendingLoad.set(h,msg);armAck();return true;   // latest-wins: one parked load per host, delivered on hello (or the note explains)
 
   }
   if(!openComfyTab)return false;   // no tab system available — caller falls back to clipboard/new tab
@@ -139,10 +140,8 @@ export function ComfyFrame({sessionId}){
     if(!host)return;
     const rec=ensureFrame(host);
     if(rec.frame.dataset.src!==host){rec.frame.dataset.src=host;rec.frame.src=host;}
-    if(deferred.length){
-      const q=deferred.splice(0);
-      for(const m of q){if(bridgeLinked.get(host))sendBridge(host,m);else{const p=pendingLoad.get(host)??[];p.push(m);pendingLoad.set(host,p);}}
-    }
+    const m=deferred.pop();   // latest-wins
+    if(m){if(bridgeLinked.get(host))sendBridge(host,m);else pendingLoad.set(host,m);}
     // z-index 50: above harness sidebar chrome, below our own dialogs (settings 60, picker 70)
     const sync=()=>{const a=anchorRef.current;if(!a)return;const r=a.getBoundingClientRect();for(const [h,other] of floatFrames)if(other.box.isConnected)other.box.style.display=h===host?'block':'none';if(!rec.box.isConnected)return;Object.assign(rec.box.style,{position:'fixed',left:`${r.left}px`,top:`${r.top}px`,width:`${r.width}px`,height:`${r.height}px`,zIndex:'50'});};
     sync();
