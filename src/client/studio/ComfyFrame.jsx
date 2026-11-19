@@ -103,6 +103,10 @@ globalThis.__DSH_COMFY_BRIDGE__=(msg)=>{
 function ensureFrame(host){
   const rec=floatFrames.get(host);
   if(rec?.frame.isConnected)return rec;
+  // Harness re-renders can DETACH our body-level box; re-attach the SAME element — a detached-then-
+  // re-appended iframe keeps its document (no reload). Only a truly absent frame may be created:
+  // recreating what merely got detached cost the user a full 2-minute ComfyUI boot every time.
+  if(rec){if(!rec.box.isConnected)document.body.appendChild(rec.box);return rec;}
   const box=document.createElement('div');box.className='comfy-frame-floating';box.style.display='none';
   const frame=document.createElement('iframe');frame.className='comfy-frame';frame.title='ComfyUI — '+host;
   box.append(frame);document.body.append(box);
