@@ -288,6 +288,43 @@ app.registerExtension({
         // cross-origin iframe console, and 'preview broken only when embedded' demanded eyes inside.
         // v1.19: multi-user identity is the plain 'comfy-user: <user_id>' header (verified 404->200).
         // The embedded frame never went through the frontend login -> anonymous -> user files 404.
+        // v1.21: multi-user media can NEVER load via <img>/<video> (headers impossible on element
+        // requests; query-param identity is not accepted). Route element URLs through authenticated
+        // fetch -> blob: URL. Covers litegraph LoadImage/LoadVideo previews and thumbnails wholesale.
+        const blobCache = new Map();
+        async function authedUrl(u) {
+            const who = await resolveUser();
+            if (!who) return u;
+            if (blobCache.has(u)) return blobCache.get(u);
+            try {
+                const r = await nativeFetch(u, { headers: { "comfy-user": who } });
+                if (!r.ok) return u;
+                const b = URL.createObjectURL(await r.blob());
+                blobCache.set(u, b);
+                return b;
+            } catch (e) { return u; }
+        }
+        function rewriteMediaSrc(proto) {
+            const d = Object.getOwnPropertyDescriptor(proto, "src");
+            if (!d || !d.set) return;
+            Object.defineProperty(proto, "src", {
+                configurable: true, enumerable: d.enumerable, get: d.get,
+                set(v) {
+                    if (typeof v === "string" && v.includes("/view?")) {
+                        const el = this;
+                        el.__dshSeq = (el.__dshSeq || 0) + 1;
+                        const seq = el.__dshSeq;   // last writer wins; blob swap is async
+                        authedUrl(v).then((u2) => { if (el.__dshSeq === seq) d.set.call(el, u2); });
+                        return;
+                    }
+                    d.set.call(this, v);
+                },
+            });
+        }
+        rewriteMediaSrc(window.HTMLImageElement.prototype);
+        rewriteMediaSrc(window.HTMLVideoElement.prototype);
+        rewriteMediaSrc(window.HTMLAudioElement.prototype);
+
         const nativeFetch = window.fetch;
         window.fetch = async (input, init) => {
             const u = typeof input === "string" ? input : (input && input.url) || "";
