@@ -182,7 +182,11 @@ export function ComfyFrame({sessionId}){
   // The dialog lives inside the React tab while our frame boxes are body-level z50 — without this,
   // the picker renders BEHIND ComfyUI (backdrop darkens, panel invisible). Park frames low while open.
   useEffect(()=>{G.picker=picker;
-    if(picker&&!document.querySelector('style[data-director=vendor-styles]')){const el=document.createElement('style');el.dataset.director='vendor-styles';el.textContent=vcss;document.head.append(el);}
+    // vendor styles.css restyles .btn/.primary GLOBALLY — it turns the tab bar into orange pills.
+    // Mount it only while the pick dialog is open (StudioRoot owns it when the studio view is mounted).
+    if(!picker||document.querySelector('style[data-director=media]')&&document.querySelector('main.footage-board'))return;   // studio view already styles its own boards
+    const el=document.createElement('style');el.dataset.director='vendor-picker';el.textContent=vcss;document.head.append(el);
+    return()=>el.remove();
   },[picker]);   // frames keep z50: the portal dialog (z70/71) lives in the SAME body layer and wins — sinking frames caused the near-black flash
   // Keep-alive (bridge v1.9): all node previews vanished on the linked embed with values intact and zero
   // JS errors = Chrome froze the frame's painting; 20s heartbeat forces a full node repaint inside.
