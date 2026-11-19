@@ -67,7 +67,10 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'){
 // Browser-only: skipped unless a real document exists (lazy-factory tests provide neither).
 let warmed=false;
 async function warmComfyFrame(){
-  if(warmed)return;warmed=true;
+  if(warmed)return;
+  moduleSid=globalThis.__DSH_DIRECTOR_SESSION__||(typeof localStorage!=='undefined'?localStorage.getItem('dsh-director-session'):null)||'';
+  if(!moduleSid)return;                                       // retry once a session is known (component mount re-fetches settings itself)
+  warmed=true;
   try{
     const v=await apiFetch('/api/library/app-settings');
     const list=String(v?.comfy?.urls??'').split('\n').map((x)=>x.trim()).filter(Boolean);
@@ -106,8 +109,10 @@ function ensureFrame(host){
   const out={box,frame};floatFrames.set(host,out);return out;
 }
 
+let moduleSid='';                                             // component keeps this fresh; localStorage seeds it so a tab that opens BEFORE any studio view still authenticates
 async function apiFetch(p,init){
-  const r=await fetch('/director-studio'+p,init);
+  const url='/director-studio'+p+(moduleSid?`${p.includes('?')?'&':'?'}session=${encodeURIComponent(moduleSid)}`:'');
+  const r=await fetch(url,init);
   const v=await r.json().catch(()=>null);
   if(!r.ok)throw new Error(v?.detail??`${p} → HTTP ${r.status}`);
   return v;
@@ -121,15 +126,18 @@ export function ComfyFrame({sessionId}){
   const [picker,setPicker]=useState(null);           // {reqId,kind,files,error?}
   const anchorRef=useRef(null);
   const stagingRef=useRef({});                       // slug → sidecar waiting for stage-images-done
-  const sid=sessionId??globalThis.__DSH_DIRECTOR_SESSION__??'';
+  const sid=sessionId||globalThis.__DSH_DIRECTOR_SESSION__||(typeof localStorage!=='undefined'?localStorage.getItem('dsh-director-session'):null)||'';
+  moduleSid=sid;
+  if(sid&&typeof localStorage!=='undefined')localStorage.setItem('dsh-director-session',sid);
+  if(sid)globalThis.__DSH_DIRECTOR_SESSION__=sid;
 
   const send=(msg)=>sendBridge(host,msg);
 
-  useEffect(()=>{apiFetch('/api/library/app-settings').then((v)=>{
+  useEffect(()=>{if(!sid)return;apiFetch('/api/library/app-settings').then((v)=>{
     const list=String(v?.comfy?.urls??'').split('\n').map((s)=>s.trim()).filter(Boolean);
     setHosts(list);hostsCache=list;setHost((h)=>h||list[0]||'');
     if(!list.length)setNote('No ComfyUI endpoints configured — add them in the Studio settings gear (ComfyUI tab).');
-  }).catch((e)=>setNote(`Could not read Studio settings: ${e.message}`));},[]);
+  }).catch((e)=>setNote(`Could not read Studio settings: ${e.message}`));},[sid]);
   useEffect(()=>{if(host){localStorage.setItem('dsh-comfy-host',host);activeHost=host;}},[host]);
   useEffect(()=>{const cb=(h)=>{if(h===host)setLinked(true);};helloCbs.add(cb);if(bridgeLinked.get(host))setLinked(true);return()=>helloCbs.delete(cb);},[host]);
   useEffect(()=>{noteSink=setNote;return()=>{if(noteSink===setNote)noteSink=null;};},[setNote]);
