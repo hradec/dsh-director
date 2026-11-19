@@ -77,10 +77,8 @@ async function warmComfyFrame(){
     const list=String(v?.comfy?.urls??'').split('\n').map((x)=>x.trim()).filter(Boolean);
     if(!list.length)return;
     G.hostsCache=list;
-    const h=G.activeHost&&list.includes(G.activeHost)?G.activeHost:list[0];
-    G.activeHost=h;
-    const rec=ensureFrame(h);
-    if(rec.frame.dataset.src!==h){rec.frame.dataset.src=h;writeSrc(rec.frame,h,'warmComfyFrame +4s boot');}
+    for(const h of list){const rec=ensureFrame(h);if(rec.frame.dataset.src!==h){rec.frame.dataset.src=h;writeSrc(rec.frame,h,'warmComfyFrame +4s boot-all');}}
+    G.activeHost=G.activeHost&&list.includes(G.activeHost)?G.activeHost:list[0];
   }catch{}
 }
 if(typeof window!=='undefined'&&typeof document!=='undefined'&&typeof document.body!=='undefined'&&typeof setTimeout==='function')setTimeout(warmComfyFrame,4000);
@@ -167,6 +165,9 @@ export function ComfyFrame({sessionId}){
   useEffect(()=>{if(!sid)return;apiFetch('/api/library/app-settings').then((v)=>{
     const list=String(v?.comfy?.urls??'').split('\n').map((s)=>s.trim()).filter(Boolean);
     setHosts(list);G.hostsCache=list;setHost((h)=>h||list[0]||'');
+    // User request: boot EVERY configured endpoint once (off-screen) so switching between hosts is instant —
+    // each frame persists per host; only the visible one paints, the others idle in memory.
+    for(const h of list){const rec=ensureFrame(h);if(rec.frame.dataset.src!==h){rec.frame.dataset.src=h;writeSrc(rec.frame,h,'boot-all-endpoints on settings load');}}
     if(!list.length)setNote('No ComfyUI endpoints configured — add them in the Studio settings gear (ComfyUI tab).');
   }).catch((e)=>setNote(`Could not read Studio settings: ${e.message}`));},[sid]);
   useEffect(()=>{if(host){localStorage.setItem('dsh-comfy-host',host);G.activeHost=host;}},[host]);
