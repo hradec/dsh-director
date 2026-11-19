@@ -63,6 +63,13 @@ window.addEventListener("message", async (ev) => {
             } catch (e) { toParent({ type: "pick-error", reqId: m.reqId, why: String(e.message || e) }); }
             break;
         }
+        case "diag-perf": { // v1.17: the browser's own ledger — every /view URL this frame FETCHED, with transfer size + duration
+            const L = performance.getEntriesByType("resource").filter((e) => e.name.includes("/view")).slice(-14)
+                .map((e) => decodeURIComponent(e.name.replace(location.origin, "")) + " [" + e.transferSize + "B/" + Math.round(e.duration) + "ms" + (e.responseHeaders ? "" : " norec") + "]");
+            toParent({ type: "diag-result", lines: L.length ? L : ["perf: zero /view fetches recorded"] });
+            auditDump("perf", L);
+            break;
+        }
         case "diag-dom": { // v1.13: inspect the ACTUAL preview elements the frontend rendered inside this document
             const lines = [];
             for (const el of document.querySelectorAll("img, video")) {
@@ -76,11 +83,19 @@ window.addEventListener("message", async (ev) => {
                 lines.push(name + " [" + state + " rect " + Math.round(r.width) + "x" + Math.round(r.height) + " inVP " + (r.top >= 0 && r.top < innerHeight) + "]");
                 if (lines.length >= 10) break;
             }
-            toParent({ type: "diag-result", lines: lines.length ? lines : ["dom: no /view media elements"] });   // 'dom:' tag = v1.15 present; untagged old text meant an STALE frame
+            const L = lines.length ? lines : ["dom: no /view media elements"];
+            toParent({ type: "diag-result", lines: L });
+            auditDump("dom", L);   // v1.16: land the audit on server disk for the agent
             break;
         }
         case "diag": { // v1.10: self-audit every LoadImage/LoadVideo — value + what /view ACTUALLY answers inside this frame
-            const lines = [];
+            // v1.18: IDENTITY — this server runs --multi-user: /view and dropdowns resolve against the
+            // LOGGED-IN user's input folder; anonymous sees the (mostly empty) default. 403 = anonymous embed.
+            let idn = "unknown";
+            const who = await resolveUser();
+            try { const r = await fetch("/userdata/list"); idn = r.status === 403 ? "ANONYMOUS (default folders)" : r.status === 200 ? "logged-in" : "HTTP " + r.status; } catch (e) { idn = "ERR " + e.message; }
+            idn += " | comfy-user: " + (who || "(not set)");
+            const lines = ["v1.18 IDENTITY: " + idn];
             for (const n of app.graph._nodes) {
                 if (n.type !== "LoadImage" && n.type !== "LoadVideo") continue;
                 const v = n.widgets && n.widgets[0] && n.widgets[0].value;
@@ -104,6 +119,7 @@ window.addEventListener("message", async (ev) => {
                 if (lines.length >= 8) break;
             }
             toParent({ type: "diag-result", lines });
+            auditDump("node", lines);   // v1.16
             break;
         }
         case "keepalive": // v1.9: parent heartbeat — force a full node repaint so Chrome's freeze of
@@ -216,6 +232,31 @@ async function stageAsset(slug) {
     renameAssetOutputs(slug, entry);
 }
 
+let userPromise = null;
+function resolveUser() { // setting holds a username OR a raw user_id; map via /users; blank -> leave requests untouched
+    if (!userPromise) userPromise = (async () => {
+        const want = setting("DSHStudio.comfyUser", "").trim();
+        if (!want) return "";
+        try {
+            const j = await nativeFetch("/users").then((r) => (r.ok ? r.json() : {}));
+            if (j.users && j.users[want]) return want;
+            const hit = Object.entries(j.users || {}).find(([, name]) => name === want);
+            if (hit) return hit[0];
+        } catch (e) { /* fall through */ }
+        return want;
+    })();
+    return userPromise;
+}
+
+async function auditDump(kind, lines) { // v1.16: POST audit text to THIS server's /upload/image (.png suffix rides the validator; contents are plain text)
+    try {
+        const fd = new FormData();
+        fd.append("image", new Blob(["dsh-audit " + kind + "\n" + lines.join("\n")], { type: "image/png" }), "dsh-audit-" + kind + ".png");
+        fd.append("overwrite", "true");
+        await fetch("/upload/image", { method: "POST", body: fd });
+    } catch (e) { /* best effort */ }
+}
+
 function requestPick(node) {
     const reqId = "req" + (++reqSeq);
     pendingPicks.set(reqId, node);
@@ -226,6 +267,7 @@ function requestPick(node) {
 app.registerExtension({
     name: "dsh.studio.link",
     settings: [
+        { id: "DSHStudio.comfyUser", name: "Comfy user (multi-user header)", type: "string", defaultValue: "", tooltip: "Username for the comfy-user header — this server runs --multi-user (per-user input/output). Blank = don't interfere. e.g. rhadec" },
         { id: "DSHStudio.dshOrigin", name: "DSH base URL (standalone mode)", type: "string", defaultValue: "http://127.0.0.1:3081" },
         { id: "DSHStudio.session", name: "DSH director-studio session token", type: "string", defaultValue: "" },
         { id: "DSHStudio.parentOrigin", name: "Director Studio origin (empty = any)", type: "string", defaultValue: "" },
@@ -244,6 +286,22 @@ app.registerExtension({
         });
         // v1.8: ship the frame's JS errors to the parent's note line — the parent cannot read a
         // cross-origin iframe console, and 'preview broken only when embedded' demanded eyes inside.
+        // v1.19: multi-user identity is the plain 'comfy-user: <user_id>' header (verified 404->200).
+        // The embedded frame never went through the frontend login -> anonymous -> user files 404.
+        const nativeFetch = window.fetch;
+        window.fetch = async (input, init) => {
+            const u = typeof input === "string" ? input : (input && input.url) || "";
+            const path = u.startsWith("http") ? new URL(u).pathname : u;
+            const who = await resolveUser();
+            if (who && /^\/(view|upload|userdata|prompt|history)([?/]|$)/.test(path)) {
+                init = init || {};
+                const h = new Headers(init.headers || (typeof input !== "string" && input.headers) || {});
+                if (!h.has("comfy-user")) h.set("comfy-user", who);
+                init = { ...init, headers: h };
+            }
+            return nativeFetch(input, init);
+        };
+
         window.addEventListener("error", (e) => {
             try { toParent({ type: "iframe-error", msg: String(e.message), at: String(e.filename).split("/").pop() + ":" + e.lineno }); } catch {}
         });
