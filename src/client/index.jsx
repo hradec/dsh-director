@@ -44,6 +44,7 @@ export function apply(ctx){
      {id:'dsh-director-studio-story',kind:'director-studio-story',title:()=>'Story',Body:StoryTab,guide:[{id:'story',order:50,title:()=>'Story',description:()=>'Decision cards, canon floor, story beats on two clocks — the wall that remembers what you decided.'}]},
      {id:'dsh-director-studio-media',kind:'director-studio-media',title:()=>'Media',Body:MediaTab,guide:[{id:'media',order:35,title:()=>'Media',description:()=>'Every image and video of this session as cards: Images/Videos/Both filter, same-title version stacks, click to zoom or play.'}]},
    ];
+   if(ctx.sidebarRight?.openTab)import('./studio/ComfyFrame.jsx').then((m)=>m.setComfyTabOpener(()=>ctx.sidebarRight.openTab('director-studio-comfy',{params:{}})));
    if(ctx.sidebarRightTabs?.register)for(const definition of studioTabs){
      const Body=definition.Body;
      ctx.effect(()=>ctx.sidebarRightTabs.register(definition),`director Studio ${definition.kind} type`);
