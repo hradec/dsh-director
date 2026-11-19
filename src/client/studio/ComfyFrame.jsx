@@ -9,16 +9,17 @@ import React from 'react';
 const NS='dsh-studio',V=1;
 const IMAGE_RE=/\.(png|jpe?g|webp|gif|bmp)$/i,AUDIO_RE=/\.(wav|mp3|flac|ogg|m4a)$/i;
 const ASSET_KINDS=['actors','scenes','props','costumes','layouts','voices'];
-let floatHost=null,floatFrame=null;   // persistent iframe owner in document.body
+// One persistent iframe PER ComfyUI endpoint in document.body — switching hosts shows/hides frames instead of re-navigating.
+const floatFrames=new Map();         // host URL → {box,frame}
 const bridgeLinked=new Map();        // host URL → the extension said bridge-hello
 
-function ensureFrame(){
-  if(floatFrame?.isConnected)return floatFrame;
-  if(!floatHost){floatHost=document.createElement('div');floatHost.className='comfy-frame-floating';}
-  if(!floatFrame){floatFrame=document.createElement('iframe');floatFrame.className='comfy-frame';floatFrame.title='ComfyUI';}
-  floatHost.append(floatFrame);
-  if(!floatHost.isConnected)document.body.append(floatHost);
-  return floatFrame;
+function ensureFrame(host){
+  const rec=floatFrames.get(host);
+  if(rec?.frame.isConnected)return rec;
+  const box=document.createElement('div');box.className='comfy-frame-floating';box.style.display='none';
+  const frame=document.createElement('iframe');frame.className='comfy-frame';frame.title='ComfyUI — '+host;
+  box.append(frame);document.body.append(box);
+  const out={box,frame};floatFrames.set(host,out);return out;
 }
 
 async function apiFetch(p,init){
@@ -39,7 +40,7 @@ export function ComfyFrame({sessionId}){
   const sid=sessionId??globalThis.__DSH_DIRECTOR_SESSION__??'';
 
   const originOf=(h)=>{try{return new URL(h).origin;}catch{return ''};};
-  const send=(msg)=>{const w=floatFrame?.contentWindow,o=originOf(host);if(!w||!o)return false;w.postMessage({ns:NS,v:V,...msg},o);return true;};
+  const send=(msg)=>{const w=floatFrames.get(host)?.frame.contentWindow,o=originOf(host);if(!w||!o)return false;w.postMessage({ns:NS,v:V,...msg},o);return true;};
 
   useEffect(()=>{apiFetch('/api/library/app-settings').then((v)=>{
     const list=String(v?.comfy?.urls??'').split('\n').map((s)=>s.trim()).filter(Boolean);
@@ -51,15 +52,16 @@ export function ComfyFrame({sessionId}){
   // Persistent-frame lifecycle: point at host ONLY when the host actually changed (tab switches must not
   // re-navigate), cover the anchor rect, show; on unmount hide — never remove (removal = reload = minutes).
   useEffect(()=>{
-    const frame=ensureFrame();
-    if(host&&frame.dataset.src!==host){frame.dataset.src=host;frame.src=host;}
+    if(!host)return;
+    const rec=ensureFrame(host);
+    if(rec.frame.dataset.src!==host){rec.frame.dataset.src=host;rec.frame.src=host;}
     // z-index 50: above harness sidebar chrome, below our own dialogs (settings 60, picker 70)
-    const sync=()=>{const a=anchorRef.current;if(!a||!floatHost)return;const r=a.getBoundingClientRect();Object.assign(floatHost.style,{position:'fixed',left:`${r.left}px`,top:`${r.top}px`,width:`${r.width}px`,height:`${r.height}px`,display:'block',zIndex:'50'});};
+    const sync=()=>{const a=anchorRef.current;if(!a)return;const r=a.getBoundingClientRect();for(const [h,other] of floatFrames)if(other.box.isConnected)other.box.style.display=h===host?'block':'none';if(!rec.box.isConnected)return;Object.assign(rec.box.style,{position:'fixed',left:`${r.left}px`,top:`${r.top}px`,width:`${r.width}px`,height:`${r.height}px`,zIndex:'50'});};
     sync();
     const ro=new ResizeObserver(sync);if(anchorRef.current)ro.observe(anchorRef.current);
     window.addEventListener('resize',sync);window.addEventListener('scroll',sync,true);
     const iv=setInterval(sync,1500);   // pane opens/collapses don't all resize the anchor — ponytail: cheap poll
-    return()=>{ro.disconnect();window.removeEventListener('resize',sync);window.removeEventListener('scroll',sync,true);clearInterval(iv);if(floatHost)floatHost.style.display='none';};
+    return()=>{ro.disconnect();window.removeEventListener('resize',sync);window.removeEventListener('scroll',sync,true);clearInterval(iv);rec.box.style.display='none';};
   },[host]);
 
   const stageAsset=async(slug)=>{
@@ -152,7 +154,7 @@ export function ComfyFrame({sessionId}){
     <div className="comfy-frame-bar">
       {hosts.map((h)=><button key={h} type="button" className={`btn sm ${h===host?'primary':'ghost'}`} onClick={()=>switchHost(h)}>{h.replace(/^https?:\/\//,'')}</button>)}
       {!hosts.length?<span className="muted tiny">no endpoints — set them in Studio settings (gear → ComfyUI)</span>:null}
-      <button type="button" className="btn ghost sm" title="Reload the embedded ComfyUI" onClick={()=>{if(floatFrame){bridgeLinked.set(host,false);setLinked(false);delete floatFrame.dataset.src;floatFrame.src=host;}}}>⟳</button>
+      <button type="button" className="btn ghost sm" title="Reload this endpoint's frame" onClick={()=>{const f=floatFrames.get(host)?.frame;if(f){bridgeLinked.set(host,false);setLinked(false);f.src='about:blank';f.dataset.src='';f.src=host;}}}>⟳</button>
       <span className="muted tiny" title="set by the dsh-studio-link extension inside ComfyUI">{linked?'bridge ✓':'awaiting dsh-studio-link bridge-hello…'}</span>
     </div>
     <div ref={anchorRef} className="comfy-frame-anchor"/>
