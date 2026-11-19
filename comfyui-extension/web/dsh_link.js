@@ -63,6 +63,22 @@ window.addEventListener("message", async (ev) => {
             } catch (e) { toParent({ type: "pick-error", reqId: m.reqId, why: String(e.message || e) }); }
             break;
         }
+        case "diag-dom": { // v1.13: inspect the ACTUAL preview elements the frontend rendered inside this document
+            const lines = [];
+            for (const el of document.querySelectorAll("img, video")) {
+                const src = el.currentSrc || el.src || "";
+                if (!src.includes("/view")) continue;
+                const name = decodeURIComponent((src.match(/[?&]filename=([^&]*)/) || [])[1] || "?");
+                const state = el.tagName === "VIDEO"
+                    ? (el.readyState ? "ready" + el.readyState : "NOT-LOADED " + (el.error ? "err" + el.error.code : "loading=" + el.getAttribute("loading")))
+                    : (el.complete && el.naturalWidth ? "ok " + el.naturalWidth + "x" + el.naturalHeight : "INCOMPLETE " + (el.currentSrc ? "started" : "no-src") + " loading=" + el.getAttribute("loading"));
+                const r = el.getBoundingClientRect();
+                lines.push(name + " [" + state + " rect " + Math.round(r.width) + "x" + Math.round(r.height) + " inVP " + (r.top >= 0 && r.top < innerHeight) + "]");
+                if (lines.length >= 10) break;
+            }
+            toParent({ type: "diag-result", lines: lines.length ? lines : ["no /view media elements in DOM at all"] });
+            break;
+        }
         case "diag": { // v1.10: self-audit every LoadImage/LoadVideo — value + what /view ACTUALLY answers inside this frame
             const lines = [];
             for (const n of app.graph._nodes) {
