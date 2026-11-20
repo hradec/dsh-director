@@ -80,7 +80,7 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'&&!G.
       return;}
     if(d.type==='iframe-error'){if(G.noteSink)G.noteSink(`ComfyUI JS error: ${d.msg}${d.at?` (${d.at})`:''}`);return;}
     if(d.type==='iframe-leaving'){if(G.noteSink)G.noteSink(`ComfyUI (${G.activeHost}) announced it is leaving the page at ${new Date().toLocaleTimeString()}`);return;}
-    if(d.type==='bridge-hello'){markHello(h);return;}
+    if(d.type==='bridge-hello'){if(d.ver){G.verMap=G.verMap||new Map();G.verMap.set(h,d.ver);for(const cb of (G.verCbs||[]))cb(h,d.ver);}markHello(h);return;}
     if(d.type==='workflow-loaded'){clearAck();if(G.noteSink)G.noteSink('ComfyUI loaded the workflow into its canvas ✓');return;}
     // verbatim from the iframe — no local guesswork about what the graph did
     if(d.type==='workflow-error'){clearAck();if(G.noteSink)G.noteSink(`ComfyUI rejected the workflow: ${d.error??'unknown error'}`);}
@@ -131,6 +131,7 @@ function observeRemoval(){                                    // does the APP ri
     const t=new Date().toLocaleTimeString();
     globalThis.__DSH_FRAME_LOG__=(globalThis.__DSH_FRAME_LOG__??[]).concat([{t,host:h,event:'box-removed'}]);
     if(G.noteSink)G.noteSink(`${h}: frame box REMOVED from page DOM at ${t} (by the app, not by our code) — re-attaching`);
+    sendBridge(h,{type:'log-event',detail:'box-removed '+t});   // relay to disk — the reboot culprit confesses
   }}).observe(document.body,{childList:true});
 }
 function ensureFrame(host){
@@ -158,6 +159,7 @@ function ensureFrame(host){
     const verdict=recent.length?`a src write caused it: ${recent[recent.length-1].why}`:'NO src write — the browser reloaded the document itself (discard/OOM) or a removed+re-created element';
     globalThis.__DSH_FRAME_LOG__=(globalThis.__DSH_FRAME_LOG__??[]).concat([{t:Date.now(),host,n:loads,verdict}]);
     if(G.noteSink)G.noteSink(`ComfyUI (${host}) reloaded on its own: ${verdict}`);
+    sendBridge(host,{type:'log-event',detail:`unexplained-load #${loads} ${new Date().toLocaleTimeString()} ${verdict}`});
   }});
   observeRemoval();
 
@@ -325,7 +327,8 @@ export function ComfyFrame({sessionId}){
       <button type="button" className="btn sm ghost" title="Audit every LoadImage/LoadVideo in the frame: filename + what /view answers inside it" onClick={()=>{G.auditLines=[];sendBridge(host,{type:'diag'});setTimeout(()=>sendBridge(host,{type:'diag-perf'}),200);setTimeout(()=>sendBridge(host,{type:'diag-dom'}),400);}}>🩺</button>
       {hosts.map((h)=><button key={h} type="button" className={`btn sm ${h===host?'primary':'ghost'}`} style={h===host?{color:'#ff8c3b',fontWeight:700}:undefined} onClick={()=>switchHost(h)}>{h.replace(/^https?:\/\//,'')}</button>)}
       {!hosts.length?<span className="muted tiny">no endpoints — set them in Studio settings (gear → ComfyUI)</span>:null}
-      <button type="button" className="btn ghost sm" title="Reload this endpoint's frame" onClick={()=>{const f=G.frames.get(host)?.frame;if(f){G.linked.set(host,false);setLinked(false);f.dataset.src='';writeSrc(f,'about:blank','user clicked reload button');writeSrc(f,host,'user clicked reload button');}}}>⟳</button>
+      <button type="button" className="btn ghost sm" title="Reload this endpoint's frame" onClick={()=>{if(linked&&sendBridge(host,{type:'request-reload'}))return;   // polite: frame self-reload, ComfyUI's confirm dialog honored
+      const f=G.frames.get(host)?.frame;if(f){G.linked.set(host,false);setLinked(false);f.dataset.src='';writeSrc(f,'about:blank','user clicked reload button');writeSrc(f,host,'user clicked reload button');}}}>⟳</button>
       <span className={"bridge-light "+(linked?"on":"off")} title={linked?'Bridge alive':'Bridge OFF — no dsh-studio-link hello from this frame'} aria-label={linked?'bridge on':'bridge off'}/>
       <span className="muted tiny" title="client build running in this page — if it disagrees with the shipped version, the page has NOT reloaded yet">v{__DSH_VERSION__}</span>
       <span className="muted tiny" title={linked?'set by the dsh-studio-link extension inside ComfyUI':'If this never flips to ✓: open ComfyUI settings (gear) inside the frame, find DSHStudio.comfyOrigin, set it to '+location.origin+' , then hit ⟳ — see BRIDGE_CONTRACT v1.3'}>{linked?'bridge ✓'+(frameVer?' · frame v'+frameVer:''):'awaiting dsh-studio-link bridge-hello…'}</span>

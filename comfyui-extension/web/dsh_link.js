@@ -97,11 +97,17 @@ window.addEventListener("message", async (ev) => {
         case "log-event": // v1.29: parent relays frame-box incidents (removals, mystery reloads) → readable on disk at user/<uid>/dsh-audit-framelog.txt
             auditDump("framelog", [String((m && m.detail) || "")]);
             return;
+        case "request-reload": // v1.30: parent asks; WE reload in-document so ComfyUI's unsaved-workflow confirmation gets its veto (parent src-swap bypassed it)
+            window.location.reload();
+            return;
+        case "log-event": // v1.30: parent relays frame-box incidents to disk: user/<uid>/dsh-audit-framelog.txt
+            auditDump("framelog", [String((m && m.detail) || "")]);
+            return;
         case "ping": // v1.28: parent remounted (DSH tab switched) — re-hello so linked/version badges heal without a page reload
-            toParent({ type: "bridge-hello" });
+            toParent({ type: "bridge-hello", ver: "1.30" });   // v1.30: version travels IN the hello — badge can never show green without a version
             return;
         case "ver": // v1.25: parent version handshake
-            toParent({ type: "ver-result", ver: "1.29" });
+            toParent({ type: "ver-result", ver: "1.30" });
             return;
         case "diag": { // v1.10: self-audit every LoadImage/LoadVideo — value + what /view ACTUALLY answers inside this frame
             // v1.18: IDENTITY — this server runs --multi-user: /view and dropdowns resolve against the
@@ -304,7 +310,7 @@ app.registerExtension({
     ],
     setup() {
         toParent({ type: "bridge-hello" });
-        auditDump("version", ["frame v1.29 boot " + new Date().toISOString()]);   // heartbeat: file absent = STALE pre-1.24 frame running
+        auditDump("version", ["frame v1.30 boot " + new Date().toISOString()]);   // heartbeat: file absent = STALE pre-1.24 frame running
         // v1.6: confession — WHY did this page just load? Navigation Timing distinguishes a browser
         // reload (F5, our ⟳, crash-reload, memory-saver restore = 'reload') from fresh navigation
         // (parent writing src = 'navigate'). Parent logs it as a note.
