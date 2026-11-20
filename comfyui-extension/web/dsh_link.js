@@ -235,6 +235,7 @@ async function stageAsset(slug) {
     renameAssetOutputs(slug, entry);
 }
 
+const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
 const blobCache = new Map();   // module scope: shared by the element interceptor and the audit probe
 let userPromise = null;
 function resolveUser() { // setting holds a username OR a raw user_id; map via /users; blank -> leave requests untouched
@@ -342,7 +343,6 @@ app.registerExtension({
         rewriteMediaSrc(window.HTMLVideoElement.prototype);
         rewriteMediaSrc(window.HTMLAudioElement.prototype);
 
-        const nativeFetch = window.fetch;
         window.fetch = async (input, init) => {
             const u = typeof input === "string" ? input : (input && input.url) || "";
             const path = u.startsWith("http") ? new URL(u).pathname : u;
