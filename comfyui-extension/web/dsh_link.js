@@ -235,11 +235,16 @@ async function stageAsset(slug) {
 let userPromise = null;
 function resolveUser() { // setting holds a username OR a raw user_id; map via /users; blank -> leave requests untouched
     if (!userPromise) userPromise = (async () => {
-        const want = setting("DSHStudio.comfyUser", "").trim();
-        if (!want) return "";
+        let want = setting("DSHStudio.comfyUser", "").trim();
         try {
             const j = await nativeFetch("/users").then((r) => (r.ok ? r.json() : {}));
-            if (j.users && j.users[want]) return want;
+            const multi = j.storage === "server" && j.users && Object.keys(j.users).length;
+            if (!want) {
+                // ponytail: blank setting on a multi-user box = first registered user (this fleet is single-owner per box)
+                if (multi) want = Object.keys(j.users)[0];
+                else return "";
+            }
+            if (multi && j.users[want]) return want;  // setting held a raw id
             const hit = Object.entries(j.users || {}).find(([, name]) => name === want);
             if (hit) return hit[0];
         } catch (e) { /* fall through */ }
