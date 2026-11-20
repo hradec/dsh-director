@@ -104,7 +104,7 @@ window.addEventListener("message", async (ev) => {
             auditDump("framelog", [String((m && m.detail) || "")]);
             return;
         case "ping": // v1.28: parent remounted (DSH tab switched) — re-hello so linked/version badges heal without a page reload
-            toParent({ type: "bridge-hello", ver: "1.31" });   // v1.30: version travels IN the hello — badge can never show green without a version
+            toParent({ type: "bridge-hello", ver: "1.32" });   // v1.30: version travels IN the hello — badge can never show green without a version
             return;
         case "ver": // v1.25: parent version handshake
             toParent({ type: "ver-result", ver: "1.31" });
@@ -286,9 +286,45 @@ function applyOps(ops) {
             } else if (o.t === "delete") {
                 const n = app.graph.getNodeById(o.id);
                 if (n) app.graph.remove(n); else errors.push("no node " + o.id);
+            } else if (o.t === "layout") {
+                // v1.32: flow-organized layout — longest-path ranking into columns, nodes stacked by data-flow, measured sizes respected.
+                const g = app.graph;
+                const nodes = g._nodes.filter((n) => !n.flags || !n.flags.pinned || true);
+                const idset = new Set(nodes.map((n) => n.id));
+                const ins = new Map(nodes.map((n) => [n.id, []]));
+                for (const lid in g._links) {
+                    const L = g._links[lid];
+                    if (!L || !idset.has(L[0]) || !idset.has(L[2])) continue;
+                    ins.get(L[2]).push(L[0]);
+                }
+                const rank = new Map(nodes.map((n) => [n.id, 0]));
+                for (let pass = 0; pass < 64; pass++) {
+                    let ch = false;
+                    for (const n of nodes) {
+                        let r = 0;
+                        for (const p of ins.get(n.id)) r = Math.max(r, (rank.get(p) ?? 0) + 1);
+                        if (r !== rank.get(n.id)) { rank.set(n.id, r); ch = true; }
+                    }
+                    if (!ch) break;
+                }
+                const cols = new Map();
+                for (const n of nodes) { const r = rank.get(n.id); (cols.get(r) || cols.set(r, []).get(r)).push(n); }
+                const colKeys = [...cols.keys()].sort((a, b) => a - b);
+                let x = 60, moved = [];
+                for (const r of colKeys) {
+                    const col = cols.get(r);
+                    col.sort((a, b) => a.pos[1] - b.pos[1] || a.pos[0] - b.pos[0]);
+                    const w = Math.max(...col.map((n) => n.size?.[0] || 220));
+                    let y = 60;
+                    for (const n of col) { n.pos = [x, y]; y += (n.size?.[1] || 160) + (o.rowGap ?? 46); }
+                    x += w + (o.colGap ?? 110);
+                    moved.push(...col.map((n) => n.id));
+                }
+                app.graph.setDirtyCanvas(true, true);
+                return { moved: moved.length, ranks: Object.fromEntries(rank) };
             } else if (o.t === "read") {
                 app.graph.setDirtyCanvas(true, true);
-                return { nodes: app.graph._nodes.map((n) => ({ id: n.id, type: n.type, title: n.title, pos: (n.pos || []).map(Math.round), widgets: (n.widgets || []).map((w) => w.name + "=" + String(w.value).slice(0, 80)) })) };
+                return { nodes: app.graph._nodes.map((n) => ({ id: n.id, type: n.type, title: n.title, pos: (n.pos || []).map(Math.round), inputs: (n.inputs || []).map((i) => i.name + (i.link != null ? "<-" + (app.graph._links?.[i.link]?.[0] ?? "?") : "")), outputs: (n.outputs || []).map((o2) => o2.name + (o2.links && o2.links.length ? "->" + o2.links.map((lid) => app.graph._links?.[lid]?.[2] ?? "?").join(",") : "")), widgets: (n.widgets || []).map((w) => w.name + "=" + String(w.value).slice(0, 80)) })) };
             } else errors.push("unknown op " + o.t);
             app.graph.setDirtyCanvas(true, true);
         } catch (e) { errors.push((o.t || "?") + ": " + e.message); }
@@ -362,7 +398,7 @@ app.registerExtension({
     ],
     setup() {
         toParent({ type: "bridge-hello" });
-        auditDump("version", ["frame v1.31 boot " + new Date().toISOString()]);
+        auditDump("version", ["frame v1.32 boot " + new Date().toISOString()]);
         setInterval(opsTick, 1500);   // agent drive poll — executes user/<uid>/dsh-ops.json   // heartbeat: file absent = STALE pre-1.24 frame running
         // v1.6: confession — WHY did this page just load? Navigation Timing distinguishes a browser
         // reload (F5, our ⟳, crash-reload, memory-saver restore = 'reload') from fresh navigation
