@@ -26,6 +26,90 @@ MAX_VIDEOS = 3
 MAX_AUDIOS = 3
 
 
+from urllib.parse import quote as _q
+from urllib.request import urlopen as _urlopen
+
+_DSH_URL_DEFAULT = "http://240.0.0.10:3081"      # ZeroTier IP of the DSH workstation
+_DSH_SESSION_DEFAULT = "session-c2b37e0b-eaa3-484d-9d7c-dd17b74fad8e"  # ai-production workspace
+
+
+def _join(base, path):
+    return base + path
+
+
+def _read(url, timeout):
+    with _urlopen(url, timeout=timeout) as r:
+        return r.read().decode("utf-8")
+
+
+def _read_raw(url, timeout):
+    with _urlopen(url, timeout=timeout) as r:
+        return r.read()
+
+
+def _group(name):
+    e = os.path.splitext(str(name))[1].lower()
+    if e in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+        return "images"
+    if e in (".mp4", ".webm", ".mov", ".mkv", ".avi"):
+        return "videos"
+    if e in (".wav", ".mp3", ".flac", ".ogg", ".m4a"):
+        return "audio"
+    return None
+
+
+def _image_tensor_bytes(blob, max_side):
+    import io
+    from PIL import Image
+    img = Image.open(io.BytesIO(blob)).convert("RGB")
+    t = torch.from_numpy(np.asarray(img, dtype=np.float32) / 255.0)
+    return _resize_side(t, max_side)
+
+
+def _stack_bytes(blobs, max_side):
+    ts = [_image_tensor_bytes(b, max_side) for b in blobs]
+    H = max(t.shape[0] for t in ts)
+    W = max(t.shape[1] for t in ts)
+    out = []
+    for t in ts:
+        if t.shape[0] == H and t.shape[1] == W:
+            out.append(t)
+            continue
+        p = torch.zeros((H, W, 3), dtype=torch.float32)
+        p[: t.shape[0], : t.shape[1]] = t
+        out.append(p)
+    return torch.stack(out)
+
+
+def _video_frames_bytes(blob, max_side):
+    import av
+    import io
+    frames = []
+    c = av.open(io.BytesIO(blob))
+    s = c.streams.video[0]
+    fps = float(s.average_rate) if s.average_rate else TARGET_FPS
+    for frame in c.decode(s):
+        frames.append(frame.to_ndarray(format="rgb24"))
+    c.close()
+    if not frames:
+        return torch.zeros((0, 64, 64, 3))
+    if abs(fps - TARGET_FPS) > 0.01:
+        step = fps / TARGET_FPS
+        frames = [frames[min(len(frames) - 1, int(round(i * step)))] for i in range(int(round(len(frames) / step)))]
+    ts = [torch.from_numpy(f.astype(np.float32) / 255.0) for f in frames]
+    H = max(t.shape[0] for t in ts)
+    W = max(t.shape[1] for t in ts)
+    out = []
+    for t in ts:
+        if t.shape[0] == H and t.shape[1] == W:
+            out.append(_resize_side(t, max_side))
+            continue
+        p = torch.zeros((H, W, 3), dtype=torch.float32)
+        p[: t.shape[0], : t.shape[1]] = t
+        out.append(_resize_side(p, max_side))
+    return torch.stack(out)
+
+
 def _dsh_dir():
     # folder_paths returns the merged input root; the dsh/ subdir namespaces everything this pack writes.
     return os.path.join(folder_paths.get_input_directory(), DSH_SUBFOLDER)
@@ -139,37 +223,106 @@ def _notes_text(sc):
 
 
 class DSStudioAsset:
-    """One Director Studio asset -> H3-ready outputs.
+    """Live pull of one Director Studio asset straight from the DSH server.
 
-    outputs: images (IMAGE batch) | video_1..3 (IMAGE frame batches @24fps) |
-             audio_1..3 (AUDIO) | notes (STRING: description + model notes + tags)
+    No staging, no copies: every RUN asks DSH for the CURRENT asset record
+    (/api/library) and streams each approved file over /api/file. The node
+    carries the workspace identity via the `session` widget, so multiple
+    workflows on multiple ComfyUI hosts always get the latest library state.
     """
 
     @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {"asset": (_slugs(),)},
-                "optional": {"video_scale": ("INT", {"default": 0, "step": 1,
-                            "tooltip": "0 = native size; else longest side of every video frame downscaled to this"})}}
+    def _library(cls, base, session):
+        # 3 s budget: INPUT_TYPES runs on every object_info refresh; never hang the UI.
+        try:
+            with _urlopen(_join(base, "/director-studio/api/library?session=" + _q(session)), timeout=3) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except Exception:
+            return None
 
-    RETURN_TYPES = ("IMAGE",) * (1 + MAX_VIDEOS) + ("AUDIO",) * MAX_AUDIOS + ("STRING",)
-    RETURN_NAMES = ("images",) + tuple("video_%d" % (i + 1) for i in range(MAX_VIDEOS)) \
-        + tuple("audio_%d" % (i + 1) for i in range(MAX_AUDIOS)) + ("notes",)
-    OUTPUT_IS_LIST = (False,) * len(RETURN_TYPES)
-    FUNCTION = "load"
+    @classmethod
+    def INPUT_TYPES(cls):
+        base, session = _DSH_URL_DEFAULT, _DSH_SESSION_DEFAULT
+        assets = ["(DSH unreachable at %s)" % base]
+        try:
+            body = json.loads(_read(_join(base, "/director-studio/api/library?session=" + _q(session)), timeout=3))
+            names = sorted(a["name"] for a in body if a.get("name"))
+            if names:
+                assets = names
+        except Exception:
+            pass
+        return {"required": {
+            "asset": (assets, {}),
+            "dsh_url": ("STRING", {"default": base, "multiline": False, "tooltip": "DSH server origin reachable from this ComfyUI box (ZeroTier)."}),
+            "session": ("STRING", {"default": session, "multiline": False, "tooltip": "DSH session id = the workspace whose Director Studio library to pull."}),
+            "approved_only": ("BOOLEAN", {"default": True, "tooltip": "approved refs only; off = also brainstorming"}),
+            "include_library_refs": ("BOOLEAN", {"default": True, "tooltip": "also pull images//media/ files tagged to this asset"}),
+            "max_side": ("INT", {"default": 0, "min": 0, "tooltip": "downscale longest side; 0 = untouched"}),
+        }}
+
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "IMAGE", "STRING")
+    RETURN_NAMES = ("images", "video_1", "video_2", "video_3", "notes")
+    FUNCTION = "pull"
     CATEGORY = "DirectorStudio"
 
-    def load(self, asset, video_scale=0):
-        sc = _sidecar(asset)
-        imgs = _stack_images([i["file"] for i in sc.get("images", [])])
-        vids = []
-        for i in range(MAX_VIDEOS):
-            item = sc.get("videos", [])[i] if i < len(sc.get("videos", [])) else None
-            vids.append(_video_frames(item["file"], video_scale) if item else torch.zeros((0, 64, 64, 3)))
-        auds = []
-        for i in range(MAX_AUDIOS):
-            item = sc.get("audio", [])[i] if i < len(sc.get("audio", [])) else None
-            auds.append(_load_audio(item["file"]) if item else None)
-        return (imgs,) + tuple(vids) + tuple(auds) + (_notes_text(sc),)
+    def pull(self, asset, dsh_url, session, approved_only, include_library_refs, max_side):
+        base = dsh_url.rstrip("/")
+        body = self._library(base, session)
+        if body is None:
+            raise ValueError("DSH unreachable at %s (check dsh_url/session)" % base)
+        item = next((a for a in body if a.get("name") == asset), None)
+        if not item:
+            raise ValueError("asset '%s' not in Director Studio of this workspace" % asset)
+        notes = []
+        if item.get("description"):
+            notes.append("DESCRIPTION: " + item["description"])
+        if item.get("notes"):
+            notes.append("NOTES: " + item["notes"])
+        imgs, vids = [], []
+        def meta_of(key):
+            return (item.get("ref_meta") or {}).get(key) or {}
+        # 1) files bound on the asset board: served by /api/files/library/<kind>/<id>/<key>
+        for key, fname in (item.get("files") or {}).items():
+            m = meta_of(key)
+            tags = m.get("tags") or []
+            if approved_only and "approved" not in tags:
+                continue
+            # /api/files/library has no server handler yet (0.2.85 restart pending) —
+            # report the key so the human can tag it into the images library instead.
+            notes.append("BOARD FILE %s (%s): not streamable yet - use library_refs (approved images/clips)" % (key, fname))
+            continue
+            g = _group(fname)
+            if g == "images":
+                imgs.append(data)
+            elif g == "videos":
+                vids.append(data)
+            elif g == "audio":
+                notes.append("AUDIO: %s (%d bytes, staged via LoadAudio)" % (fname, len(data)))
+            if m.get("note"):
+                notes.append("REF %s: %s" % (key, m["note"]))
+            notes.append("REF %s tags: %s" % (key, ",".join(tags) or "-"))
+        # 2) library_refs: pictures/clips tagged with this asset's name
+        if include_library_refs:
+            for ref in item.get("library_refs") or []:
+                tags = ref.get("tags") or []
+                if approved_only and "approved" not in tags:
+                    continue
+                url = _join(base, "/director-studio/api/file?path=" + _q(ref.get("abs") or "") + "&session=" + _q(session))
+                data = _read_raw(url, timeout=60)
+                g = _group(ref.get("name") or ref.get("path") or "")
+                if g == "images":
+                    imgs.append(data)
+                elif g == "videos":
+                    vids.append(data)
+                if ref.get("note"):
+                    notes.append("LIBREF %s: %s" % (ref.get("name"), ref["note"]))
+        if not imgs and not vids:
+            raise ValueError("asset '%s' has no %smedia - approve refs in Director Studio or switch approved_only off" % (asset, "approved " if approved_only else ""))
+        out_images = _stack_bytes(imgs, max_side) if imgs else torch.zeros((0, 64, 64, 3))
+        slots = [torch.zeros((0, 64, 64, 3)) for _ in range(3)]
+        for i, blob in enumerate(vids[:3]):
+            slots[i] = _video_frames_bytes(blob, max_side)
+        return (out_images, slots[0], slots[1], slots[2], "\n".join(notes))
 
 
 class DSStudioImage:

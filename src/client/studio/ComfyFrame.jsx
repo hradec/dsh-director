@@ -80,7 +80,7 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'&&!G.
       return;}
     if(d.type==='iframe-error'){if(G.noteSink)G.noteSink(`ComfyUI JS error: ${d.msg}${d.at?` (${d.at})`:''}`);return;}
     if(d.type==='iframe-leaving'){if(G.noteSink)G.noteSink(`ComfyUI (${G.activeHost}) announced it is leaving the page at ${new Date().toLocaleTimeString()}`);return;}
-    if(d.type==='bridge-hello'){if(d.ver){G.verMap=G.verMap||new Map();G.verMap.set(h,d.ver);for(const cb of (G.verCbs||[]))cb(h,d.ver);}markHello(h);return;}
+    if(d.type==='bridge-hello'){const hz=location.hostname==='127.0.0.1'||location.hostname==='localhost'?'240.0.0.10':location.hostname;sendBridge(h,{type:'identity',dsh:'http://'+hz+':3081',session:sid});if(d.ver){G.verMap=G.verMap||new Map();G.verMap.set(h,d.ver);for(const cb of (G.verCbs||[]))cb(h,d.ver);}markHello(h);return;}
     if(d.type==='workflow-loaded'){clearAck();if(G.noteSink)G.noteSink('ComfyUI loaded the workflow into its canvas ✓');return;}
     // verbatim from the iframe — no local guesswork about what the graph did
     if(d.type==='workflow-error'){clearAck();if(G.noteSink)G.noteSink(`ComfyUI rejected the workflow: ${d.error??'unknown error'}`);}

@@ -91,16 +91,12 @@ window.addEventListener("message", async (ev) => {
         case "request-reload": // v1.29: parent asks; WE reload in-document so beforeunload/ComfyUI's unsaved-workflow confirmation is honored (a parent src-swap bypasses it)
             window.location.reload();
             return;
-        case "request-reload": // v1.29: parent asks; WE reload in-document so beforeunload/ComfyUI's unsaved-workflow confirmation is honored (a parent src-swap bypasses it)
-            window.location.reload();
+case "identity": // v1.39: parent hands {dsh-origin, session} so DSStudioAsset nodes self-configure
+            window.__DSH_ID = { dsh: String(m.dsh || ""), session: String(m.session || "") };
+            try { localStorage.setItem("dsh-id", JSON.stringify(window.__DSH_ID)); } catch (e) {}
+            stampIdentity();
             return;
         case "log-event": // v1.29: parent relays frame-box incidents (removals, mystery reloads) → readable on disk at user/<uid>/dsh-audit-framelog.txt
-            auditDump("framelog", [String((m && m.detail) || "")]);
-            return;
-        case "request-reload": // v1.30: parent asks; WE reload in-document so ComfyUI's unsaved-workflow confirmation gets its veto (parent src-swap bypassed it)
-            window.location.reload();
-            return;
-        case "log-event": // v1.30: parent relays frame-box incidents to disk: user/<uid>/dsh-audit-framelog.txt
             auditDump("framelog", [String((m && m.detail) || "")]);
             return;
         case "ping": // v1.28: parent remounted (DSH tab switched) — re-hello so linked/version badges heal without a page reload
@@ -253,7 +249,7 @@ async function stageAsset(slug) {
     renameAssetOutputs(slug, entry);
 }
 
-const VER = "1.38";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
+const VER = "1.39";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
 
 const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
 // ---- v1.31 AGENT DRIVE: ops file -> execute on live graph -> result file. Agent writes user/<uid>/dsh-ops.json via authenticated curl; this poller applies it here.
@@ -268,6 +264,27 @@ function linkEnds(L) {   // v1.33: litegraph arrays [id,from,fs,to,ts,type] vs n
     if (Array.isArray(L)) return { from: L[1], to: L[3] };
     if (L.origin_id !== undefined && L.target_id !== undefined) return { from: L.origin_id, to: L.target_id };
     return null;
+}
+function stampIdentity(){
+  // Fill dsh_url/session on every DSStudioAsset node and populate its combo
+  // from the LIVE DSH library — nothing is copied to disk.
+  let id = window.__DSH_ID;
+  if (!id) { try { id = JSON.parse(localStorage.getItem("dsh-id") || "null"); } catch (e) { id = null; } }
+  if (!id || !id.dsh || !id.session) return;
+  window.__DSH_ID = id;
+  for (const n of ((app.graph && app.graph._nodes) || [])) {
+    if (n.type !== "DSStudioAsset") continue;
+    const w = n.widgets || {};
+    if (w.dsh_url) w.dsh_url.value = id.dsh;
+    if (w.session) w.session.value = id.session;
+    if (w.asset && w.asset.options) {
+      nativeFetch(id.dsh + "/director-studio/api/library?session=" + encodeURIComponent(id.session))
+        .then(r => r.ok ? r.json() : []).then(list => {
+          const names = (Array.isArray(list) ? list : []).map(a => a && a.name).filter(Boolean);
+          if (names.length) w.asset.options.values = names;
+        }).catch(() => {});
+    }
+  }
 }
 function applyOps(ops) {
     const LG = window.LiteGraph;
@@ -442,6 +459,7 @@ app.registerExtension({
         toParent({ type: "bridge-hello" });
         auditDump("version", [`frame v${VER} boot ` + new Date().toISOString()]);
         setInterval(opsTick, 1500);   // agent drive poll — executes user/<uid>/dsh-ops.json   // heartbeat: file absent = STALE pre-1.24 frame running
+        setInterval(stampIdentity, 4000);   // v1.39 identity stamping for DSStudioAsset nodes
         // v1.6: confession — WHY did this page just load? Navigation Timing distinguishes a browser
         // reload (F5, our ⟳, crash-reload, memory-saver restore = 'reload') from fresh navigation
         // (parent writing src = 'navigate'). Parent logs it as a note.
