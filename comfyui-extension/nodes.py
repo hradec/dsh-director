@@ -82,6 +82,14 @@ def _stack_bytes(blobs, max_side):
     return torch.stack(out)
 
 
+def _decode_audio_bytes(blob):
+    # decode in RAM to ComfyUI's AUDIO format; no temp files touch the disk
+    import io
+    import torchaudio
+    wav, sr = torchaudio.load(io.BytesIO(blob))
+    return {"waveform": wav, "sample_rate": int(sr)}
+
+
 def _video_frames_bytes(blob, max_side):
     import av
     import io
@@ -273,8 +281,13 @@ class DSStudioAsset:
             "max_side": ("INT", {"default": 0, "min": 0, "tooltip": "downscale longest side; 0 = untouched"}),
         }}
 
-    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "IMAGE", "STRING")
-    RETURN_NAMES = ("images", "video_1", "video_2", "video_3", "notes")
+    # one socket PER approved item: images_1..8, videos_1..4 (frame stacks),
+    # audios_1..4 (decoded in RAM, never written to disk), then the two text boxes.
+    # ponytail: ComfyUI core 0.44 fixes socket counts per CLASS — an asset with
+    # nothing in a slot gets a zero-sized tensor = "no output", not a fake frame.
+    MAX_IMAGES, MAX_VIDEOS, MAX_AUDIOS = 8, 4, 4
+    RETURN_TYPES = tuple(["IMAGE"] * MAX_IMAGES + ["IMAGE"] * MAX_VIDEOS + ["AUDIO"] * MAX_AUDIOS + ["STRING", "STRING"])
+    RETURN_NAMES = tuple(["images_%d" % (i + 1) for i in range(MAX_IMAGES)] + ["videos_%d" % (i + 1) for i in range(MAX_VIDEOS)] + ["audios_%d" % (i + 1) for i in range(MAX_AUDIOS)] + ["description", "notes"])
     FUNCTION = "pull"
     CATEGORY = "DirectorStudio"
 
@@ -287,11 +300,10 @@ class DSStudioAsset:
         if not item:
             raise ValueError("asset '%s' not in Director Studio of this workspace" % asset)
         notes = []
-        if item.get("description"):
-            notes.append("DESCRIPTION: " + item["description"])
-        if item.get("notes"):
-            notes.append("NOTES: " + item["notes"])
-        imgs, vids = [], []
+        description_text = item.get("description") or ""
+        # the per-ref tag/note lines stay with the model-notes socket
+        notes = []
+        imgs, vids, auds = [], [], []
         def meta_of(key):
             return (item.get("ref_meta") or {}).get(key) or {}
         # 1) files bound on the asset board: served by /api/files/library/<kind>/<id>/<key>
@@ -310,7 +322,7 @@ class DSStudioAsset:
             elif g == "videos":
                 vids.append(data)
             elif g == "audio":
-                notes.append("AUDIO: %s (%d bytes, staged via LoadAudio)" % (fname, len(data)))
+                auds.append(data)
             if m.get("note"):
                 notes.append("REF %s: %s" % (key, m["note"]))
             notes.append("REF %s tags: %s" % (key, ",".join(tags) or "-"))
@@ -327,15 +339,28 @@ class DSStudioAsset:
                     imgs.append(data)
                 elif g == "videos":
                     vids.append(data)
+                elif g == "audio":
+                    auds.append(data)
                 if ref.get("note"):
                     notes.append("LIBREF %s: %s" % (ref.get("name"), ref["note"]))
         if not imgs and not vids:
             raise ValueError("asset '%s' has no %smedia - approve refs in Director Studio or switch approved_only off" % (asset, "approved " if approved_only else ""))
-        out_images = _stack_bytes(imgs, max_side) if imgs else torch.zeros((0, 64, 64, 3))
-        slots = [torch.zeros((0, 64, 64, 3)) for _ in range(3)]
-        for i, blob in enumerate(vids[:3]):
-            slots[i] = _video_frames_bytes(blob, max_side)
-        return (out_images, slots[0], slots[1], slots[2], "\n".join(notes))
+        # one IMAGE socket per picture: each is a 1-frame batch, nothing left stacked
+        islots = [torch.zeros((0, 64, 64, 3)) for _ in range(self.MAX_IMAGES)]
+        for i, blob in enumerate(imgs[:self.MAX_IMAGES]):
+            islots[i] = _image_tensor_bytes(blob, max_side).unsqueeze(0)
+        vslots = [torch.zeros((0, 64, 64, 3)) for _ in range(self.MAX_VIDEOS)]
+        for i, blob in enumerate(vids[:self.MAX_VIDEOS]):
+            vslots[i] = _video_frames_bytes(blob, max_side)
+        aus = []
+        for blob in auds[:self.MAX_AUDIOS]:
+            aus.append(_decode_audio_bytes(blob))
+        while len(aus) < self.MAX_AUDIOS:
+            aus.append(None)
+        def _empty_audio():
+            return {"waveform": torch.zeros((1, 0)), "sample_rate": 44100}
+        filled = list(islots) + list(vslots) + [a if a else _empty_audio() for a in aus] + [description_text, "\n".join(notes)]
+        return tuple(filled)
 
 
 class DSStudioImage:
