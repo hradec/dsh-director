@@ -198,7 +198,8 @@ export function ComfyFrame({sessionId}){
     if(!list.length)setNote('No ComfyUI endpoints configured — add them in the Studio settings gear (ComfyUI tab).');
   }).catch((e)=>setNote(`Could not read Studio settings: ${e.message}`));},[sid]);
   useEffect(()=>{if(host){localStorage.setItem('dsh-comfy-host',host);G.activeHost=host;}},[host]);
-  useEffect(()=>{const cb=(h)=>{if(h===host)setLinked(true);};G.helloCbs.add(cb);if(G.linked.get(host))setLinked(true);return()=>G.helloCbs.delete(cb);},[host]);
+  useEffect(()=>{const cb=(h)=>{if(h===host)setLinked(true);};G.helloCbs.add(cb);if(G.linked.get(host))setLinked(true);else sendBridge(host,{type:'ping'});   // v1.28: tab remount while the frame document lives on -> ask it to re-hello
+    return()=>G.helloCbs.delete(cb);},[host]);
   useEffect(()=>{const cb=(h,v)=>{if(h===host)setFrameVer(v);};G.verCbs=G.verCbs||new Set();G.verCbs.add(cb);if(G.verMap?.get(host))setFrameVer(G.verMap.get(host));return()=>G.verCbs.delete(cb);},[host]);
   useEffect(()=>{G.noteSink=setNote;return()=>{if(G.noteSink===setNote)G.noteSink=null;};},[setNote]);
   // The dialog lives inside the React tab while our frame boxes are body-level z50 — without this,
