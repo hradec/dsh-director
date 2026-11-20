@@ -104,7 +104,7 @@ window.addEventListener("message", async (ev) => {
             auditDump("framelog", [String((m && m.detail) || "")]);
             return;
         case "ping": // v1.28: parent remounted (DSH tab switched) — re-hello so linked/version badges heal without a page reload
-            toParent({ type: "bridge-hello", ver: "1.30" });   // v1.30: version travels IN the hello — badge can never show green without a version
+            toParent({ type: "bridge-hello", ver: "1.31" });   // v1.30: version travels IN the hello — badge can never show green without a version
             return;
         case "ver": // v1.25: parent version handshake
             toParent({ type: "ver-result", ver: "1.30" });
@@ -254,6 +254,58 @@ async function stageAsset(slug) {
 }
 
 const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
+// ---- v1.31 AGENT DRIVE: ops file -> execute on live graph -> result file. Agent writes user/<uid>/dsh-ops.json via authenticated curl; this poller applies it here.
+let lastOpsId = null;
+function applyOps(ops) {
+    const LG = window.LiteGraph;
+    const created = [], errors = [];
+    for (const o of ops) {
+        try {
+            if (o.t === "create") {
+                const n = LG.createNode(o.type);
+                if (!n) { errors.push("unknown node type " + o.type); continue; }
+                n.pos = [o.x ?? 100, o.y ?? 100];
+                if (o.title) n.title = o.title;
+                app.graph.add(n);
+                created.push(n.id);
+                for (const [k, v] of Object.entries(o.widgets || {})) {
+                    const w = (n.widgets || []).find((x) => x.name === k);
+                    if (w) { w.value = v; w.callback && w.callback(n, k, v, null, null); }
+                    else errors.push("no widget " + k + " on " + o.type);
+                }
+            } else if (o.t === "connect") {
+                if (!app.graph.connect(o.from[0], o.from[1], o.to[0], o.to[1])) errors.push("connect failed " + JSON.stringify(o));
+            } else if (o.t === "move") {
+                const n = app.graph.getNodeById(o.id);
+                if (n) n.pos = [o.x, o.y]; else errors.push("no node " + o.id);
+            } else if (o.t === "widget") {
+                const n = app.graph.getNodeById(o.id);
+                const w = n?.widgets?.find((x) => x.name === o.name);
+                if (w) { w.value = o.value; w.callback && w.callback(n, o.name, o.value, null, null); }
+                else errors.push("widget " + o.name + " missing on " + o.id);
+            } else if (o.t === "delete") {
+                const n = app.graph.getNodeById(o.id);
+                if (n) app.graph.remove(n); else errors.push("no node " + o.id);
+            } else if (o.t === "read") {
+                app.graph.setDirtyCanvas(true, true);
+                return { nodes: app.graph._nodes.map((n) => ({ id: n.id, type: n.type, title: n.title, pos: (n.pos || []).map(Math.round), widgets: (n.widgets || []).map((w) => w.name + "=" + String(w.value).slice(0, 80)) })) };
+            } else errors.push("unknown op " + o.t);
+            app.graph.setDirtyCanvas(true, true);
+        } catch (e) { errors.push((o.t || "?") + ": " + e.message); }
+    }
+    return { created, errors };
+}
+async function opsTick() {
+    try {
+        const r = await fetch("/userdata/dsh-ops.json");
+        if (r.status !== 200) return;
+        const j = await r.json();
+        if (!j || j.id === lastOpsId) return;
+        lastOpsId = j.id;
+        const out = applyOps(j.ops || []);
+        await fetch("/userdata/dsh-ops-result.json", { method: "POST", body: JSON.stringify({ id: j.id, at: new Date().toISOString(), ...out }, null, 1), headers: { "Content-Type": "text/plain" } });
+    } catch {}
+}
 const blobCache = new Map();   // module scope: shared by the element interceptor and the audit probe
 let userPromise = null;
 function resolveUser() { // setting holds a username OR a raw user_id; map via /users; blank -> leave requests untouched
@@ -310,7 +362,8 @@ app.registerExtension({
     ],
     setup() {
         toParent({ type: "bridge-hello" });
-        auditDump("version", ["frame v1.30 boot " + new Date().toISOString()]);   // heartbeat: file absent = STALE pre-1.24 frame running
+        auditDump("version", ["frame v1.31 boot " + new Date().toISOString()]);
+        setInterval(opsTick, 1500);   // agent drive poll — executes user/<uid>/dsh-ops.json   // heartbeat: file absent = STALE pre-1.24 frame running
         // v1.6: confession — WHY did this page just load? Navigation Timing distinguishes a browser
         // reload (F5, our ⟳, crash-reload, memory-saver restore = 'reload') from fresh navigation
         // (parent writing src = 'navigate'). Parent logs it as a note.
