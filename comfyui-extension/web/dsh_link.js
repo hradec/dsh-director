@@ -107,7 +107,7 @@ window.addEventListener("message", async (ev) => {
             toParent({ type: "bridge-hello", ver: "1.32" });   // v1.30: version travels IN the hello — badge can never show green without a version
             return;
         case "ver": // v1.25: parent version handshake
-            toParent({ type: "ver-result", ver: "1.31" });
+            toParent({ type: "ver-result", ver: "1.32" });
             return;
         case "diag": { // v1.10: self-audit every LoadImage/LoadVideo — value + what /view ACTUALLY answers inside this frame
             // v1.18: IDENTITY — this server runs --multi-user: /view and dropdowns resolve against the
