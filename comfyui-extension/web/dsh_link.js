@@ -249,7 +249,7 @@ async function stageAsset(slug) {
     renameAssetOutputs(slug, entry);
 }
 
-const VER = "1.39";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
+const VER = "1.40";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
 
 const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
 // ---- v1.31 AGENT DRIVE: ops file -> execute on live graph -> result file. Agent writes user/<uid>/dsh-ops.json via authenticated curl; this poller applies it here.
@@ -460,6 +460,7 @@ app.registerExtension({
         auditDump("version", [`frame v${VER} boot ` + new Date().toISOString()]);
         setInterval(opsTick, 1500);   // agent drive poll — executes user/<uid>/dsh-ops.json   // heartbeat: file absent = STALE pre-1.24 frame running
         setInterval(stampIdentity, 4000);   // v1.39 identity stamping for DSStudioAsset nodes
+        setInterval(() => { try { toParent({ type: "bridge-hello", ver: VER }); } catch (e) {} }, 15000);   // v1.40: re-announce after ComfyUI server restarts — the page never reloads, the parent badge must not decay
         // v1.6: confession — WHY did this page just load? Navigation Timing distinguishes a browser
         // reload (F5, our ⟳, crash-reload, memory-saver restore = 'reload') from fresh navigation
         // (parent writing src = 'navigate'). Parent logs it as a note.
