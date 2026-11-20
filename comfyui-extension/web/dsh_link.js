@@ -91,6 +91,12 @@ window.addEventListener("message", async (ev) => {
         case "request-reload": // v1.29: parent asks; WE reload in-document so beforeunload/ComfyUI's unsaved-workflow confirmation is honored (a parent src-swap bypasses it)
             window.location.reload();
             return;
+        case "request-reload": // v1.29: parent asks; WE reload in-document so beforeunload/ComfyUI's unsaved-workflow confirmation is honored (a parent src-swap bypasses it)
+            window.location.reload();
+            return;
+        case "log-event": // v1.29: parent relays frame-box incidents (removals, mystery reloads) → readable on disk at user/<uid>/dsh-audit-framelog.txt
+            auditDump("framelog", [String((m && m.detail) || "")]);
+            return;
         case "ping": // v1.28: parent remounted (DSH tab switched) — re-hello so linked/version badges heal without a page reload
             toParent({ type: "bridge-hello" });
             return;
