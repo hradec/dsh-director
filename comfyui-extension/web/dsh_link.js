@@ -247,7 +247,7 @@ async function stageAsset(slug) {
     await refreshNodeOptions();
 }
 
-const VER = "1.41";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
+const VER = "1.42";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
 
 const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
 // ---- v1.31 AGENT DRIVE: ops file -> execute on live graph -> result file. Agent writes user/<uid>/dsh-ops.json via authenticated curl; this poller applies it here.
@@ -570,7 +570,17 @@ app.registerExtension({
                 n.dsSync().catch(() => {});
             }
         }
-        setInterval(dsSyncAll, 4000);   // v1.39 identity stamping for DSStudioAsset nodes
+        setInterval(dsSyncAll, 4000);
+        // v1.42: self-heal across ComfyUI server restarts — poll own /system_stats;
+        // the moment the (re)started server answers after being down, reload THIS page.
+        // New page load = fresh defs + bridge hello, no human refresh, no 3-minute tax.
+        let dsAlive = true;
+        setInterval(async () => {
+            let ok = false;
+            try { const r = await fetch("/system_stats", { signal: AbortSignal.timeout(3000) }); ok = r.ok; } catch (e) { ok = false; }
+            if (!dsAlive && ok) { location.reload(); return; }
+            dsAlive = ok;
+        }, 5000);   // v1.39 identity stamping for DSStudioAsset nodes
         setInterval(() => { try { toParent({ type: "bridge-hello", ver: VER }); } catch (e) {} }, 15000);   // v1.40: re-announce after ComfyUI server restarts — the page never reloads, the parent badge must not decay
         // v1.6: confession — WHY did this page just load? Navigation Timing distinguishes a browser
         // reload (F5, our ⟳, crash-reload, memory-saver restore = 'reload') from fresh navigation
