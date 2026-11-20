@@ -301,8 +301,8 @@ class DSStudioAsset:
             raise ValueError("asset '%s' not in Director Studio of this workspace" % asset)
         notes = []
         description_text = item.get("description") or ""
-        # the per-ref tag/note lines stay with the model-notes socket
-        notes = []
+        # notes socket = the studio "Notes (for the models)" box FIRST, then per-ref tags
+        notes = [item["notes"]] if item.get("notes") else []
         imgs, vids, auds = [], [], []
         def meta_of(key):
             return (item.get("ref_meta") or {}).get(key) or {}
