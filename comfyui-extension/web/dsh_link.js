@@ -104,10 +104,10 @@ window.addEventListener("message", async (ev) => {
             auditDump("framelog", [String((m && m.detail) || "")]);
             return;
         case "ping": // v1.28: parent remounted (DSH tab switched) — re-hello so linked/version badges heal without a page reload
-            toParent({ type: "bridge-hello", ver: "1.32" });   // v1.30: version travels IN the hello — badge can never show green without a version
+            toParent({ type: "bridge-hello", ver: VER });   // v1.30: version travels IN the hello — badge can never show green without a version
             return;
         case "ver": // v1.25: parent version handshake
-            toParent({ type: "ver-result", ver: "1.32" });
+            toParent({ type: "ver-result", ver: VER });
             return;
         case "diag": { // v1.10: self-audit every LoadImage/LoadVideo — value + what /view ACTUALLY answers inside this frame
             // v1.18: IDENTITY — this server runs --multi-user: /view and dropdowns resolve against the
@@ -252,6 +252,8 @@ async function stageAsset(slug) {
     await refreshNodeOptions();
     renameAssetOutputs(slug, entry);
 }
+
+const VER = "1.33";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
 
 const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
 // ---- v1.31 AGENT DRIVE: ops file -> execute on live graph -> result file. Agent writes user/<uid>/dsh-ops.json via authenticated curl; this poller applies it here.
@@ -398,7 +400,7 @@ app.registerExtension({
     ],
     setup() {
         toParent({ type: "bridge-hello" });
-        auditDump("version", ["frame v1.32 boot " + new Date().toISOString()]);
+        auditDump("version", [`frame v${VER} boot ` + new Date().toISOString()]);
         setInterval(opsTick, 1500);   // agent drive poll — executes user/<uid>/dsh-ops.json   // heartbeat: file absent = STALE pre-1.24 frame running
         // v1.6: confession — WHY did this page just load? Navigation Timing distinguishes a browser
         // reload (F5, our ⟳, crash-reload, memory-saver restore = 'reload') from fresh navigation
