@@ -253,7 +253,7 @@ async function stageAsset(slug) {
     renameAssetOutputs(slug, entry);
 }
 
-const VER = "1.34";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
+const VER = "1.35";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
 
 const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
 // ---- v1.31 AGENT DRIVE: ops file -> execute on live graph -> result file. Agent writes user/<uid>/dsh-ops.json via authenticated curl; this poller applies it here.
@@ -295,6 +295,11 @@ function applyOps(ops) {
                 const n = app.graph.getNodeById(o.id);
                 if (n) app.graph.remove(n); else errors.push("no node " + o.id);
             } else if (o.t === "layout") {
+                if (o.undo) {   // v1.35: restore positions captured by the previous layout run
+                    for (const m of (o.undo || [])) { const n = app.graph.getNodeById(m.id); if (n) n.pos = [m.x, m.y]; }
+                    app.graph.setDirtyCanvas(true, true);
+                    return { restored: (o.undo || []).length };
+                }
                 // v1.32: flow-organized layout — longest-path ranking into columns, nodes stacked by data-flow, measured sizes respected.
                 const g = app.graph;
                 const nodes = g._nodes.filter((n) => !n.flags || !n.flags.pinned || true);
@@ -318,6 +323,7 @@ function applyOps(ops) {
                 const cols = new Map();
                 for (const n of nodes) { const r = rank.get(n.id); (cols.get(r) || cols.set(r, []).get(r)).push(n); }
                 const colKeys = [...cols.keys()].sort((a, b) => a - b);
+                const prev = nodes.map((n) => ({ id: n.id, x: n.pos[0], y: n.pos[1] }));
                 let x = 60, moved = [];
                 for (const r of colKeys) {
                     const col = cols.get(r);
@@ -329,7 +335,19 @@ function applyOps(ops) {
                     moved.push(...col.map((n) => n.id));
                 }
                 app.graph.setDirtyCanvas(true, true);
-                return { moved: moved.length, ranks: Object.fromEntries(rank) };
+                return { moved: moved.length, ranks: Object.fromEntries(rank), prev };
+            } else if (o.t === "fit") { // v1.35: zoom-to-fit whatever is on canvas
+                const ns = app.graph._nodes;
+                if (ns.length) {
+                    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+                    for (const n of ns) { x0 = Math.min(x0, n.pos[0]); y0 = Math.min(y0, n.pos[1]); x1 = Math.max(x1, n.pos[0] + (n.size?.[0] || 220)); y1 = Math.max(y1, n.pos[1] + (n.size?.[1] || 120)); }
+                    const cw = app.canvas.canvas.width, chh = app.canvas.canvas.height;
+                    const sc = Math.min((cw - 80) / (x1 - x0), (chh - 80) / (y1 - y0), 1);
+                    app.canvas.ds.offset = [-x0 * sc + (cw - (x1 - x0) * sc) / 2, -y0 * sc + (chh - (y1 - y0) * sc) / 2];
+                    app.canvas.ds.scale = sc;
+                    app.graph.setDirtyCanvas(true, true);
+                    return { fitted: ns.length, scale: Math.round(sc * 100) / 100 };
+                }
             } else if (o.t === "read") {
                 app.graph.setDirtyCanvas(true, true);
                 return { nodes: app.graph._nodes.map((n) => ({ id: n.id, type: n.type, title: n.title, pos: (n.pos || []).map(Math.round), inputs: (n.inputs || []).map((i) => i.name + (i.link != null ? "<-" + (linkEnds(app.graph._links?.[i.link])?.from ?? "?") : "")), outputs: (n.outputs || []).map((o2) => o2.name + (o2.links && o2.links.length ? "->" + o2.links.map((lid) => linkEnds(app.graph._links?.[lid])?.to ?? "?").join(",") : "")), widgets: (n.widgets || []).map((w) => w.name + "=" + String(w.value).slice(0, 80)) })) };
