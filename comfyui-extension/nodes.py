@@ -28,6 +28,7 @@ MAX_AUDIOS = 3
 
 from urllib.parse import quote as _q
 from urllib.request import urlopen as _urlopen
+from urllib.error import HTTPError as _HTTP_ERR
 
 _DSH_URL_DEFAULT = "http://240.0.0.10:3081"      # ZeroTier IP of the DSH workstation
 _DSH_SESSION_DEFAULT = "session-c2b37e0b-eaa3-484d-9d7c-dd17b74fad8e"  # ai-production workspace
@@ -237,6 +238,10 @@ class DSStudioAsset:
         try:
             with _urlopen(_join(base, "/director-studio/api/library?session=" + _q(session)), timeout=3) as r:
                 return json.loads(r.read().decode("utf-8"))
+        except _HTTP_ERR as e:
+            if getattr(e, "code", 0) == 404:
+                raise ValueError("DSH has no workspace for session '%s' - use the DSH session id (starts with 'session-')" % session)
+            return None
         except Exception:
             return None
 

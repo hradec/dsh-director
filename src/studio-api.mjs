@@ -260,7 +260,17 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       // The DSH sidebar identifies its session by header; media URLs use ?session= because <img>/<video> tags cannot send headers.
       const sessionId=(typeof req.headers['x-director-session']==='string'?req.headers['x-director-session']:'')||url.searchParams.get('session')||'';
       if(!sessionId){sendJson(res,400,{detail:'Director Studio requests need the X-Director-Session header or session query parameter identifying the active DSH session.'});return;}
-      const {store,project}=await resolveSession(sessionId);
+      // v1.39 companion: the DSStudioAsset node may carry the WORKSPACE PATH instead of
+      // a session id — map it through the session index (realpath-tolerant, newest wins).
+      let sid=sessionId;
+      if(sid.startsWith('/')&&typeof sessionIndex==='function'){
+        const want=sid.replace(/\/+$/,'');let realWant=null;
+        try{realWant=realpathSync(want);}catch{}
+        const rows=await sessionIndex();
+        const hit=(rows??[]).find(r=>{const c=String(r.cwd??'').replace(/\/+$/,'');if(c===want)return true;try{return realpathSync(c)===want||(realWant&&realpathSync(c)===realWant);}catch{return false;}});
+        if(hit)sid=hit.id;
+      }
+      const {store,project}=await resolveSession(sid);
       if(path==='/api/agent-task'&&req.method==='POST'){const body=await readJson(req,controller.signal);const prompt=String(body.prompt??'').trim();
         if(!prompt){sendJson(res,400,{detail:'prompt required'});return;}
         const task=await agentTasks.submit({prompt,label:body.label,sessionId,cwd:agentTaskStoreRootFor(store)});
