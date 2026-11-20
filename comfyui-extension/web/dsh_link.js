@@ -253,7 +253,7 @@ async function stageAsset(slug) {
     renameAssetOutputs(slug, entry);
 }
 
-const VER = "1.36";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
+const VER = "1.37";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
 
 const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
 // ---- v1.31 AGENT DRIVE: ops file -> execute on live graph -> result file. Agent writes user/<uid>/dsh-ops.json via authenticated curl; this poller applies it here.
@@ -371,7 +371,7 @@ function applyOps(ops) {
 }
 async function opsTick() {
     try {
-        const r = await fetch("/userdata/dsh-ops.json");
+        const r = await fetch("/userdata/dsh-ops.json?t=" + Date.now(), { cache: "no-store" });   // v1.37: without this the browser served the CACHED ops file back forever — every command after the first was invisible
         if (r.status !== 200) return;
         const j = await r.json();
         if (!j || j.id === lastOpsId) return;
