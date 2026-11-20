@@ -288,6 +288,7 @@ app.registerExtension({
     ],
     setup() {
         toParent({ type: "bridge-hello" });
+        auditDump("version", ["frame v1.24 boot " + new Date().toISOString()]);   // heartbeat: file absent = STALE pre-1.24 frame running
         // v1.6: confession — WHY did this page just load? Navigation Timing distinguishes a browser
         // reload (F5, our ⟳, crash-reload, memory-saver restore = 'reload') from fresh navigation
         // (parent writing src = 'navigate'). Parent logs it as a note.

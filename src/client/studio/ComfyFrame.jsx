@@ -44,6 +44,7 @@ function sendBridge(h,msg){
 
 function markHello(h){
   G.linked.set(h,true);
+        sendBridge(h,{type:'ver'});   // v1.24 handshake: ver-result notes the live frame version; silence = pre-1.24 build
   sendBridge(h,{type:'bridge-ready',hosts:G.hostsCache});
   // latest-wins: stale queued loads from earlier attempts must NOT replay (replaying looked like the canvas reloading right after a load)
   const m=G.pending.get(h);
@@ -62,6 +63,7 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'&&!G.
     if(d.type==='iframe-nav'){if(G.noteSink)G.noteSink(`ComfyUI page (re)load: browser says initiator='${d.kind}' — 'reload' means the browser/you re-navigated the SAME url (F5, ⟳, crash or memory restore); 'navigate' means Director Studio pointed the frame at it`);return;}
     if(d.type==='pick-done'){if(G.noteSink)G.noteSink(`Loaded "${d.name}${d.subfolder?d.subfolder+'/':''}" into the node (input root).`);return;}
     if(d.type==='pick-error'){if(G.noteSink)G.noteSink(`Pick upload failed: ${d.why}`);return;}
+    if(d.type==='ver-result'){G.noteSink&&G.noteSink('Bridge frame v'+d.ver+' active.');return;}
     if(d.type==='diag-result'){
       // audits accumulate (the second response used to erase the first before it could be copied)
       G.auditLines=(G.auditLines||[]).concat(d.lines||[]);
