@@ -154,7 +154,6 @@ case "identity": // v1.39: parent hands {dsh-origin, session} so DSStudioAsset n
             break;
         case "staged":
             await refreshNodeOptions();
-            renameAssetOutputs(m.slug, m.payload);
             break;
         case "stage-file": // parent hands a DSH file URL; the upload POST must come from OUR origin
             try {
@@ -246,10 +245,9 @@ async function stageAsset(slug) {
     fd.append("overwrite", "true");
     await fetch("/upload/image", { method: "POST", body: fd });
     await refreshNodeOptions();
-    renameAssetOutputs(slug, entry);
 }
 
-const VER = "1.40";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
+const VER = "1.41";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
 
 const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
 // ---- v1.31 AGENT DRIVE: ops file -> execute on live graph -> result file. Agent writes user/<uid>/dsh-ops.json via authenticated curl; this poller applies it here.
@@ -264,6 +262,58 @@ function linkEnds(L) {   // v1.33: litegraph arrays [id,from,fs,to,ts,type] vs n
     if (Array.isArray(L)) return { from: L[1], to: L[3] };
     if (L.origin_id !== undefined && L.target_id !== undefined) return { from: L.origin_id, to: L.target_id };
     return null;
+}
+// v1.41: per-instance sockets — the node shows ONLY the outputs that actually
+// carry approved media for its selected asset (images_1..n, videos_1..m,
+// audios_1..k, notes). Server keeps fixed indexes (core limit); _dsMap on the
+// node maps visible socket -> server tuple index, and graphToPrompt is wrapped
+// to translate every wire back to the server index before submit.
+const DS_MAXI = 8, DS_MAXV = 4, DS_MAXA = 4;
+const dsCache = new Map();
+function dsGroup(name) {
+    const e = String(name).toLowerCase().split(".").pop();
+    if (["png", "jpg", "jpeg", "webp", "bmp", "tiff", "gif"].includes(e)) return "images";
+    if (["mp4", "mov", "webm", "mkv", "avi"].includes(e)) return "videos";
+    if (["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"].includes(e)) return "audio";
+    return null;
+}
+async function dsCounts(node) {
+    const w = {}; for (const x of node.widgets || []) w[x.name] = x.value;
+    const base = String(w.dsh_url || "http://240.0.0.10:3081").replace(/\/+$/, "");
+    const sess = String(w.session || ""), asset = String(w.asset || "");
+    const only = w.approved_only !== false, incRefs = w.include_library_refs !== false;
+    if (!sess || !asset || asset.startsWith("(")) return null;
+    const key = base + "|" + sess + "|" + asset + "|" + only + "|" + incRefs;
+    const hit = dsCache.get(key);
+    if (hit && Date.now() - hit.at < 30000) return hit.data;
+    const r = await fetch(base + "/director-studio/api/library?session=" + encodeURIComponent(sess));
+    if (!r.ok) return null;
+    const list = await r.json();
+    const sc = (Array.isArray(list) ? list : []).find((a) => a.name === asset);
+    if (!sc) return null;
+    const ok = (tags) => !only || (tags || []).includes("approved");
+    let i = 0, v = 0, a = 0;
+    for (const k in sc.files || {}) {
+        const g = dsGroup((sc.files || {})[k] || k);
+        if (!g || !ok(((sc.ref_meta || {})[k] || {}).tags)) continue;
+        if (g === "images") i++; else if (g === "videos") v++; else a++;
+    }
+    if (incRefs) for (const lr of sc.library_refs || []) {
+        const g = dsGroup(lr.path || lr.name);
+        if (!g || !ok(lr.tags)) continue;
+        if (g === "images") i++; else if (g === "videos") v++; else a++;
+    }
+    const data = { i: Math.min(i, DS_MAXI), v: Math.min(v, DS_MAXV), a: Math.min(a, DS_MAXA) };
+    dsCache.set(key, { at: Date.now(), data });
+    return data;
+}
+function dsSpec(c) {
+    const out = [];
+    for (let j = 0; j < c.i; j++) out.push(["images_" + (j + 1), "IMAGE", j]);
+    for (let j = 0; j < c.v; j++) out.push(["videos_" + (j + 1), "IMAGE", DS_MAXI + j]);
+    for (let j = 0; j < c.a; j++) out.push(["audios_" + (j + 1), "AUDIO", DS_MAXI + DS_MAXV + j]);
+    out.push(["notes", "STRING", DS_MAXI + DS_MAXV + DS_MAXA]);
+    return out;
 }
 function stampIdentity(){
   // Fill dsh_url/session on every DSStudioAsset node and populate its combo
@@ -459,7 +509,68 @@ app.registerExtension({
         toParent({ type: "bridge-hello" });
         auditDump("version", [`frame v${VER} boot ` + new Date().toISOString()]);
         setInterval(opsTick, 1500);   // agent drive poll — executes user/<uid>/dsh-ops.json   // heartbeat: file absent = STALE pre-1.24 frame running
-        setInterval(stampIdentity, 4000);   // v1.39 identity stamping for DSStudioAsset nodes
+        setInterval(stampIdentity, 4000);
+        // v1.41: socket sync + prompt remap
+        const _gtp = app.graphToPrompt.bind(app);
+        app.graphToPrompt = async () => {
+            const p = await _gtp();
+            for (const nid in p.output) {
+                const src = p.output[nid];
+                if (src.class_type !== "DSStudioAsset") continue;
+                const map = dsSpec(await dsCounts(app.graph._nodes.find((n) => String(n.id) === nid)) || { i: 0, v: 0, a: 0 });
+                src._dsServer = map; // keep for logging
+            }
+            for (const nid in p.output) {
+                const node = app.graph._nodes.find((n) => String(n.id) === nid);
+                const m = node && node._dsMap;
+                if (!m) continue;
+                for (const other in p.output) {
+                    const ins = p.output[other].inputs || {};
+                    for (const k in ins) {
+                        const val = ins[k];
+                        if (Array.isArray(val) && val.length === 2 && String(val[0]) === nid && typeof val[1] === "number") ins[k] = [val[0], m[val[1]] !== undefined ? m[val[1]] : val[1]];
+                    }
+                }
+            }
+            return p;
+        };
+        function dsSyncAll() {
+            for (const n of (app.graph._nodes || [])) {
+                if (n.type !== "DSStudioAsset") continue;
+                if (!n.dsSync) n.dsSync = async function () {
+                    const c = await dsCounts(this); if (!c) return;
+                    const spec = dsSpec(c);
+                    if (this._dsSpecKey === JSON.stringify(spec)) return;
+                    this._dsSpecKey = JSON.stringify(spec);
+                    this._dsMap = spec.map((x) => x[2]);
+                    // snapshot wires: removeOutput DESTROYS links, so rebuild them after
+                    const keep = [];
+                    for (const o of this.outputs || []) for (const lid of o.links || []) {
+                        const L = app.graph.links[lid];
+                        if (L) keep.push({ name: o.name, type: L.type, target: L.target_id, tslot: L.target_slot });
+                    }
+                    while ((this.outputs || []).length) this.removeOutput(0);
+                    for (const [name, type] of spec) this.addOutput(name, type);
+                    for (const k of keep) {
+                        const pos = spec.findIndex((x) => x[0] === k.name);
+                        if (pos < 0) continue;
+                        const tNode = app.graph.getNodeById(k.target);
+                        if (!tNode) continue;
+                        const link = new window.LiteGraph.LLink(window.LiteGraph.calcLinkRounding(), k.type, this.id, pos, k.target, k.tslot);
+                        app.graph.links[link.id] = link;
+                        this.outputs[pos].links = this.outputs[pos].links || [];
+                        this.outputs[pos].links.push(link.id);
+                        if (tNode.inputs && tNode.inputs[k.tslot]) {
+                            tNode.inputs[k.tslot].links = tNode.inputs[k.tslot].links || [];
+                            if (!tNode.inputs[k.tslot].links.includes(link.id)) tNode.inputs[k.tslot].links.push(link.id);
+                        }
+                    }
+                    this.setDirtyCanvas(true, true);
+                };
+                n.dsSync().catch(() => {});
+            }
+        }
+        setInterval(dsSyncAll, 4000);   // v1.39 identity stamping for DSStudioAsset nodes
         setInterval(() => { try { toParent({ type: "bridge-hello", ver: VER }); } catch (e) {} }, 15000);   // v1.40: re-announce after ComfyUI server restarts — the page never reloads, the parent badge must not decay
         // v1.6: confession — WHY did this page just load? Navigation Timing distinguishes a browser
         // reload (F5, our ⟳, crash-reload, memory-saver restore = 'reload') from fresh navigation
@@ -536,10 +647,13 @@ app.registerExtension({
             const onCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onCreated ? onCreated.apply(this, arguments) : undefined;
-                this.addWidget("button", "⬇ Stage from Director Studio", null, () => {
-                    const w = this.widgets.find((x) => x.name === "asset");
-                    stageAsset(w ? w.value : "");
-                });
+                this.dsSync && this.dsSync();
+                return r;
+            };
+            const onCfg = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function (d) {
+                const r = onCfg ? onCfg.apply(this, arguments) : undefined;
+                setTimeout(() => this.dsSync && this.dsSync(), 300);
                 return r;
             };
         }

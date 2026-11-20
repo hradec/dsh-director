@@ -285,9 +285,11 @@ class DSStudioAsset:
     # audios_1..4 (decoded in RAM, never written to disk), then the two text boxes.
     # ponytail: ComfyUI core 0.44 fixes socket counts per CLASS — an asset with
     # nothing in a slot gets a zero-sized tensor = "no output", not a fake frame.
+    # fixed server indexes (core can't vary them); the bridge JS shows only the
+    # sockets that actually carry media for the selected asset and remaps wires.
     MAX_IMAGES, MAX_VIDEOS, MAX_AUDIOS = 8, 4, 4
-    RETURN_TYPES = tuple(["IMAGE"] * MAX_IMAGES + ["IMAGE"] * MAX_VIDEOS + ["AUDIO"] * MAX_AUDIOS + ["STRING", "STRING"])
-    RETURN_NAMES = tuple(["images_%d" % (i + 1) for i in range(MAX_IMAGES)] + ["videos_%d" % (i + 1) for i in range(MAX_VIDEOS)] + ["audios_%d" % (i + 1) for i in range(MAX_AUDIOS)] + ["description", "notes"])
+    RETURN_TYPES = tuple(["IMAGE"] * MAX_IMAGES + ["IMAGE"] * MAX_VIDEOS + ["AUDIO"] * MAX_AUDIOS + ["STRING"])
+    RETURN_NAMES = tuple(["images_%d" % (i + 1) for i in range(MAX_IMAGES)] + ["videos_%d" % (i + 1) for i in range(MAX_VIDEOS)] + ["audios_%d" % (i + 1) for i in range(MAX_AUDIOS)] + ["notes"])
     FUNCTION = "pull"
     CATEGORY = "DirectorStudio"
 
@@ -300,7 +302,6 @@ class DSStudioAsset:
         if not item:
             raise ValueError("asset '%s' not in Director Studio of this workspace" % asset)
         notes = []
-        description_text = item.get("description") or ""
         # notes socket = the studio "Notes (for the models)" box FIRST, then per-ref tags
         notes = [item["notes"]] if item.get("notes") else []
         imgs, vids, auds = [], [], []
@@ -359,7 +360,7 @@ class DSStudioAsset:
             aus.append(None)
         def _empty_audio():
             return {"waveform": torch.zeros((1, 0)), "sample_rate": 44100}
-        filled = list(islots) + list(vslots) + [a if a else _empty_audio() for a in aus] + [description_text, "\n".join(notes)]
+        filled = list(islots) + list(vslots) + [a if a else _empty_audio() for a in aus] + ["\n".join(notes)]
         return tuple(filled)
 
 
