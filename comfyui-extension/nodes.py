@@ -247,7 +247,15 @@ class DSStudioAsset:
 
     @classmethod
     def INPUT_TYPES(cls):
-        base, session = _DSH_URL_DEFAULT, _DSH_SESSION_DEFAULT
+        base = _DSH_URL_DEFAULT
+        # session widget is a WORKSPACE NAME combo — the ZeroTier gateway maps
+        # names (and paths) to the right DSH session automatically.
+        try:
+            ws = json.loads(_read(_join(base, "/director-studio/api/workspaces"), timeout=3))
+            sessions = [w["name"] for w in ws if w.get("name")] or [_DSH_SESSION_DEFAULT]
+        except Exception:
+            sessions = [_DSH_SESSION_DEFAULT]
+        session = sessions[0]
         assets = ["(DSH unreachable at %s)" % base]
         try:
             body = json.loads(_read(_join(base, "/director-studio/api/library?session=" + _q(session)), timeout=3))
@@ -259,7 +267,7 @@ class DSStudioAsset:
         return {"required": {
             "asset": (assets, {}),
             "dsh_url": ("STRING", {"default": base, "multiline": False, "tooltip": "DSH server origin reachable from this ComfyUI box (ZeroTier)."}),
-            "session": ("STRING", {"default": session, "multiline": False, "tooltip": "DSH session id = the workspace whose Director Studio library to pull."}),
+            "session": (sessions, {"tooltip": "DSH workspace name (the folder holding the Director Studio library)."}),
             "approved_only": ("BOOLEAN", {"default": True, "tooltip": "approved refs only; off = also brainstorming"}),
             "include_library_refs": ("BOOLEAN", {"default": True, "tooltip": "also pull images//media/ files tagged to this asset"}),
             "max_side": ("INT", {"default": 0, "min": 0, "tooltip": "downscale longest side; 0 = untouched"}),
