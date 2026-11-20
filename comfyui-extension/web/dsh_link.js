@@ -253,11 +253,16 @@ async function stageAsset(slug) {
     renameAssetOutputs(slug, entry);
 }
 
-const VER = "1.35";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
+const VER = "1.36";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
 
 const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
 // ---- v1.31 AGENT DRIVE: ops file -> execute on live graph -> result file. Agent writes user/<uid>/dsh-ops.json via authenticated curl; this poller applies it here.
 let lastOpsId = null;
+function nodes2dst(lid) {   // node-owned scanning: which node's outputs claim this link id
+    for (const m of app.graph._nodes) for (const o2 of m.outputs || []) if ((o2.links || []).includes(lid)) return m.id;
+    return null;
+}
+function nodes2src(n) { return null; }   // resolved below per input link
 function linkEnds(L) {   // v1.33: litegraph arrays [id,from,fs,to,ts,type] vs new-frontend objects — accept both, layout is only correct with this
     if (!L) return null;
     if (Array.isArray(L)) return { from: L[1], to: L[3] };
@@ -305,11 +310,18 @@ function applyOps(ops) {
                 const nodes = g._nodes.filter((n) => !n.flags || !n.flags.pinned || true);
                 const idset = new Set(nodes.map((n) => n.id));
                 const ins = new Map(nodes.map((n) => [n.id, []]));
-                for (const lid in g._links) {
-                    const E = linkEnds(g._links[lid]);
-                    if (!E || !idset.has(E.from) || !idset.has(E.to)) continue;
-                    ins.get(E.to).push(E.from);
+                // v1.36: trust NODE-owned link ids, not any graph link table (shape varies by frontend build).
+                // For every input link id, find which node's output claims the same id. O(n·k), fine for real canvases.
+                for (const n of nodes) {
+                    for (const i of n.inputs || []) {
+                        if (i.link == null) continue;
+                        for (const m of nodes) {
+                            if (m === n) continue;
+                            if ((m.outputs || []).some((o2) => (o2.links || []).includes(i.link))) { ins.get(n.id).push(m.id); break; }
+                        }
+                    }
                 }
+                const edgeCount = [...ins.values()].reduce((a, b) => a + b.length, 0);
                 const rank = new Map(nodes.map((n) => [n.id, 0]));
                 for (let pass = 0; pass < 64; pass++) {
                     let ch = false;
@@ -335,7 +347,7 @@ function applyOps(ops) {
                     moved.push(...col.map((n) => n.id));
                 }
                 app.graph.setDirtyCanvas(true, true);
-                return { moved: moved.length, ranks: Object.fromEntries(rank), prev };
+                return { moved: moved.length, edges: edgeCount, ranks: Object.fromEntries(rank), prev };
             } else if (o.t === "fit") { // v1.35: zoom-to-fit whatever is on canvas
                 const ns = app.graph._nodes;
                 if (ns.length) {
@@ -350,7 +362,7 @@ function applyOps(ops) {
                 }
             } else if (o.t === "read") {
                 app.graph.setDirtyCanvas(true, true);
-                return { nodes: app.graph._nodes.map((n) => ({ id: n.id, type: n.type, title: n.title, pos: (n.pos || []).map(Math.round), inputs: (n.inputs || []).map((i) => i.name + (i.link != null ? "<-" + (linkEnds(app.graph._links?.[i.link])?.from ?? "?") : "")), outputs: (n.outputs || []).map((o2) => o2.name + (o2.links && o2.links.length ? "->" + o2.links.map((lid) => linkEnds(app.graph._links?.[lid])?.to ?? "?").join(",") : "")), widgets: (n.widgets || []).map((w) => w.name + "=" + String(w.value).slice(0, 80)) })) };
+                return { nodes: app.graph._nodes.map((n) => ({ id: n.id, type: n.type, title: n.title, pos: (n.pos || []).map(Math.round), inputs: (n.inputs || []).map((i) => i.name + (i.link != null ? "<-" + (nodes2dst(i.link) ?? "?") : "")), outputs: (n.outputs || []).map((o2) => o2.name + (o2.links && o2.links.length ? "->" + o2.links.map((lid) => nodes2dst(lid) ?? "?").join(",") : "")), widgets: (n.widgets || []).map((w) => w.name + "=" + String(w.value).slice(0, 80)) })) };
             } else errors.push("unknown op " + o.t);
             app.graph.setDirtyCanvas(true, true);
         } catch (e) { errors.push((o.t || "?") + ": " + e.message); }
