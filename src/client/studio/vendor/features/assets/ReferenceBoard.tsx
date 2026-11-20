@@ -294,6 +294,19 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
     );
   }
 
+  async function approveSlot(key: string) {
+    setBusyKey(key);
+    setError(null);
+    try {
+      const result = await setAssetRef(kind, asset.id, key, { tags_add: ["approved"] });
+      applyRef(key, result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
   function askNote(slot: BoardSlot, instruction: string) {
     const fence = String.fromCharCode(34, 34, 34);
     const message = `Director Studio — rewrite the note of the reference "${slot.key}" of the ${kind} "${asset.name}" (asset_id ${asset.id}). Current note:\n${fence}\n${noteDrafts[slot.key] ?? slot.note ?? ""}\n${fence}\nHuman request: ${instruction}\nApply the new note with the director_studio asset.tag action (note = …) and state the result in one line.`;
@@ -343,6 +356,18 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
               </button>
             </span>
           ))}
+          {!slot.tags.includes("approved") ? (
+            <button
+              type="button"
+              className="btn ghost sm reference-approve"
+              title="Approve this reference"
+              aria-label={`Approve ${slot.label}`}
+              disabled={busyKey === slot.key}
+              onClick={() => void approveSlot(slot.key)}
+            >
+              ✓ Approve
+            </button>
+          ) : null}
           <input
             className="reference-tag-add"
             placeholder="+ tag ↵"
@@ -488,6 +513,10 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
           index={lightboxIndex}
           onClose={() => setLightboxIndex(null)}
           onIndex={setLightboxIndex}
+          onApprove={() => {
+            const cur = visibleSlots[lightboxIndex];
+            if (cur && !cur.tags.includes("approved") && !cur.key.startsWith("lib:")) void approveSlot(cur.key);
+          }}
         />
       ) : null}
     </div>

@@ -2540,6 +2540,45 @@ h2 {
   gap: 1rem;
 }
 
+/* Overlays live on the image stage: ‹ › edge arrows, tag chips at the bottom, Approve top-right. */
+.lightbox-stage { position: relative; display: flex; align-items: center; justify-content: center; min-height: 0; }
+.lightbox-arrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  width: 2.4rem;
+  height: 2.4rem;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  background: rgba(4, 6, 10, 0.55);
+  color: #fff;
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.lightbox-arrow:hover { background: rgba(90, 130, 230, 0.7); }
+.lightbox-arrow.left { left: 0.6rem; }
+.lightbox-arrow.right { right: 0.6rem; }
+.lightbox-tags {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.35rem;
+  pointer-events: none;
+}
+.lightbox-tags .reference-chip { background: rgba(4, 6, 10, 0.72); }
+.lightbox-counter { color: var(--muted); font-size: 0.75rem; margin-left: 0.4rem; }
+.lightbox-approve { position: absolute; top: 0.6rem; right: 0.6rem; z-index: 2; }
+.reference-approve { order: 10; }
+.reference-chips .reference-approve { margin-left: auto; }
+
 @keyframes shimmer {
   0% {
     background-position: 200% 0;

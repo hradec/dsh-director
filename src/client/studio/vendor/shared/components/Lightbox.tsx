@@ -3,10 +3,11 @@ import type { OutputSlot } from "../api/types";
 import { ZoomPanImage } from "./ImageCanvas";
 
 interface Props {
-  slots: OutputSlot[];
+  slots: (OutputSlot & { tags?: string[] })[];
   index: number;
   onClose: () => void;
   onIndex: (i: number) => void;
+  onApprove?: () => void;    // when set and not approved: Approve button over the image, top-right
 }
 
 export function Lightbox({ slots, index, onClose, onIndex }: Props) {
@@ -33,20 +34,28 @@ export function Lightbox({ slots, index, onClose, onIndex }: Props) {
             Close
           </button>
         </div>
-        <ZoomPanImage src={slot.url} alt={slot.label} className="lightbox-canvas" />
-        {slots.length > 1 ? (
-          <div className="lightbox-nav">
-            <button type="button" className="btn secondary" onClick={() => onIndex((index - 1 + slots.length) % slots.length)}>
-              ← Prev
-            </button>
-            <span className="muted">
-              {index + 1} / {slots.length}
-            </span>
-            <button type="button" className="btn secondary" onClick={() => onIndex((index + 1) % slots.length)}>
-              Next →
-            </button>
-          </div>
-        ) : null}
+        <div className="lightbox-stage">
+          <ZoomPanImage src={slot.url} alt={slot.label} className="lightbox-canvas" />
+          {slots.length > 1 ? (
+            <>
+              <button type="button" className="lightbox-arrow left" title="Previous" aria-label="Previous"
+                onClick={() => onIndex((index - 1 + slots.length) % slots.length)}>‹</button>
+              <button type="button" className="lightbox-arrow right" title="Next" aria-label="Next"
+                onClick={() => onIndex((index + 1) % slots.length)}>›</button>
+            </>
+          ) : null}
+          {slot.tags?.length ? (
+            <div className="lightbox-tags">
+              {slot.tags.map((tag) => (
+                <span key={tag} className={`reference-chip${tag === "approved" ? " approved" : ""}`}>{tag}</span>
+              ))}
+              <span className="lightbox-counter">{index + 1} / {slots.length}</span>
+            </div>
+          ) : null}
+          {onApprove && !slot.tags?.includes("approved") ? (
+            <button type="button" className="btn sm lightbox-approve" onClick={onApprove}>✓ Approve</button>
+          ) : null}
+        </div>
       </div>
     </div>
   );
