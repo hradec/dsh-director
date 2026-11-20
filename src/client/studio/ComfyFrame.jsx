@@ -69,7 +69,7 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'&&!G.
     if(d.type==='iframe-nav'){if(G.noteSink)G.noteSink(`ComfyUI page (re)load: browser says initiator='${d.kind}' — 'reload' means the browser/you re-navigated the SAME url (F5, ⟳, crash or memory restore); 'navigate' means Director Studio pointed the frame at it`);return;}
     if(d.type==='pick-done'){if(G.noteSink)G.noteSink(`Loaded "${d.name}${d.subfolder?d.subfolder+'/':''}" into the node (input root).`);return;}
     if(d.type==='pick-error'){if(G.noteSink)G.noteSink(`Pick upload failed: ${d.why}`);return;}
-    if(d.type==='ver-result'){G.verSeen=G.verSeen||new Set();G.verSeen.add(host);G.verMap=G.verMap||new Map();G.verMap.set(host,d.ver);setFrameVer(d.ver);return;}
+    if(d.type==='ver-result'){G.verSeen=G.verSeen||new Set();G.verSeen.add(h);G.verMap=G.verMap||new Map();G.verMap.set(h,d.ver);for(const cb of (G.verCbs||[]))cb(h,d.ver);return;}   // v1.26 fix: 0.2.132 wrongly used component-scoped host/setFrameVer HERE — ReferenceError on every handshake answer
     if(d.type==='diag-result'){
       // audits accumulate (the second response used to erase the first before it could be copied)
       G.auditLines=(G.auditLines||[]).concat(d.lines||[]);
@@ -199,6 +199,7 @@ export function ComfyFrame({sessionId}){
   }).catch((e)=>setNote(`Could not read Studio settings: ${e.message}`));},[sid]);
   useEffect(()=>{if(host){localStorage.setItem('dsh-comfy-host',host);G.activeHost=host;}},[host]);
   useEffect(()=>{const cb=(h)=>{if(h===host)setLinked(true);};G.helloCbs.add(cb);if(G.linked.get(host))setLinked(true);return()=>G.helloCbs.delete(cb);},[host]);
+  useEffect(()=>{const cb=(h,v)=>{if(h===host)setFrameVer(v);};G.verCbs=G.verCbs||new Set();G.verCbs.add(cb);if(G.verMap?.get(host))setFrameVer(G.verMap.get(host));return()=>G.verCbs.delete(cb);},[host]);
   useEffect(()=>{G.noteSink=setNote;return()=>{if(G.noteSink===setNote)G.noteSink=null;};},[setNote]);
   // The dialog lives inside the React tab while our frame boxes are body-level z50 — without this,
   // the picker renders BEHIND ComfyUI (backdrop darkens, panel invisible). Park frames low while open.
