@@ -88,6 +88,9 @@ window.addEventListener("message", async (ev) => {
             auditDump("dom", L);   // v1.16: land the audit on server disk for the agent
             break;
         }
+        case "ver": // v1.25: parent version handshake
+            toParent({ type: "ver-result", ver: "1.25" });
+            return;
         case "diag": { // v1.10: self-audit every LoadImage/LoadVideo — value + what /view ACTUALLY answers inside this frame
             // v1.18: IDENTITY — this server runs --multi-user: /view and dropdowns resolve against the
             // LOGGED-IN user's input folder; anonymous sees the (mostly empty) default. 403 = anonymous embed.
@@ -288,7 +291,7 @@ app.registerExtension({
     ],
     setup() {
         toParent({ type: "bridge-hello" });
-        auditDump("version", ["frame v1.24 boot " + new Date().toISOString()]);   // heartbeat: file absent = STALE pre-1.24 frame running
+        auditDump("version", ["frame v1.25 boot " + new Date().toISOString()]);   // heartbeat: file absent = STALE pre-1.24 frame running
         // v1.6: confession — WHY did this page just load? Navigation Timing distinguishes a browser
         // reload (F5, our ⟳, crash-reload, memory-saver restore = 'reload') from fresh navigation
         // (parent writing src = 'navigate'). Parent logs it as a note.

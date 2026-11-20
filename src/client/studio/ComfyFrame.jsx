@@ -44,7 +44,13 @@ function sendBridge(h,msg){
 
 function markHello(h){
   G.linked.set(h,true);
-        sendBridge(h,{type:'ver'});   // v1.24 handshake: ver-result notes the live frame version; silence = pre-1.24 build
+        sendBridge(h,{type:'ver'});   // v1.25 handshake; silence for 4s = stale pre-1.25 frame -> parent reloads the embed ONCE itself
+        G.verSeen=G.verSeen||new Set();
+        if(!G.verSeen.has(h)&&!G.verWatched?.has(h)){G.verWatched=G.verWatched||new Set();G.verWatched.add(h);setTimeout(()=>{
+          if(G.verSeen.has(h))return;
+          const f=G.frames.get(h)?.frame;
+          if(f?.isConnected){G.noteSink&&G.noteSink('Bridge frame STALE (pre-1.25) — reloading the embedded ComfyUI once…');f.dataset.src='';f.src='about:blank';setTimeout(()=>{f.src=h;},150);}
+        },4000);}
   sendBridge(h,{type:'bridge-ready',hosts:G.hostsCache});
   // latest-wins: stale queued loads from earlier attempts must NOT replay (replaying looked like the canvas reloading right after a load)
   const m=G.pending.get(h);
@@ -63,7 +69,7 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'&&!G.
     if(d.type==='iframe-nav'){if(G.noteSink)G.noteSink(`ComfyUI page (re)load: browser says initiator='${d.kind}' — 'reload' means the browser/you re-navigated the SAME url (F5, ⟳, crash or memory restore); 'navigate' means Director Studio pointed the frame at it`);return;}
     if(d.type==='pick-done'){if(G.noteSink)G.noteSink(`Loaded "${d.name}${d.subfolder?d.subfolder+'/':''}" into the node (input root).`);return;}
     if(d.type==='pick-error'){if(G.noteSink)G.noteSink(`Pick upload failed: ${d.why}`);return;}
-    if(d.type==='ver-result'){G.noteSink&&G.noteSink('Bridge frame v'+d.ver+' active.');return;}
+    if(d.type==='ver-result'){G.verSeen=G.verSeen||new Set();G.verSeen.add(host);G.noteSink&&G.noteSink('Bridge frame v'+d.ver+' active.');return;}
     if(d.type==='diag-result'){
       // audits accumulate (the second response used to erase the first before it could be copied)
       G.auditLines=(G.auditLines||[]).concat(d.lines||[]);
