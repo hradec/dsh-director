@@ -69,7 +69,7 @@ if(typeof window!=='undefined'&&typeof window.addEventListener==='function'&&!G.
     if(d.type==='iframe-nav'){if(G.noteSink)G.noteSink(`ComfyUI page (re)load: browser says initiator='${d.kind}' — 'reload' means the browser/you re-navigated the SAME url (F5, ⟳, crash or memory restore); 'navigate' means Director Studio pointed the frame at it`);return;}
     if(d.type==='pick-done'){if(G.noteSink)G.noteSink(`Loaded "${d.name}${d.subfolder?d.subfolder+'/':''}" into the node (input root).`);return;}
     if(d.type==='pick-error'){if(G.noteSink)G.noteSink(`Pick upload failed: ${d.why}`);return;}
-    if(d.type==='ver-result'){G.verSeen=G.verSeen||new Set();G.verSeen.add(host);G.noteSink&&G.noteSink('Bridge frame v'+d.ver+' active.');return;}
+    if(d.type==='ver-result'){G.verSeen=G.verSeen||new Set();G.verSeen.add(host);G.verMap=G.verMap||new Map();G.verMap.set(host,d.ver);setFrameVer(d.ver);return;}
     if(d.type==='diag-result'){
       // audits accumulate (the second response used to erase the first before it could be copied)
       G.auditLines=(G.auditLines||[]).concat(d.lines||[]);
@@ -178,6 +178,7 @@ export function ComfyFrame({sessionId}){
   const [host,setHost]=useState(()=>localStorage.getItem('dsh-comfy-host')??'');
   const [note,setNote]=useState('');
   const [linked,setLinked]=useState(()=>G.linked.get(localStorage.getItem('dsh-comfy-host')??'')??false);
+  const [frameVer,setFrameVer]=useState(()=>G.verMap?.get(localStorage.getItem('dsh-comfy-host')??'')??'');   // bridge frame version from the v1.25 ver handshake
   const [picker,setPicker]=useState(()=>G.picker??null);   // survives tab re-mounts (factory re-runs were killing the open dialog)           // {reqId,kind,files,error?}
   const anchorRef=useRef(null);
   const stagingRef=useRef({});                       // slug → sidecar waiting for stage-images-done
@@ -315,7 +316,7 @@ export function ComfyFrame({sessionId}){
     window.addEventListener('message',onMsg);return()=>window.removeEventListener('message',onMsg);
   },[hosts,host,sid]);
 
-  const switchHost=(h)=>{if(h===host)return;setHost(h);G.linked.set(h,false);setLinked(false);stagingRef.current={};};
+  const switchHost=(h)=>{if(h===host)return;setHost(h);G.linked.set(h,false);setLinked(false);setFrameVer(G.verMap?.get(h)??'');stagingRef.current={};};
 
   return <div className="comfy-frame-tab">
     <div className="comfy-frame-bar">
@@ -324,7 +325,7 @@ export function ComfyFrame({sessionId}){
       {!hosts.length?<span className="muted tiny">no endpoints — set them in Studio settings (gear → ComfyUI)</span>:null}
       <button type="button" className="btn ghost sm" title="Reload this endpoint's frame" onClick={()=>{const f=G.frames.get(host)?.frame;if(f){G.linked.set(host,false);setLinked(false);f.dataset.src='';writeSrc(f,'about:blank','user clicked reload button');writeSrc(f,host,'user clicked reload button');}}}>⟳</button>
       <span className="muted tiny" title="client build running in this page — if it disagrees with the shipped version, the page has NOT reloaded yet">v{__DSH_VERSION__}</span>
-      <span className="muted tiny" title={linked?'set by the dsh-studio-link extension inside ComfyUI':'If this never flips to ✓: open ComfyUI settings (gear) inside the frame, find DSHStudio.comfyOrigin, set it to '+location.origin+' , then hit ⟳ — see BRIDGE_CONTRACT v1.3'}>{linked?'bridge ✓':'awaiting dsh-studio-link bridge-hello…'}</span>
+      <span className="muted tiny" title={linked?'set by the dsh-studio-link extension inside ComfyUI':'If this never flips to ✓: open ComfyUI settings (gear) inside the frame, find DSHStudio.comfyOrigin, set it to '+location.origin+' , then hit ⟳ — see BRIDGE_CONTRACT v1.3'}>{linked?'bridge ✓'+(frameVer?' · frame v'+frameVer:''):'awaiting dsh-studio-link bridge-hello…'}</span>
     </div>
     <div ref={anchorRef} className="comfy-frame-anchor"/>
     {note?<div className="comfy-frame-note">{note}</div>:null}
