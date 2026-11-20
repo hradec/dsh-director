@@ -232,6 +232,7 @@ async function stageAsset(slug) {
     renameAssetOutputs(slug, entry);
 }
 
+const blobCache = new Map();   // module scope: shared by the element interceptor and the audit probe
 let userPromise = null;
 function resolveUser() { // setting holds a username OR a raw user_id; map via /users; blank -> leave requests untouched
     if (!userPromise) userPromise = (async () => {
@@ -253,12 +254,20 @@ function resolveUser() { // setting holds a username OR a raw user_id; map via /
     return userPromise;
 }
 
-async function auditDump(kind, lines) { // v1.16: POST audit text to THIS server's /upload/image (.png suffix rides the validator; contents are plain text)
+async function auditDump(kind, lines) { // v1.23: plain-text POST to /userdata (the /upload/image validator rejects non-images — that's why the .png dump silently died). Lands at user/<uid>/dsh-audit-<kind>.txt
     try {
-        const fd = new FormData();
-        fd.append("image", new Blob(["dsh-audit " + kind + "\n" + lines.join("\n")], { type: "image/png" }), "dsh-audit-" + kind + ".png");
-        fd.append("overwrite", "true");
-        await fetch("/upload/image", { method: "POST", body: fd });
+        const who = await resolveUser();
+        let extra = "user=" + (who || "(anonymous)");
+        // probe like the FRONTEND does: /api/view with and without header on the first LoadImage value
+        const n = app.graph._nodes.find((x) => x.type === "LoadImage" || x.type === "LoadVideo");
+        const v = n && n.widgets && n.widgets[0] && n.widgets[0].value;
+        if (v) {
+            const q = "/api/view?type=input&filename=" + encodeURIComponent(v);
+            const a = await nativeFetch(q).then((r) => r.status).catch(() => "ERR");
+            const b = await nativeFetch(q, { headers: { "comfy-user": who || "none" } }).then((r) => r.status).catch(() => "ERR");
+            extra += " | " + v + " /api/view anonymous=" + a + " header=" + b + " | blobcache=" + blobCache.size;
+        }
+        await fetch("/userdata/dsh-audit-" + kind + ".txt", { method: "POST", body: "dsh-audit " + kind + " v1.23\n" + extra + "\n" + lines.join("\n"), headers: { "Content-Type": "text/plain" } });
     } catch (e) { /* best effort */ }
 }
 
@@ -296,7 +305,6 @@ app.registerExtension({
         // v1.21: multi-user media can NEVER load via <img>/<video> (headers impossible on element
         // requests; query-param identity is not accepted). Route element URLs through authenticated
         // fetch -> blob: URL. Covers litegraph LoadImage/LoadVideo previews and thumbnails wholesale.
-        const blobCache = new Map();
         async function authedUrl(u) {
             const who = await resolveUser();
             if (!who) return u;
