@@ -253,7 +253,7 @@ async function stageAsset(slug) {
     renameAssetOutputs(slug, entry);
 }
 
-const VER = "1.37";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
+const VER = "1.38";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
 
 const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
 // ---- v1.31 AGENT DRIVE: ops file -> execute on live graph -> result file. Agent writes user/<uid>/dsh-ops.json via authenticated curl; this poller applies it here.
@@ -271,7 +271,7 @@ function linkEnds(L) {   // v1.33: litegraph arrays [id,from,fs,to,ts,type] vs n
 }
 function applyOps(ops) {
     const LG = window.LiteGraph;
-    const created = [], errors = [];
+    const created = [], errors = [];  const out = { created, errors };   // v1.38: batch accumulates
     for (const o of ops) {
         try {
             if (o.t === "create") {
@@ -303,7 +303,8 @@ function applyOps(ops) {
                 if (o.undo) {   // v1.35: restore positions captured by the previous layout run
                     for (const m of (o.undo || [])) { const n = app.graph.getNodeById(m.id); if (n) n.pos = [m.x, m.y]; }
                     app.graph.setDirtyCanvas(true, true);
-                    return { restored: (o.undo || []).length };
+                    Object.assign(out, { restored: (o.undo || []).length });
+                    continue;
                 }
                 // v1.32: flow-organized layout — longest-path ranking into columns, nodes stacked by data-flow, measured sizes respected.
                 const g = app.graph;
@@ -347,7 +348,7 @@ function applyOps(ops) {
                     moved.push(...col.map((n) => n.id));
                 }
                 app.graph.setDirtyCanvas(true, true);
-                return { moved: moved.length, edges: edgeCount, ranks: Object.fromEntries(rank), prev };
+                Object.assign(out, { moved: moved.length, edges: edgeCount, ranks: Object.fromEntries(rank), prev });
             } else if (o.t === "fit") { // v1.35: zoom-to-fit whatever is on canvas
                 const ns = app.graph._nodes;
                 if (ns.length) {
@@ -358,16 +359,17 @@ function applyOps(ops) {
                     app.canvas.ds.offset = [-x0 * sc + (cw - (x1 - x0) * sc) / 2, -y0 * sc + (chh - (y1 - y0) * sc) / 2];
                     app.canvas.ds.scale = sc;
                     app.graph.setDirtyCanvas(true, true);
-                    return { fitted: ns.length, scale: Math.round(sc * 100) / 100 };
+                    Object.assign(out, { fitted: ns.length, scale: Math.round(sc * 100) / 100 });
                 }
             } else if (o.t === "read") {
                 app.graph.setDirtyCanvas(true, true);
-                return { nodes: app.graph._nodes.map((n) => ({ id: n.id, type: n.type, title: n.title, pos: (n.pos || []).map(Math.round), inputs: (n.inputs || []).map((i) => i.name + (i.link != null ? "<-" + (nodes2dst(i.link) ?? "?") : "")), outputs: (n.outputs || []).map((o2) => o2.name + (o2.links && o2.links.length ? "->" + o2.links.map((lid) => nodes2dst(lid) ?? "?").join(",") : "")), widgets: (n.widgets || []).map((w) => w.name + "=" + String(w.value).slice(0, 80)) })) };
+                Object.assign(out, { nodes: app.graph._nodes.map((n) => ({ id: n.id, type: n.type, title: n.title, pos: (n.pos || []).map(Math.round), inputs: (n.inputs || []).map((i) => i.name + (i.link != null ? "<-" + (nodes2dst(i.link) ?? "?") : "")), outputs: (n.outputs || []).map((o2) => o2.name + (o2.links && o2.links.length ? "->" + o2.links.map((lid) => nodes2dst(lid) ?? "?").join(",") : "")), widgets: (n.widgets || []).map((w) => w.name + "=" + String(w.value).slice(0, 80)) })) });
             } else errors.push("unknown op " + o.t);
             app.graph.setDirtyCanvas(true, true);
         } catch (e) { errors.push((o.t || "?") + ": " + e.message); }
     }
-    return { created, errors };
+    out.created = created; out.errors = errors;
+    return out;
 }
 async function opsTick() {
     try {
