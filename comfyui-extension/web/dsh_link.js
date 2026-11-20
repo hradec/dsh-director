@@ -253,11 +253,17 @@ async function stageAsset(slug) {
     renameAssetOutputs(slug, entry);
 }
 
-const VER = "1.33";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
+const VER = "1.34";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
 
 const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
 // ---- v1.31 AGENT DRIVE: ops file -> execute on live graph -> result file. Agent writes user/<uid>/dsh-ops.json via authenticated curl; this poller applies it here.
 let lastOpsId = null;
+function linkEnds(L) {   // v1.33: litegraph arrays [id,from,fs,to,ts,type] vs new-frontend objects — accept both, layout is only correct with this
+    if (!L) return null;
+    if (Array.isArray(L)) return { from: L[1], to: L[3] };
+    if (L.origin_id !== undefined && L.target_id !== undefined) return { from: L.origin_id, to: L.target_id };
+    return null;
+}
 function applyOps(ops) {
     const LG = window.LiteGraph;
     const created = [], errors = [];
@@ -295,9 +301,9 @@ function applyOps(ops) {
                 const idset = new Set(nodes.map((n) => n.id));
                 const ins = new Map(nodes.map((n) => [n.id, []]));
                 for (const lid in g._links) {
-                    const L = g._links[lid];
-                    if (!L || !idset.has(L[0]) || !idset.has(L[2])) continue;
-                    ins.get(L[2]).push(L[0]);
+                    const E = linkEnds(g._links[lid]);
+                    if (!E || !idset.has(E.from) || !idset.has(E.to)) continue;
+                    ins.get(E.to).push(E.from);
                 }
                 const rank = new Map(nodes.map((n) => [n.id, 0]));
                 for (let pass = 0; pass < 64; pass++) {
@@ -326,7 +332,7 @@ function applyOps(ops) {
                 return { moved: moved.length, ranks: Object.fromEntries(rank) };
             } else if (o.t === "read") {
                 app.graph.setDirtyCanvas(true, true);
-                return { nodes: app.graph._nodes.map((n) => ({ id: n.id, type: n.type, title: n.title, pos: (n.pos || []).map(Math.round), inputs: (n.inputs || []).map((i) => i.name + (i.link != null ? "<-" + (app.graph._links?.[i.link]?.[0] ?? "?") : "")), outputs: (n.outputs || []).map((o2) => o2.name + (o2.links && o2.links.length ? "->" + o2.links.map((lid) => app.graph._links?.[lid]?.[2] ?? "?").join(",") : "")), widgets: (n.widgets || []).map((w) => w.name + "=" + String(w.value).slice(0, 80)) })) };
+                return { nodes: app.graph._nodes.map((n) => ({ id: n.id, type: n.type, title: n.title, pos: (n.pos || []).map(Math.round), inputs: (n.inputs || []).map((i) => i.name + (i.link != null ? "<-" + (linkEnds(app.graph._links?.[i.link])?.from ?? "?") : "")), outputs: (n.outputs || []).map((o2) => o2.name + (o2.links && o2.links.length ? "->" + o2.links.map((lid) => linkEnds(app.graph._links?.[lid])?.to ?? "?").join(",") : "")), widgets: (n.widgets || []).map((w) => w.name + "=" + String(w.value).slice(0, 80)) })) };
             } else errors.push("unknown op " + o.t);
             app.graph.setDirtyCanvas(true, true);
         } catch (e) { errors.push((o.t || "?") + ": " + e.message); }
@@ -342,7 +348,9 @@ async function opsTick() {
         lastOpsId = j.id;
         const out = applyOps(j.ops || []);
         await fetch("/userdata/dsh-ops-result.json", { method: "POST", body: JSON.stringify({ id: j.id, at: new Date().toISOString(), ...out }, null, 1), headers: { "Content-Type": "text/plain" } });
-    } catch {}
+    } catch (e) {
+        try { await fetch("/userdata/dsh-ops-error.txt", { method: "POST", body: "opsTick " + new Date().toISOString() + " " + (e && e.stack ? e.stack : String(e)), headers: { "Content-Type": "text/plain" } }); } catch {}
+    }
 }
 const blobCache = new Map();   // module scope: shared by the element interceptor and the audit probe
 let userPromise = null;
