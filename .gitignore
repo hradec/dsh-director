@@ -90,3 +90,4 @@ Thumbs.db
 probe-clip.mp4
 vendor/react19/node_modules/
 scripts/timeline-css.generated.mjs
+.codex-logs/
