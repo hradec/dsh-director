@@ -3,7 +3,21 @@
 // and standalone (this tab talks to the DSH HTTP API directly; needs the CORS
 // change listed in BRIDGE_CONTRACT.md). Contract ns "dsh-studio", v 1.
 
-const { app } = window.comfyAPI.app;
+// v1.43 boot guard: a module that dies during load used to leave the DSH tab with a
+// silent red dot. Now: any error before boot completion is posted to the parent as
+// bridge-dead with the exact file:line, and comfyAPI absence is reported too.
+// ponytail: single-shot beacon — if the frontend refactor moved more than comfyAPI,
+// the parent shows the first throwing line; fix that seam directly.
+window.__dsBooted = false;
+try {
+  window.addEventListener("error", (e) => {
+    if (window.__dsBooted) return;
+    try { window.parent.postMessage({ type: "bridge-dead", err: (e.message || "?") + " @" + String(e.filename || "?").split("/").pop() + ":" + e.lineno }, "*"); } catch (_) {}
+  }, true);
+} catch (_) {}
+const _ca = window.comfyAPI && window.comfyAPI.app;
+if (!_ca) { try { window.parent.postMessage({ type: "bridge-dead", err: "no window.comfyAPI (frontend refactor)" }, "*"); } catch (_) {} }
+const { app } = { app: _ca ? _ca.app : undefined };
 
 const NS = "dsh-studio";
 const V = 1;
@@ -247,7 +261,7 @@ async function stageAsset(slug) {
     await refreshNodeOptions();
 }
 
-const VER = "1.42";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
+const VER = "1.43";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
 
 const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
 // ---- v1.31 AGENT DRIVE: ops file -> execute on live graph -> result file. Agent writes user/<uid>/dsh-ops.json via authenticated curl; this poller applies it here.
@@ -556,7 +570,7 @@ app.registerExtension({
                         if (pos < 0) continue;
                         const tNode = app.graph.getNodeById(k.target);
                         if (!tNode) continue;
-                        const link = new window.LiteGraph.LLink(window.LiteGraph.calcLinkRounding(), k.type, this.id, pos, k.target, k.tslot);
+                        const link = new window.LiteGraph.LLink(window.LiteGraph.calcLinkRounding ? window.LiteGraph.calcLinkRounding() : 0, k.type, this.id, pos, k.target, k.tslot);
                         app.graph.links[link.id] = link;
                         this.outputs[pos].links = this.outputs[pos].links || [];
                         this.outputs[pos].links.push(link.id);
@@ -687,3 +701,5 @@ app.registerExtension({
         }
     },
 });
+// v1.43: module evaluated fully — boot beacon disarmed; later errors are normal runtime errors.
+window.__dsBooted = true;
