@@ -1,0 +1,581 @@
+// Per-layer buffer-scheduled audio playback (docs/audio.md §Preview mixer).
+// Chunks of conform PCM are read over weftcut-media:// Range (zero decode),
+// wrapped as AudioBuffers, and scheduled
+// sample-accurately on the AudioContext clock against a play anchor.
+//
+// Node chain per layer:
+//   AudioBufferSourceNode (chunk) → GainNode (envelope automation)
+//     → PanGraph (matrix: ChannelSplitter → 4×GainNode → ChannelMerger)
+//       → GainNode (trim: micro-fades, re-anchor masking)
+//         → AudioGraph.roleBusInput(role)  (the Role's metering fan-in)
+//
+// The gain/pan envelopes are the sampled-envelope contract
+// (`envelope.ts` ↔ Rust `audio::envelope`): identical control points,
+// identical linear interpolation — `setValueCurveAtTime` here, per-sample
+// lerp in the export mixer.
+//
+// Clock: chunks are scheduled against the engine's `ClockAnchor`, and an
+// anchor identity change triggers a micro-faded reschedule (see `lastAnchor`).
+
+import type { AudioRole, AudioView } from "../../ipc";
+import type { AudioGraph } from "./AudioGraph";
+import {
+  type Envelope,
+  evalEnvelope,
+  sampleGain,
+  samplePan,
+} from "./envelope";
+import { buildPanGraph, constantPanGains, panCurves, type PanGraph } from "./panGraph";
+import { ConformSource } from "./conformSource";
+import { audioErrorDetail } from "./audioError";
+import { acquireRenderResources } from '../resourceClient';
+import {
+  type ClockAnchor,
+  MICRO_FADE_S,
+  MAX_LIVE_CHUNKS,
+  SAMPLE_RATE,
+  framesToUs,
+  planChunks,
+  usToFrames,
+} from "./chunkSchedule";
+
+export interface AudioMixerInit {
+  layerId: string;
+  /// weftcut-media:// URL of the layer's conform file.
+  conformUrl: string;
+  /// The layer's audio view (gain/pan tracks, fades, src trims, mute).
+  view: AudioView;
+  /// Layer placement in composition time (µs).
+  layerTStartUs: number;
+  layerTEndUs: number;
+}
+
+/// Unique ownership token for one scheduled-or-pending source chunk. The map
+/// entry's object identity prevents a stale async read from releasing a newer
+/// reservation for the same source-frame key after a seek.
+interface LiveChunkSlot {
+  node: AudioBufferSourceNode | null;
+}
+
+interface PreparedChunk {
+  frames: number;
+  controller: AbortController;
+  ready: Promise<AudioBuffer>;
+  buffer?: AudioBuffer;
+}
+
+export class AudioMixer {
+  private releaseResources: (() => void) | null = null;
+  readonly layerId: string;
+
+  private readonly graph: AudioGraph;
+  private readonly gainNode: GainNode;
+  private readonly trim: GainNode;
+  private panGraph: PanGraph | null = null;
+  private panChannels = 0;
+
+  private source: ConformSource | null = null;
+  private sourcePending = false;
+  private readFailedWarned = false;
+  /// Latched by `dispose()`. `openSource`'s continuation checks it — the
+  /// conform fetch can outlive the layer that asked for it.
+  private disposed = false;
+  private readonly sourceAbort = new AbortController();
+  private readonly ready: Promise<void>;
+  private prepared = new Map<number, PreparedChunk>();
+  private preparationEpoch = 0;
+
+  private view: AudioView;
+  /// The Role bus `trim` is currently wired to. The Role rides on the view, so
+  /// a Role change arrives as a replaced view and `updateView` re-points the
+  /// connection — there is no Role in `AudioMixerInit` to keep in sync.
+  private connectedRole: AudioRole;
+  private layerTStartUs: number;
+  private layerTEndUs: number;
+  private srcInFrame = 0;
+  private srcOutFrame = 0;
+  private gainEnv: Envelope;
+  private panEnv: Envelope;
+  /// The Role's linear gain, folded onto this layer's own gain envelope — the
+  /// preview twin of `plan_for_project`'s `role_gain` fold; see roleGate.ts.
+  /// Unity until the session engine passes one.
+  private roleGainLinear = 1;
+
+  /// The engine's clock anchor as of the last tick — by REFERENCE. The
+  /// mixer never takes its own anchor: the playhead and every scheduled
+  /// chunk derive from the same pair (chunkSchedule.ClockAnchor), so
+  /// there is no second clock to reconcile against. Identity change
+  /// (engine re-anchored: seek-during-play, ctx state flip) triggers a
+  /// micro-faded reschedule.
+  private lastAnchor: ClockAnchor | null = null;
+  private liveChunks = new Map<number, LiveChunkSlot>();
+
+  constructor(init: AudioMixerInit, graph: AudioGraph) {
+    this.layerId = init.layerId;
+    this.graph = graph;
+    this.view = init.view;
+    this.layerTStartUs = init.layerTStartUs;
+    this.layerTEndUs = init.layerTEndUs;
+
+    const ctx = graph.ctx;
+    this.gainNode = ctx.createGain();
+    this.trim = ctx.createGain();
+    this.gainNode.connect(this.trim);
+    this.connectedRole = this.view.role;
+    this.trim.connect(graph.roleBusInput(this.connectedRole));
+
+    this.gainEnv = { stepUs: 10_000, spanUs: 0, values: [1] };
+    this.panEnv = { stepUs: 10_000, spanUs: 0, values: [0] };
+    this.deriveFromView();
+
+    this.ready = this.openSource(init.conformUrl);
+    // The session observes preparation errors. Avoid an unhandled rejection
+    // when a speculative source open fails before prepare() is called.
+    void this.ready.catch(() => {});
+  }
+
+  private async openSource(url: string): Promise<void> {
+    if (this.sourcePending) return;
+    this.sourcePending = true;
+    try {
+      const release = await acquireRenderResources(12);
+      if (this.disposed) { release(); return; }
+      this.releaseResources = release;
+      const source = await ConformSource.open(url, this.sourceAbort.signal);
+      // A dispose that landed during the fetch already severed this mixer's
+      // graph and nulled `source` — assigning here would resurrect it:
+      // `installPanGraph` rebuilds and reconnects a fresh pan graph (leaked
+      // AudioNodes), and a disposed mixer reporting `source !== null` is one
+      // stray `tick()` away from scheduling audio out of a dead object.
+      if (this.disposed) return;
+      this.source = source;
+      this.installPanGraph(this.source.header.channels);
+      this.deriveFromView();
+    } catch (error) {
+      this.releaseResources?.(); this.releaseResources = null;
+      throw error;
+    } finally {
+      this.sourcePending = false;
+    }
+  }
+
+  /// Read/cache PCM before releasing the transport clock. This has no audio
+  /// side effects and works for clips ahead of the parked moment as well.
+  /// False means this window was cancelled by our own stop/cache eviction;
+  /// genuine source failures still reject. Cancellation is not a device error.
+  async prepare(masterUs: number, lookaheadUs?: number): Promise<boolean> {
+    const epoch = this.preparationEpoch;
+    try { await this.ready; } catch (error) {
+      if (this.disposed || epoch !== this.preparationEpoch) return false;
+      throw error;
+    }
+    if (this.disposed || epoch !== this.preparationEpoch) return false;
+    const chunks = planChunks({ masterUs, anchor: { compUs: masterUs, ctxTime: 0 },
+      ctxNow: 0, layerTStartUs: this.layerTStartUs, layerTEndUs: this.layerTEndUs,
+      srcInFrame: this.srcInFrame, srcOutFrame: this.srcOutFrame,
+      liveChunkStarts: [], lookaheadUs });
+    const prepared = chunks.map((c) => this.bufferFor(c.srcStartFrame, c.frames));
+    let ready: boolean[];
+    try {
+      ready = await Promise.all(prepared.map((entry) => entry.ready.then(() => true).catch((error: unknown) => {
+        if (entry.controller.signal.aborted) return false;
+        throw error;
+      })));
+    } catch (error) {
+      if (this.disposed || epoch !== this.preparationEpoch) return false;
+      throw error;
+    }
+    return !this.disposed && epoch === this.preparationEpoch && ready.every(Boolean);
+  }
+
+  private bufferFor(start: number, frames: number): PreparedChunk {
+    const cached = this.prepared.get(start);
+    if (cached?.frames === frames) {
+      this.prepared.delete(start);
+      this.prepared.set(start, cached);
+      return cached;
+    }
+    cached?.controller.abort();
+    const controller = new AbortController();
+    const entry: PreparedChunk = { frames, controller, ready: null! };
+    entry.ready = this.source!.readWindow(start, frames, controller.signal).then((channels) => {
+      if (this.disposed || controller.signal.aborted) throw new DOMException("Cancelled", "AbortError");
+      const buffer = this.graph.ctx.createBuffer(channels.length, frames, SAMPLE_RATE);
+      channels.forEach((data, c) => buffer.copyToChannel(data, c));
+      entry.buffer = buffer;
+      return buffer;
+    }).catch((error: unknown) => {
+      if (this.prepared.get(start) === entry) this.prepared.delete(start);
+      throw error;
+    });
+    this.prepared.set(start, entry);
+    while (this.prepared.size > MAX_LIVE_CHUNKS) {
+      const [key, oldest] = this.prepared.entries().next().value!;
+      this.prepared.delete(key);
+      oldest.controller.abort();
+    }
+    return entry;
+  }
+
+  /// A command, never a future visual tick. In-flight work loses ownership
+  /// synchronously; completed PCM stays cached for a quick resume.
+  stop(): void {
+    this.preparationEpoch++;
+    this.teardown(false);
+    this.lastAnchor = null;
+  }
+
+  /// Splice the pan matrix graph between gainNode and trim, sized to the
+  /// conform channel count. Idempotent for a given channel count.
+  private installPanGraph(channels: number): void {
+    if (this.panGraph && this.panChannels === channels) return;
+    const ctx = this.graph.ctx;
+    try {
+      this.gainNode.disconnect();
+    } catch {
+      // not yet connected — fine
+    }
+    this.panGraph?.input.disconnect();
+    this.panGraph?.gains.forEach((g) => g.disconnect());
+    this.panGraph = buildPanGraph(ctx, channels);
+    this.panChannels = channels;
+    this.gainNode.connect(this.panGraph.input);
+    this.panGraph.output.connect(this.trim);
+  }
+
+  private deriveFromView(): void {
+    const spanUs = this.view.src_out_us - this.view.src_in_us;
+    this.srcInFrame = usToFrames(this.view.src_in_us);
+    this.srcOutFrame = usToFrames(this.view.src_out_us);
+    this.gainEnv = sampleGain(
+      this.view.gain_db,
+      this.view.fade_in_us,
+      this.view.fade_out_us,
+      spanUs,
+    );
+    this.panEnv = samplePan(this.view.pan, spanUs);
+    // Fold the Role gain here (preview twin — see roleGate.ts). This is the
+    // only place it is applied, which is why the Role bus downstream stays at
+    // unity.
+    if (this.roleGainLinear !== 1) {
+      for (let i = 0; i < this.gainEnv.values.length; i++) {
+        this.gainEnv.values[i]! *= this.roleGainLinear;
+      }
+    }
+    // Constant fast path: park the static value on the param; curves are
+    // scheduled per chunk only for non-constant envelopes.
+    if (this.gainEnv.values.length === 1) {
+      this.gainNode.gain.value = this.gainEnv.values[0]!;
+    }
+    if (this.panEnv.values.length === 1 && this.panGraph) {
+      const g = constantPanGains(this.panEnv, this.panChannels);
+      this.panGraph.gains.forEach((node, i) => (node.gain.value = g[i] ?? 0));
+    }
+  }
+
+  /// Layer summary changed (trim, move, gain/pan/fade edit, mute). Re-derive
+  /// envelopes and reschedule — `setValueCurveAtTime` forbids overlapping
+  /// automation, so a fresh schedule is the only correct move.
+  updateView(
+    view: AudioView,
+    layerTStartUs: number,
+    layerTEndUs: number,
+    roleGainLinear: number,
+  ): void {
+    this.view = view;
+    if (view.role !== this.connectedRole) {
+      // `trim`'s only downstream is its Role bus — `installPanGraph` rewires
+      // into `trim`, never out of it — so a bare disconnect is exact.
+      try {
+        this.trim.disconnect();
+      } catch {
+        // not connected — fine
+      }
+      this.connectedRole = view.role;
+      this.trim.connect(this.graph.roleBusInput(this.connectedRole));
+    }
+    this.layerTStartUs = layerTStartUs;
+    this.layerTEndUs = layerTEndUs;
+    this.roleGainLinear = roleGainLinear;
+    this.preparationEpoch++;
+    this.teardown(true);
+    this.lastAnchor = null;
+    this.deriveFromView();
+  }
+
+  /// Engine tick. `masterUs` is the composition playhead; `playing`
+  /// mirrors the engine transport; `anchor` is the engine's clock anchor
+  /// (null while paused or while the AudioContext is suspended — a
+  /// suspended context makes no sound, so silence is correct).
+  tick(
+    masterUs: number,
+    playing: boolean,
+    layerTEndUs: number,
+    anchor: ClockAnchor | null,
+  ): void {
+    this.layerTEndUs = layerTEndUs;
+    if (!this.source) return;
+
+    const inside = masterUs < this.layerTEndUs;
+    if (!playing || !inside || this.view.mute || anchor === null) {
+      // Keep the resume nudge: the first play often starts with the
+      // context suspended (autoplay policy) and a null anchor — resuming
+      // here lets the engine's clock flip to audio-derived next tick.
+      if (playing && anchor === null) void this.graph.resume();
+      if (this.lastAnchor) {
+        this.teardown(false);
+        this.lastAnchor = null;
+      }
+      return;
+    }
+
+    const ctxNow = this.graph.ctx.currentTime;
+    if (this.lastAnchor === null) {
+      void this.graph.resume();
+      this.rampTrimIn(ctxNow);
+    } else if (this.lastAnchor !== anchor) {
+      // Engine re-anchored (seek during play / clock-source flip):
+      // everything scheduled against the old anchor is mis-timed now.
+      this.teardown(true);
+      this.rampTrimIn(ctxNow);
+    }
+    this.lastAnchor = anchor;
+
+    const planned = planChunks({
+      masterUs,
+      anchor,
+      ctxNow,
+      layerTStartUs: this.layerTStartUs,
+      layerTEndUs: this.layerTEndUs,
+      srcInFrame: this.srcInFrame,
+      srcOutFrame: this.srcOutFrame,
+      liveChunkStarts: [...this.liveChunks.keys()],
+    });
+    for (const chunk of planned) {
+      // Reserve the slot synchronously so the next tick doesn't double-
+      // schedule while the Range read is in flight; the placeholder is
+      // filled with the real node on resolve. Slot identity is the ownership
+      // token: an older read for the same source key cannot release this one.
+      const slot: LiveChunkSlot = { node: null };
+      this.liveChunks.set(chunk.srcStartFrame, slot);
+      void this.scheduleChunk(
+        chunk.srcStartFrame,
+        chunk.frames,
+        chunk.when,
+        chunk.bufferOffsetFrames,
+        slot,
+      );
+    }
+  }
+
+  private async scheduleChunk(
+    srcStartFrame: number,
+    frames: number,
+    when: number,
+    bufferOffsetFrames: number,
+    slot: LiveChunkSlot,
+  ): Promise<void> {
+    const source = this.source;
+    if (!source) return;
+    let buffer: AudioBuffer;
+    let entry: PreparedChunk | undefined;
+    try {
+      entry = this.bufferFor(srcStartFrame, frames);
+      // Prepared starts are synchronous, so every layer can share a future
+      // anchor without an extra promise turn between scheduling and start.
+      buffer = entry.buffer ?? await entry.ready;
+    } catch (e) {
+      // A teardown or newer same-key reservation superseded this request.
+      // Its failure belongs to the old schedule and must not release or warn
+      // on behalf of the current one.
+      if (this.liveChunks.get(srcStartFrame) !== slot) return;
+      // Failed read = this chunk stays silent; drop the reservation so the
+      // next tick retries. Warn once per layer.
+      this.liveChunks.delete(srcStartFrame);
+      if (entry?.controller.signal.aborted) return;
+      if (!this.readFailedWarned) {
+        this.readFailedWarned = true;
+        console.warn(
+          `[weftcut/audio] conform read failed for layer ${this.layerId}; chunk muted: ${audioErrorDetail(e)}`,
+        );
+      }
+      return;
+    }
+    // Torn down or replaced while reading — drop silently. Identity, rather
+    // than a generation number plus a shared null marker, closes the ABA race
+    // where an old completion deleted a newer reservation for this same key.
+    if (this.liveChunks.get(srcStartFrame) !== slot) return;
+
+    const ctx = this.graph.ctx;
+
+    // The Range read is async — by resolve time the planned `when` may
+    // already be in the past. Starting the buffer at a past time would
+    // play it shifted (overlapping the next chunk's start), and Chromium
+    // CLAMPS a past-start setValueCurveAtTime to currentTime, sliding the
+    // curve into the next one ("overlaps" NotSupportedError). Recompute
+    // lateness now and skip INTO the buffer instead, keeping both the
+    // audio and its curves ending exactly on the chunk's grid end. One
+    // render quantum (128 frames) of cushion absorbs the µs between this
+    // computation and the start() call.
+    let startAt = when;
+    let offsetFrames = bufferOffsetFrames;
+    const ctxNow = ctx.currentTime;
+    if (ctxNow > when) {
+      const lateFrames = Math.ceil((ctxNow - when) * SAMPLE_RATE) + 128;
+      offsetFrames += lateFrames;
+      startAt = when + lateFrames / SAMPLE_RATE;
+      if (offsetFrames >= frames) {
+        // Entirely in the past by now — drop; the next tick replans.
+        if (this.liveChunks.get(srcStartFrame) === slot) {
+          this.liveChunks.delete(srcStartFrame);
+        }
+        return;
+      }
+    }
+
+    const node = ctx.createBufferSource();
+    node.buffer = buffer;
+    node.connect(this.gainNode);
+    node.onended = (): void => {
+      if (this.liveChunks.get(srcStartFrame) === slot && slot.node === node) {
+        this.liveChunks.delete(srcStartFrame);
+      }
+    };
+    slot.node = node;
+    node.start(startAt, offsetFrames / SAMPLE_RATE);
+
+    this.applyCurves(srcStartFrame, frames, startAt, offsetFrames);
+  }
+
+  /// Schedule the envelope curve windows covering this chunk's playback
+  /// interval. Chunks are contiguous and non-overlapping on both axes, so
+  /// per-chunk curves never violate setValueCurveAtTime's no-overlap rule.
+  private applyCurves(
+    srcStartFrame: number,
+    frames: number,
+    when: number,
+    bufferOffsetFrames: number,
+  ): void {
+    const playedFrames = frames - bufferOffsetFrames;
+    if (playedFrames <= 0) return;
+    const localStartUs = framesToUs(
+      srcStartFrame + bufferOffsetFrames - this.srcInFrame,
+    );
+    const localEndUs = framesToUs(srcStartFrame + frames - this.srcInFrame);
+    const durationS = playedFrames / SAMPLE_RATE;
+
+    const cut = (env: Envelope): Float32Array | null => {
+      if (env.values.length === 1) return null;
+      const n = Math.max(
+        2,
+        Math.ceil((localEndUs - localStartUs) / 10_000) + 1,
+      );
+      const curve = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const t = localStartUs + ((localEndUs - localStartUs) * i) / (n - 1);
+        curve[i] = evalEnvelope(env, t);
+      }
+      return curve;
+    };
+
+    // One sample shorter than the chunk: consecutive curves whose end and
+    // start times are bit-identical trip Chromium's setValueCurveAtTime
+    // overlap check. The param holds the curve's last value through the
+    // 1-sample gap, and the next curve starts at that same value, so the
+    // hold is inaudible.
+    const curveDurationS = Math.max(durationS - 1 / SAMPLE_RATE, 1 / SAMPLE_RATE);
+    try {
+      const gainCurve = cut(this.gainEnv);
+      if (gainCurve) {
+        this.gainNode.gain.setValueCurveAtTime(gainCurve, when, curveDurationS);
+      }
+      if (this.panGraph && this.panEnv.values.length > 1) {
+        const curves = panCurves(
+          this.panEnv,
+          this.panChannels,
+          localStartUs,
+          localEndUs,
+        );
+        curves.forEach((curve, i) => {
+          if (curve) {
+            this.panGraph!.gains[i]!.gain.setValueCurveAtTime(curve, when, curveDurationS);
+          }
+        });
+      }
+    } catch (e) {
+      // Overlap rejection here means a scheduling bug upstream — surface
+      // it loudly in dev consoles rather than failing silent.
+      const detail = audioErrorDetail(e);
+      console.warn(
+        `[weftcut/audio] envelope curve scheduling failed for layer ${this.layerId}: ${detail}`,
+      );
+    }
+  }
+
+  private rampTrimIn(ctxNow: number): void {
+    const g = this.trim.gain;
+    g.cancelScheduledValues(ctxNow);
+    g.setValueAtTime(0, ctxNow);
+    g.linearRampToValueAtTime(1, ctxNow + MICRO_FADE_S);
+  }
+
+  /// Stop everything scheduled. `microFade` masks the discontinuity with a
+  /// 5 ms trim ramp (re-anchor / live edit); pause paths skip it.
+  private teardown(microFade: boolean): void {
+    for (const [key, entry] of this.prepared) {
+      if (!entry.buffer) { this.prepared.delete(key); entry.controller.abort(); }
+    }
+    const ctxNow = this.graph.ctx.currentTime;
+    const stopAt = microFade ? ctxNow + MICRO_FADE_S : ctxNow;
+    if (microFade) {
+      const g = this.trim.gain;
+      g.cancelScheduledValues(ctxNow);
+      g.setValueAtTime(g.value, ctxNow);
+      g.linearRampToValueAtTime(0, stopAt);
+    }
+    for (const slot of this.liveChunks.values()) {
+      const node = slot.node;
+      if (!node) continue;
+      try {
+        node.onended = null;
+        node.stop(stopAt);
+        node.disconnect();
+      } catch {
+        // already stopped — fine
+      }
+    }
+    this.liveChunks.clear();
+    try {
+      this.gainNode.gain.cancelScheduledValues(0);
+      this.panGraph?.gains.forEach((g) => g.gain.cancelScheduledValues(0));
+    } catch {
+      // ignored
+    }
+    // Restore constant values (curve re-application happens per chunk).
+    if (this.gainEnv.values.length === 1) {
+      this.gainNode.gain.value = this.gainEnv.values[0]!;
+    }
+    if (this.panEnv.values.length === 1 && this.panGraph) {
+      const g = constantPanGains(this.panEnv, this.panChannels);
+      this.panGraph.gains.forEach((node, i) => (node.gain.value = g[i] ?? 0));
+    }
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.stop();
+    this.sourceAbort.abort();
+    this.prepared.clear();
+    try {
+      this.gainNode.disconnect();
+      this.panGraph?.input.disconnect();
+      this.panGraph?.gains.forEach((g) => g.disconnect());
+      this.panGraph?.output.disconnect();
+      this.trim.disconnect();
+    } catch {
+      // ignored
+    }
+    this.source = null;
+    this.releaseResources?.(); this.releaseResources = null;
+  }
+}

@@ -1,0 +1,1366 @@
+import { startPreviewAudioSession } from "./render/audio/previewAudioSession";
+import { installCompanionBridge } from "./companion/companionBridge";
+import { installPlayheadReport } from "./state/playheadReport";
+import { transportPlay, transportPause, usePlaybackStore } from "./state/playbackStore";
+import { save as saveDialog } from "@/bridge/dialog";
+import { listen } from "@/bridge/events";
+import { invoke } from "@/bridge/ipc";
+import {
+  sharedBakedKeyIndex,
+  sharedMotifFrameCache,
+  sharedMotifOverlayCache,
+} from "./render/motifs/motifFrameSource";
+import { motifColdStart } from "./app/motifColdStart";
+import { MODEL_EVENTS } from "../shared/inference-models";
+import { onDescribeViewChanged } from "./search/searchIndexStore";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import {
+  deleteLayers,
+  moveLayersToNewTrack,
+  pasteLayer,
+  projectRedo,
+  projectClose,
+  projectOpen,
+  projectSave,
+  projectSaveAs,
+  projectUndo,
+  rippleDeleteGap,
+  rippleDeleteLayers,
+} from "./ipc";
+import {
+  clipboardSlot,
+  copyLayer,
+  copySelectedKeyframes,
+  pasteKeyframesAtPlayhead,
+} from "./keyframe/clipboard";
+import { hasKeyframeSelection } from "./keyframe/selectionStore";
+import { deleteSelectedKeyframes } from "./timeline/keyframeBatch";
+import {
+  adjacentFrameBoundaryUs,
+  displayedFrameStartUs,
+  inclusiveOutBoundaryUs,
+} from "./frames";
+import {
+  clearRange as clearMarkedRange,
+  setRangeIn,
+  setRangeOut,
+} from "./state/rangeStore";
+import {
+  focusedPlayheadUs,
+  focusedRootUs,
+} from "./state/playheadProjection";
+import {
+  playheadTimeUs,
+  setPlayheadTimeUs,
+} from "./state/playheadStore";
+import {
+  clearLayerSelection,
+  currentSelection,
+  gapOf,
+  layerIdsOf,
+  primaryLayerIdOf,
+  setLayerSelection,
+  usePrimaryLayerId,
+  type GapSelection,
+} from "./state/selectionStore";
+import {
+  registerOpenMediaPoolPanel,
+  registerRevealCollapse,
+  registerRevealTrack,
+  seekToClamped,
+  seekToNextEdit,
+  seekToNextMarker,
+  seekToPrevEdit,
+  seekToPrevMarker,
+} from "./state/navigation";
+import { AgentMode } from "./agent/AgentMode";
+import { playChangedRange, walkChangedRange } from "./agent/rangeWalk";
+import {
+  SettingsPanel,
+  type SettingsCategory,
+} from "./settings/SettingsPanel";
+import { MotifPicker } from "./motifs/MotifPicker";
+import { takesTenBitLane } from "./render/exportDecodeRouting";
+import { noticeLogMessage, useAppNotices, type NoticeSettingsPage } from "./notifications/appNotices";
+import type { SaveFailureActions } from "./components/SaveFailedPill";
+import { useDerivativeJobEvents } from "./state/derivativeJobsStore";
+import { open as shellOpen } from "@/bridge/shell";
+import { PickOverlayHost } from "./colorpick/PickOverlayHost";
+import { ExportSettingsDialog } from "./panels/ExportSettingsDialog";
+import { type PreviewSurfaceHandle } from "./preview/PreviewSurface";
+import { SearchPalette } from "./search/SearchPalette";
+
+import { AppMenuBar } from "./app/AppMenuBar";
+import { useAppWiring, useWindowTitle } from "./app/useAppWiring";
+import { useExportFlow } from "./app/useExportFlow";
+import { useImportReadiness } from "./app/useImportReadiness";
+import { ExportPanel } from "./panels/ExportPanel";
+import { exportTerminal } from "../shared/exportJob";
+import { ShortcutBindingsProvider } from "./shortcuts/bindings-context";
+import {
+  useShortcuts,
+  type HandlerMap,
+  type OverrideMap,
+} from "./shortcuts/useShortcuts";
+import { useNativeMenu } from "./menu/nativeMenu";
+import { StatusBar } from "./logs/StatusBar";
+import { LogConsole, type LogConsoleHandle } from "./logs/LogConsole";
+import { useLogStore } from "./logs/store";
+import { notifyCommandRegistry, useCommandProvider } from "./commands/registry";
+import { buildAppCommands } from "./commands/appCommands";
+import { exportReviewCommands, exportReviewShortcuts } from "./commands/exportReview";
+import { splitAtPlayhead } from "./commands/splitAtPlayhead";
+import { applyTransitionAtPlayhead } from "./timeline/applyTransition";
+import {
+  markersVisible,
+  setAppSettings,
+  toggleDisplayMode,
+  toggleFollowPlayhead,
+  toggleMarkersVisible,
+} from "./settings/appSettingsStore";
+import { toggleLinkOverride } from "./state/linkOverrideStore";
+import {
+  addToGroupSelected,
+  groupSelected,
+  moveSelectionToRoot,
+  openSelectedGroup,
+  ungroupSelected,
+} from "./commands/groupCommands";
+import { describeSelected } from "./commands/describeCommands";
+import { ComputeJobNotice } from "./compute/ComputeJobNotice";
+import { useSettingsRequest } from "./settings/settingsRequest";
+import { openPausesForSelection } from "./commands/pauseCommands";
+import {
+  openVoiceoverPrompt,
+  transcribeSelected,
+} from "./commands/speechCommands";
+import { VoiceoverDialog } from "./speech/VoiceoverDialog";
+import { TranscriptionInputDialog } from "./speech/TranscriptionInputDialog";
+import { setTool } from "./state/toolStore";
+import { resetPreviewView } from "./state/previewViewStore";
+import { logEmit } from "./ipc";
+import { logMutationFailure, tryMutate } from "./errors/tryMutate";
+import {
+  compositionOrRoot,
+  currentOpenComposition,
+  rootCompositionOf,
+  useProjectSummary,
+  settleProjectStore,
+} from "./state/projectStore";
+import { useFocusedCompositionId } from "./state/compositionAnchorStore";
+import {
+  addColorLayerIn,
+  addMarkerAtIn,
+  addTextLayerIn,
+} from "./ipc/compositionScoped";
+import {
+  markerAnchorFor,
+  markerStartingInFrame,
+} from "./timeline/markerAtFrame";
+import { MarkerRenameDialog } from "./timeline/MarkerRenameDialog";
+import { openMarkerRenamePrompt } from "./timeline/markerRenamePrompt";
+import {
+  DockWorkspace,
+  type DockPanelContracts,
+} from "./workspace/DockWorkspace";
+import {
+  EMPTY_DOCK_WORKSPACE_SNAPSHOT,
+  type DockWorkspaceController,
+  type DockWorkspaceSnapshot,
+} from "./workspace/dockWorkspaceAdapter";
+import { parsePanelId, type PanelId } from "./workspace/panelRegistry";
+import { useWorkspacePersistence } from "./workspace/useWorkspacePersistence";
+import {
+  WorkspaceNameDialog,
+  type WorkspaceNameMode,
+} from "./app/WorkspaceNameDialog";
+import type { ViewMenuWorkspaces } from "./app/ViewMenu";
+import { CheckpointPromptDialog } from "./history/CheckpointPromptDialog";
+import { openCheckpointPrompt } from "./history/checkpointPrompt";
+
+interface AppProps {
+  /// Hop the root router back to the StartupScreen — wired by `main.tsx`.
+  /// Called by File → Save and Close after a successful save flush.
+  onCloseProject: () => void;
+  /// Hop the root router back to the editor after a project open — wired by
+  /// `main.tsx`. Used by Dev menu › Motif cold start, whose reopen outlives
+  /// this editor.
+  onWorkspaceReady: () => void;
+}
+
+export function App({ onCloseProject, onWorkspaceReady }: AppProps) {
+  const { t } = useTranslation();
+  const summary = useProjectSummary();
+  // The timeline the panels, the shortcuts and the Insert menu act on. Export
+  // and Settings read the root below regardless (compositionAnchorStore.ts
+  // says why).
+  const focusedId = useFocusedCompositionId();
+  const comp = compositionOrRoot(summary, focusedId);
+  // Settings → Project edits the ROOT, whichever composition holds the focus.
+  // Canvas size and duration are the film's own: a Group's size is copied at
+  // pre-compose and its length follows its content, which is why the inspector
+  // prints both read-only (`properties/PropertyPanel.tsx`). Taking the focused
+  // composition here would silently retarget the whole category at a Group the
+  // moment its tab was active — an edit no other surface offers, under a
+  // heading that says "Project".
+  const rootComp = summary ? rootCompositionOf(summary) : null;
+  const [busy, setBusy] = useState(false);
+  // Write-only: error text is surfaced through the status bar / log (see the
+  // setError call sites), not rendered here, so we keep only the setter.
+  const [, setError] = useState<string | null>(null);
+  const primaryLayerId = usePrimaryLayerId();
+  // R.7 inline-reveal: track id the user surfaced from the Playhead Panel.
+  // Single-track exclusive; persists across scrubs. Cleared by Esc, by
+  // selecting a layer on a different track, or by clicking another row
+  // (which replaces the value).
+  const [revealedTrackId, setRevealedTrackId] = useState<string | null>(null);
+  // Playhead time deliberately does NOT live in React state here: the engine
+  // emits once per composition frame during playback, and routing that through
+  // App-root state re-rendered the whole tree per frame (dev-mode memory
+  // ratchet + prod CPU). It lives in playheadStore; consumers pick their tier
+  // (transient / throttled / imperative) — see playheadStore.ts.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listen(MODEL_EVENTS.activated, onDescribeViewChanged).then(unlisten => {
+      if (disposed) unlisten(); else stop = unlisten;
+    });
+    return () => { disposed = true; stop?.(); };
+  }, []);
+  // The full tab union, not just the notices' subset: the describe
+  // dialog's remedy button deep-links to Video understanding, which no
+  // capability notice names.
+  const [settingsCategory, setSettingsCategory] =
+    useState<SettingsCategory>("general");
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [logConsoleOpen, setLogConsoleOpen] = useState(false);
+  const logConsoleRef = useRef<LogConsoleHandle | null>(null);
+  const [motifPickerOpen, setMotifPickerOpen] = useState(false);
+  const systemNotices = useAppNotices();
+  // Here rather than in the status bar, which agent mode unmounts.
+  useDerivativeJobEvents();
+  const logReady = useLogStore((state) => state.ready);
+  const loggedSystemNoticeCodes = useRef(new Set<string>());
+  // The preview ref owns visual/export operations. Playback belongs to the
+  // editor session, independently of which preview panel is mounted.
+  const previewRef = useRef<PreviewSurfaceHandle | null>(null);
+  const readDecodeDevices = useCallback(() => previewRef.current?.currentDecodeDevices() ?? [], []);
+  const [workspaceController, setWorkspaceController] =
+    useState<DockWorkspaceController | null>(null);
+  const [workspaceSnapshot, setWorkspaceSnapshot] =
+    useState<DockWorkspaceSnapshot>(EMPTY_DOCK_WORKSPACE_SNAPSHOT);
+
+  const handleWorkspaceControllerReady = useCallback(
+    (controller: DockWorkspaceController | null) => {
+      setWorkspaceController(controller);
+    },
+    [],
+  );
+
+  // Restore the persisted Dock arrangement on startup, persist every layout
+  // change back to the app-level Workspace document (debounced in main), and
+  // expose the named-Workspace operations the View menu drives.
+  const workspaceProfiles = useWorkspacePersistence(workspaceController);
+
+  // Save As / Rename raise a name prompt; App owns its open state so the menu
+  // (which closes on activation) doesn't have to host a dialog.
+  const [workspaceNameDialog, setWorkspaceNameDialog] = useState<
+    { mode: WorkspaceNameMode; id: string; initialName: string } | null
+  >(null);
+
+  const viewMenuWorkspaces = useMemo<ViewMenuWorkspaces | null>(() => {
+    if (!workspaceProfiles) return null;
+    return {
+      profiles: workspaceProfiles.profiles,
+      activeId: workspaceProfiles.activeId,
+      activeIsBuiltin: workspaceProfiles.activeIsBuiltin,
+      onSwitch: workspaceProfiles.switchTo,
+      onSave: workspaceProfiles.save,
+      onReset: workspaceProfiles.reset,
+      onSaveAs: () =>
+        setWorkspaceNameDialog({ mode: "save-as", id: "", initialName: "" }),
+      onRename: (id) =>
+        setWorkspaceNameDialog({
+          mode: "rename",
+          id,
+          initialName:
+            workspaceProfiles.profiles.find((p) => p.id === id)?.name ?? "",
+        }),
+      onDelete: workspaceProfiles.remove,
+    };
+  }, [workspaceProfiles]);
+
+  useEffect(() => {
+    if (!workspaceController) {
+      setWorkspaceSnapshot(EMPTY_DOCK_WORKSPACE_SNAPSHOT);
+      return;
+    }
+    const update = () => setWorkspaceSnapshot(workspaceController.getSnapshot());
+    update();
+    return workspaceController.subscribe(update);
+  }, [workspaceController]);
+
+  useEffect(() => {
+    if (!workspaceController) return;
+    return registerOpenMediaPoolPanel(() => {
+      workspaceController.openPanel("media");
+    });
+  }, [workspaceController]);
+
+  // Fresh project session → playhead 0. The store is module-global and would
+  // otherwise carry the previous project's position across a close/open.
+  useEffect(() => {
+    setPlayheadTimeUs(0);
+    clearLayerSelection();
+  }, []);
+
+  useEffect(() => {
+    return startPreviewAudioSession();
+  }, []);
+
+  // Every UI seek, ROOT time: `seekToClamped` owns the clamp ("Boundary
+  // semantics" in docs/data-model.md), the optimistic store write and the
+  // projection down to the preview's clock.
+  const seekTo = seekToClamped;
+
+  // The companion page's player controls and transport, while a page is open
+  // (`companion/companionBridge.ts`).
+  useEffect(() => installCompanionBridge(seekTo), [seekTo]);
+
+  // An agent's `project://playhead` read, answered on request only
+  // (`state/playheadReport.ts`).
+  useEffect(() => installPlayheadReport(), []);
+
+  // R.7: click on a Playhead Panel row → reveal that hidden track inline at its
+  // natural accretion slot AND select the clicked layer. Single-track
+  // exclusive (later row click replaces).
+  const selectLayerWithLink = useCallback(
+    (layerId: string | null) => {
+      if (layerId === null) {
+        clearLayerSelection();
+        return;
+      }
+      const link = comp?.links.find((candidate) =>
+        candidate.layer_ids.includes(layerId),
+      );
+      setLayerSelection(layerId, link?.layer_ids ?? [layerId]);
+    },
+    [comp?.links],
+  );
+
+  /// `layerId === null`: reveal + scroll the track and select NOTHING —
+  /// History rows for `add_track` / `add_caption_track` carry a Track ref and
+  /// nothing else, and there is no track-selection concept to satisfy. Skipping
+  /// `selectLayerWithLink` (rather than passing it null, which CLEARS the
+  /// selection) leaves the user's current selection undisturbed.
+  const revealTrack = useCallback(
+    (trackId: string, layerId: string | null) => {
+      setRevealedTrackId(trackId);
+      if (layerId !== null) selectLayerWithLink(layerId);
+    },
+    [selectLayerWithLink],
+  );
+
+  // Palette navigation reaches R.7 reveal-track through the module-level
+  // registry (state/navigation.ts) — App owns the revealedTrackId state.
+  useEffect(() => registerRevealTrack(revealTrack), [revealTrack]);
+  // A switch of composition drops the reveal: the revealed lane belongs to the
+  // timeline being left.
+  useEffect(() => registerRevealCollapse(() => setRevealedTrackId(null)), []);
+
+  // A layer the Motif picker places ("New Motif" or "Add to timeline",
+  // MotifPicker.onPlaced) should land the user on its property panel with the
+  // layer visible. The owner track is only knowable from the refreshed summary
+  // (an auto-created layer sits on a role-null Overlay track the A/B Roll
+  // filter hides), so the select + reveal is deferred here until the summary
+  // contains the layer.
+  const [pendingRevealLayerId, setPendingRevealLayerId] = useState<string | null>(null);
+  useEffect(() => {
+    if (pendingRevealLayerId === null) return;
+    const owner = (comp?.tracks ?? []).find((t) =>
+      t.layers.some((l) => l.id === pendingRevealLayerId),
+    );
+    if (owner) {
+      revealTrack(owner.id, pendingRevealLayerId);
+      setPendingRevealLayerId(null);
+    }
+  }, [pendingRevealLayerId, comp, revealTrack]);
+
+  // R.7: Esc collapses the inline reveal.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setRevealedTrackId((cur) => (cur === null ? cur : null));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // R.7: when the user clicks a layer on a DIFFERENT track from the
+  // revealed one, collapse the reveal. Plain deselect (primaryLayerId
+  // becomes null) does NOT collapse — the user might still want to peek
+  // back at that hidden layer's track. Only an active selection on a
+  // foreign track clears the reveal.
+  //
+  // A CHANGE of primary is the trigger, not its standing value: a reveal that
+  // selects nothing (`revealTrackWithoutSelection` — the timeline's
+  // hidden-member badge, a history row for an added track) must survive a
+  // selection that already sat on another lane, or it collapses in the same
+  // tick it opened.
+  const lastPrimaryForRevealRef = useRef<string | null>(primaryLayerId);
+  useEffect(() => {
+    const primaryChanged = lastPrimaryForRevealRef.current !== primaryLayerId;
+    lastPrimaryForRevealRef.current = primaryLayerId;
+    if (!primaryChanged) return;
+    if (revealedTrackId === null || primaryLayerId === null) return;
+    const owner = (comp?.tracks ?? []).find((t) =>
+      t.layers.some((l) => l.id === primaryLayerId),
+    );
+    if (owner && owner.id !== revealedTrackId) {
+      setRevealedTrackId(null);
+    }
+  }, [primaryLayerId, comp, revealedTrackId]);
+
+  const togglePlay = useCallback(() => {
+    if (usePlaybackStore.getState().requestedPlaying) transportPause();
+    else transportPlay();
+  }, []);
+
+  const openSettings = useCallback((category: SettingsCategory = "general") => {
+    setSettingsCategory(category);
+    setSettingsOpen(true);
+  }, []);
+  // Surfaces with no `openSettings` dep (a panel's refusal, a notice card) ask
+  // through the request store (`settings/settingsRequest.ts`).
+  useEffect(
+    () =>
+      useSettingsRequest.subscribe((s, prev) => {
+        if (s.request !== null && s.request !== prev.request) openSettings(s.request.category);
+      }),
+    [openSettings],
+  );
+
+  // Capability notices are current state first, but they also belong in the
+  // workspace's System log as an auditable session event. The backend log bus
+  // does not exist before a workspace opens, so mirror them once it is ready.
+  useEffect(() => {
+    if (!logReady) return;
+    for (const notice of systemNotices) {
+      if (loggedSystemNoticeCodes.current.has(notice.code)) continue;
+      loggedSystemNoticeCodes.current.add(notice.code);
+      void logEmit({
+        level: notice.level,
+        category: { kind: "System" },
+        source: { kind: "System" },
+        message: noticeLogMessage(notice.code),
+        details: { notice_code: notice.code },
+      }).catch(() => {
+        loggedSystemNoticeCodes.current.delete(notice.code);
+      });
+    }
+  }, [logReady, systemNotices]);
+
+  // Legacy panel callbacks may still ask to observe their completed mutation.
+  // Commands already await publication; settling is idempotent and never forces
+  // another snapshot read after every successful edit.
+  const settle = useCallback(async () => {
+    try { await settleProjectStore(); }
+    catch (error) { setError(t("errors.refresh_failed", { detail: String(error) })); }
+  }, [t]);
+
+  const {
+    pong,
+    keybindings,
+    setKeybindings,
+    agentMode,
+    exitAgentMode,
+    enterAgentMode,
+  } = useAppWiring();
+  useWindowTitle(summary?.name);
+
+  const run = useCallback(
+    async (action: () => Promise<unknown>) => {
+      if (busy) return;
+      setBusy(true);
+      setError(null);
+      try {
+        await action();
+        await settle();
+      } catch (e) {
+        const msg = String(e);
+        setError(msg);
+        // The user-facing error path is the status bar, not inline chrome. Push
+        // every caught UI error into the log so the log line's unseen-error
+        // count and sticky latest entry surface it.
+        void logEmit({
+          level: "error",
+          category: { kind: "System" },
+          source: { kind: "User" },
+          message: msg,
+        });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, settle],
+  );
+
+  // Import queue, per-media proxy/decodability readiness, and the pool-wide
+  // optimization classification live in useImportReadiness; it takes `run`
+  // (defined above) so its import callbacks route through the busy guard +
+  // publication wait.
+  const {
+    importsById,
+    readinessById,
+    readinessOf,
+    previewDecodableOf,
+    proxyStateRef,
+    decodeProbeMemo,
+    optimizeById,
+    importMediaFiles,
+  } = useImportReadiness({ summary, run, previewRef });
+  // Export lifecycle (state, taskbar/notification mirrors, the
+  // pipeline itself) lives in useExportFlow; the refs it takes as deps come
+  // from useImportReadiness (other consumers below read them too).
+  const {
+    exportState,
+    setExportState,
+    exportDialogOpen,
+    setExportDialogOpen,
+    runExportWithSettings,
+    openRenderPlayPopup,
+    revealExportedFile,
+  } = useExportFlow({ proxyStateRef, decodeProbeMemo });
+  const exportInProgress = !!exportState && (
+    exportState.job?.phase === "cancelling" ||
+    exportState.kind !== "complete" && exportState.kind !== "error"
+  );
+  const exportEditLocked = exportState?.job
+    ? !exportTerminal(exportState.job.state)
+    : exportInProgress || exportState?.kind === "error" && !!exportState.onRetry;
+  const backgroundExportActive = exportInProgress && exportState?.background === true;
+  useEffect(notifyCommandRegistry, [exportEditLocked]);
+
+  // ---- Menu-bar action handlers ----
+
+  const saveProjectNow = useCallback(async () => {
+    await run(() => projectSave());
+  }, [run]);
+
+  const saveAndClose = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // Saves, and tells the backend nothing is open any more.
+      await projectClose();
+      onCloseProject();
+    } catch (e) {
+      const msg = String(e);
+      setError(msg);
+      void logEmit({
+        level: "error",
+        category: { kind: "System" },
+        source: { kind: "User" },
+        message: `Save and close failed: ${msg}`,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, onCloseProject]);
+
+  const runMotifColdStart = useCallback(() => {
+    if (busy) return;
+    void motifColdStart({
+      openFolder: async () =>
+        (await invoke<{ dir: string } | null>("project_open_state"))?.dir ?? null,
+      close: async () => {
+        await projectClose();
+        onCloseProject();
+      },
+      dropCache: (dir) => window.api.dev.motifColdStart(dir),
+      clearFrames: () => {
+        sharedMotifFrameCache.clearAll();
+        sharedMotifOverlayCache.clearAll();
+        sharedBakedKeyIndex.clear();
+      },
+      reopen: async (dir) => {
+        await projectOpen(dir);
+        onWorkspaceReady();
+      },
+    }).catch((error) => {
+      console.error("[weftcut/motif-cold-start] failed:", error);
+    });
+  }, [busy, onCloseProject, onWorkspaceReady]);
+
+  const saveProject = useCallback(async () => {
+    const path = await saveDialog({
+      title: t("dialogs.save_title"),
+      defaultPath: t("dialogs.save_default_name"),
+      filters: [
+        { name: t("dialogs.project_filter"), extensions: ["vproj"] },
+      ],
+    });
+    if (typeof path === "string") {
+      await run(() => projectSaveAs(path));
+    }
+  }, [run, t]);
+
+  // The Save failed pill's actions. Retry is the explicit save itself, not `run`: the
+  // popover shows its outcome in place.
+  const saveFailureActions = useMemo<SaveFailureActions>(() => ({
+    retry: projectSave,
+    saveAs: () => void saveProject(),
+    openFolder: shellOpen,
+  }), [saveProject]);
+
+  // E2E-only: expose `window.__weftcutTest.exportClip`, wired to the real
+  // export path. Stripped from prod (static `VITE_WEFTCUT_E2E` check).
+  useEffect(() => {
+    if (import.meta.env.VITE_WEFTCUT_E2E !== "1") return;
+    void import("./testhook/e2eHook").then(({ installExportHook }) =>
+      installExportHook(runExportWithSettings, setPendingRevealLayerId),
+    );
+  }, [runExportWithSettings]);
+
+  // E2E-only: expose the live Dock Workspace snapshot (open Panels, focused
+  // Panel, maximized Panel, empty) so the cross-Panel acceptance specs can
+  // assert focus/maximize/open-close/empty without reaching into Dockview's
+  // private DOM. Reads the controller's live getSnapshot at call time; the
+  // effect re-runs (reinstalling, or nulling out) as the controller mounts and
+  // unmounts. Stripped from prod (static `VITE_WEFTCUT_E2E` check).
+  useEffect(() => {
+    if (import.meta.env.VITE_WEFTCUT_E2E !== "1") return;
+    void import("./testhook/e2eHook").then(({ installDockWorkspaceProbe }) =>
+      installDockWorkspaceProbe(() => {
+        const snapshot = workspaceController?.getSnapshot();
+        if (!snapshot) return null;
+        // Reported by kind, not by Dock address: a spec names the Panel it
+        // means, and a timeline Panel's address carries a composition id no
+        // spec can know in advance.
+        const kindOf = (id: PanelId | null) =>
+          id === null ? null : parsePanelId(id).kind;
+        return {
+          openPanels: [...snapshot.openKinds].sort(),
+          activePanel: kindOf(snapshot.activePanel),
+          maximizedPanel: kindOf(snapshot.maximizedPanel),
+          empty: snapshot.empty,
+        };
+      }),
+    );
+  }, [workspaceController]);
+
+  // Delete the WHOLE selection — one op, one undo entry, however many clips and
+  // lanes it spans. Never the primary alone: every gesture that builds a
+  // multi-selection (a marquee sweep, Shift+click, Select All) would then leave
+  // all but one of its clips alive.
+  //
+  // KEYFRAMES FIRST, and the whole dispatch lives here rather than in a raw
+  // capture-phase listener that preempted this one: the Keyboard panel lists
+  // one action per key, and a Delete row that lied about what the key does was
+  // the reason the precedence needed hiding in the first place. The keyframe
+  // selection is read across EVERY composition, since layer ids are unique
+  // project-wide and the keys need not sit in the timeline holding focus.
+  //
+  // The selection is read from the store, not from a captured value, for the
+  // reason `handleMoveToNewTrack` below states: App does not re-render on a
+  // multi-select change, so a captured set would be whichever one existed when
+  // this callback was last built. No-ops on an empty selection (the
+  // `useShortcuts` dispatcher fires the handler regardless).
+  //
+  // The layer op takes the selection VERBATIM — delete never fans out over a
+  // link (docs/features.md § Links), and it does not need to: selection is what
+  // carries the link, so a swept or clicked member already brought its
+  // siblings along.
+  //
+  // A SELECTED GAP CLOSES under this key (docs/features.md#ripple-delete).
+  // There is nothing to lift — a gap is already empty — so "delete the gap" can
+  // only mean "close it", and Premiere and Resolve both give the bare key that
+  // meaning. It is the one selection kind for which Delete and Ripple delete
+  // are the same edit.
+  const closeSelectedGap = useCallback(
+    async (gap: GapSelection) => {
+      try {
+        await rippleDeleteGap({ trackId: gap.trackId, startUs: gap.s, endUs: gap.e });
+        clearLayerSelection();
+        await settle();
+      } catch (err) {
+        logMutationFailure(err, "Close gap");
+      }
+    },
+    [settle],
+  );
+
+  const deleteSelected = useCallback(async () => {
+    if (hasKeyframeSelection()) {
+      if (await deleteSelectedKeyframes()) await settle();
+      return;
+    }
+    const selection = currentSelection();
+    const gap = gapOf(selection);
+    if (gap !== null) {
+      await closeSelectedGap(gap);
+      return;
+    }
+    const layerIds = [...layerIdsOf(selection)];
+    if (layerIds.length === 0) return;
+    try {
+      await deleteLayers(layerIds);
+      clearLayerSelection();
+      await settle();
+    } catch (err) {
+      logMutationFailure(err, "Delete layers");
+    }
+  }, [closeSelectedGap, settle]);
+
+  // The same delete, plus the closing of what it vacated: everything after the
+  // freed span, on every track of that composition, moves left
+  // (docs/features.md#ripple-delete).
+  //
+  // The precedence is `deleteSelected`'s, line for line, and that is the point
+  // of the key rather than an accident of sharing a handler shape: a keyframe
+  // selection has no ripple meaning, and a "stronger delete" that silently does
+  // nothing is the confusing outcome. So it DEGRADES — keys go, and the span
+  // stays. The transition chip's own degrade happens one layer up, in
+  // Timeline's capture-phase listener, which claims both spellings of the key.
+  //
+  // No pre-flight check here even though `timeline/rippleEligibility.ts` can
+  // predict the refusal: the mirror can be two round trips behind, so the
+  // prediction greys the surfaces and the ACTOR is the authority. A refusal it
+  // did not see coming lands on the status bar with the same curated line.
+  const rippleDeleteSelected = useCallback(async () => {
+    if (hasKeyframeSelection()) {
+      if (await deleteSelectedKeyframes()) await settle();
+      return;
+    }
+    const selection = currentSelection();
+    const gap = gapOf(selection);
+    if (gap !== null) {
+      await closeSelectedGap(gap);
+      return;
+    }
+    const layerIds = [...layerIdsOf(selection)];
+    if (layerIds.length === 0) return;
+    try {
+      await rippleDeleteLayers(layerIds);
+      clearLayerSelection();
+      await settle();
+    } catch (err) {
+      logMutationFailure(err, "Ripple delete");
+    }
+  }, [closeSelectedGap, settle]);
+
+  // Copy and paste share ONE slot, and it holds whichever kind was copied last
+  // (`keyframe/clipboard.ts`) — so the same pair of keys never needs the user to
+  // know which of two clipboards they are addressing.
+  const copySelected = useCallback(() => {
+    if (copySelectedKeyframes()) return;
+    if (primaryLayerId) copyLayer(primaryLayerId);
+  }, [primaryLayerId]);
+
+  const pasteAtPlayhead = useCallback(async () => {
+    const slot = clipboardSlot();
+    if (slot === null) return;
+    if (slot.kind === "keyframes") {
+      if (await pasteKeyframesAtPlayhead(slot.groups)) await settle();
+      return;
+    }
+    try {
+      // Projected: the paste lands in the timeline holding the keyboard, on
+      // that timeline's own clock.
+      const pastedLayerId = await pasteLayer(slot.layerId, focusedPlayheadUs());
+      setPendingRevealLayerId(pastedLayerId);
+      await settle();
+    } catch (err) {
+      // Paste at the playhead is the one keyboard path that can genuinely
+      // hit LayerOverlap — the curated line names both clips.
+      logMutationFailure(err, "Paste layer");
+    }
+  }, [settle]);
+
+  const toggleLogConsole = useCallback(() => {
+    setLogConsoleOpen((open) => !open);
+  }, []);
+
+  const focusLogSearch = useCallback(() => {
+    setLogConsoleOpen(true);
+    // Defer focus to after the console mounts.
+    setTimeout(() => {
+      logConsoleRef.current?.focusSearch();
+    }, 0);
+  }, []);
+
+  const openSystemSettings = useCallback(
+    (category: NoticeSettingsPage) => {
+      setLogConsoleOpen(false);
+      openSettings(category);
+    },
+    [openSettings],
+  );
+
+  const shortcutHandlers: HandlerMap = {
+    save: saveProjectNow,
+    saveAs: saveProject,
+    closeProject: saveAndClose,
+    undo: () => run(projectUndo),
+    redo: () => run(projectRedo),
+    togglePlay,
+    deleteSelected,
+    rippleDeleteSelected,
+    copySelected,
+    pasteAtPlayhead,
+    // Self-contained (it reads the project, playhead and selection stores and
+    // commits through IPC), so App only lends it a HandlerMap slot — the
+    // command bridge awaits the published state before resolving.
+    splitAtPlayhead,
+    importMedia: importMediaFiles,
+    export: () => setExportDialogOpen(true),
+    // One key per tool, all idempotent (`toolStore.ts`). `Esc` → Selection is
+    // bound where each pointer tool's state lives: inside Timeline for the
+    // Blade, inside the preview's `TextToolOverlay` for the Text tool.
+    selectTool: () => setTool("select"),
+    toggleBladeMode: () => setTool("blade"),
+    selectTextTool: () => setTool("text"),
+    selectHandTool: () => setTool("hand"),
+    previewZoomFit: resetPreviewView,
+    toggleLog: toggleLogConsole,
+    focusLogSearch,
+    // R.8: T flips the A/B Roll / All Tracks display_mode at the app level.
+    // Mutates the same app-pref store the inline pill writes to;
+    // every subscriber re-renders via `app_settings:changed`.
+    toggleDisplayMode: () => {
+      void toggleDisplayMode();
+    },
+    toggleFollowPlayhead: () => {
+      void toggleFollowPlayhead();
+    },
+    // Session switch, no IPC and no history row (`linkOverrideStore.ts`).
+    toggleLinkOverride,
+    // The Group commands. Self-contained like `splitAtPlayhead` above — each
+    // reads the selection and scope stores and commits through IPC — so App
+    // lends them a slot and nothing else, and being in App's HandlerMap is what
+    // puts them in the catalogue and the Edit menu (`commands/groupCommands.ts`).
+    groupSelected: () => void groupSelected(),
+    ungroupSelected: () => void ungroupSelected(),
+    openGroup: openSelectedGroup,
+    addToGroup: () => void addToGroupSelected(),
+    moveToComposition: () => void moveSelectionToRoot(),
+    // Transcribe RUNS rather than raising a dialog — the clip is the selection
+    // and the language is the engine's to detect (`commands/speechCommands.ts`).
+    // So, like Describe below, this is not a bare slot: App lends the two things
+    // only it can do, revealing the Panel the cues become visible in and opening
+    // the tab a missing engine or key is configured on.
+    autoCaptionSelected: () =>
+      void transcribeSelected({
+        revealCaptions: () => workspaceController?.openPanel("caption"),
+        openSettings: () => openSettings("speech"),
+      }),
+    // Not a bare slot: the section lives in the Attribute Panel, and only App
+    // can reveal a Panel. Revealing then expanding, in that order — a command
+    // that only opened the Panel would leave the user hunting for a collapsed
+    // header (`commands/pauseCommands.ts`).
+    detectPausesSelected: () => {
+      workspaceController?.openPanel("attribute");
+      openPausesForSelection();
+    },
+    // Describe RUNS rather than raising a dialog — its parameters are Settings
+    // now (`commands/describeCommands.ts`). So this is not a bare slot: App
+    // lends the Settings remedy. The timeline job band owns progress/Cancel.
+    describeSelected: () =>
+      void describeSelected({
+        openSettings: () => openSettings("vlm"),
+      }),
+    // Opening the Panel is the whole command: it resolves its own subject from
+    // the primary selection, and the right-click that raised the row has
+    // already made the clicked clip that selection. `openPanel` is idempotent,
+    // so invoking it on an already-open Panel costs a focus and nothing else.
+    reviewShots: () => workspaceController?.openPanel("shots"),
+    focusNextPanel: () => workspaceController?.focusNextPanel(),
+    focusPreviousPanel: () => workspaceController?.focusPreviousPanel(),
+    toggleMaximizePanel: () => workspaceController?.toggleMaximize(),
+    ...(workspaceSnapshot.maximizedPanel
+      ? {
+          restoreMaximizedPanel: () =>
+            workspaceController?.restoreMaximizedPanel(),
+        }
+      : {}),
+    // Playhead movement. `seekTo` clamps to [0, lastFrameAnchorUs] and the
+    // clock's setPosition snap (clock.ts) absorbs sub-frame drift, so the
+    // second-jumps below can hand it a raw delta.
+    //
+    // Frame stepping relies on neither: it moves the frame INDEX and asks the
+    // grid for that frame's time (`adjacentFrameBoundaryUs`, the derivation
+    // trim also uses), so N steps land on frame N exactly. Adding a rounded
+    // frame duration instead would land off-grid at fractional rates and only
+    // look right because the snap corrects it.
+    // Root time in, root time out: one lattice project-wide (ADR 0052 §5), so
+    // stepping a frame on the film's clock steps a frame on every composition's.
+    seekFrameBack: () => {
+      const fps = comp;
+      void seekTo(
+        adjacentFrameBoundaryUs(
+          playheadTimeUs(),
+          -1,
+          fps?.fps_num ?? 30,
+          fps?.fps_den ?? 1,
+        ),
+      );
+    },
+    seekFrameForward: () => {
+      const fps = comp;
+      void seekTo(
+        adjacentFrameBoundaryUs(
+          playheadTimeUs(),
+          1,
+          fps?.fps_num ?? 30,
+          fps?.fps_den ?? 1,
+        ),
+      );
+    },
+    // A second is a second on every clock — root time throughout.
+    seekSecondBack: () => {
+      void seekTo(playheadTimeUs() - 1_000_000);
+    },
+    seekSecondForward: () => {
+      void seekTo(playheadTimeUs() + 1_000_000);
+    },
+    // Edit-point navigation lives in state/navigation.ts (module-level
+    // verbs) so the palette and future agent surfaces share it.
+    seekPrevEdit: () => {
+      seekToPrevEdit();
+    },
+    seekNextEdit: () => {
+      seekToNextEdit();
+    },
+    // Marker navigation, same home and same reason: one verb, shared by the
+    // key, the palette and the ruler menu.
+    seekPrevMarker: () => {
+      seekToPrevMarker();
+    },
+    seekNextMarker: () => {
+      seekToNextMarker();
+    },
+    // The changed ranges (`agent/rangeWalk.ts`): the walk seeks and focuses,
+    // the play runs the range and stops after it.
+    seekPrevChangedRange: () => walkChangedRange(-1),
+    seekNextChangedRange: () => walkChangedRange(1),
+    playChangedRange,
+    // The ends of the timeline the keyboard is IN, projected up: standing in a
+    // Group, Home is that Group's first frame, not the film's.
+    seekStart: () => {
+      void seekTo(focusedRootUs(0));
+    },
+    seekEnd: () => {
+      void seekTo(focusedRootUs(comp?.duration_us ?? 0));
+    },
+    // In/out marking bridges the playhead's frame-ANCHOR convention to the
+    // range's start-inclusive / end-EXCLUSIVE one. Both translations go
+    // through `frames.ts` rather than a bare ±1 here: storing the raw anchor
+    // as an out point would drop the frame the user is looking at, and — since
+    // the playhead can't pass the last frame's start — make the final frame
+    // unreachable. See `docs/data-model.md` (boundary semantics).
+    // ROOT time, unprojected: one range, and export runs the root
+    // (`state/rangeStore.ts`). Each ruler projects it for drawing.
+    markIn: () => {
+      if (!comp) return;
+      setRangeIn(
+        displayedFrameStartUs(playheadTimeUs(), comp.fps_num, comp.fps_den),
+      );
+    },
+    markOut: () => {
+      if (!comp) return;
+      setRangeOut(
+        inclusiveOutBoundaryUs(playheadTimeUs(), comp.fps_num, comp.fps_den),
+      );
+    },
+    // The marker key. One frame, two meanings: a bare frame gets a marker, a
+    // marked frame gets its rename dialog (the FCP/Resolve double-tap, which
+    // also keeps M from stacking same-frame duplicates). Both branches turn a
+    // hidden marker layer back on first — pressing M is the strongest signal
+    // the user cares about markers right now, and an invisible add reads as a
+    // dead key (the documented Premiere confusion), an invisible rename as
+    // editing blind. The layer toggle exists to silence agent sweeps, not this.
+    //
+    // The add branch has one more decision: an empty selection marks the
+    // TIMELINE, a selection marks the CLIP. Selection and not "the clip under
+    // the playhead", because stacked tracks give that phrase no single answer —
+    // Resolve settles it with the selection, and so do we. A multi-clip
+    // selection still makes exactly ONE marker, on the primary: M means "mark
+    // this instant", and one instant is one mark. N marks on one frame stack
+    // illegibly, and `markerStartingInFrame`'s one-winner-per-frame rule would
+    // send the NEXT M into renaming the first while the rest stayed unreachable.
+    // A playhead outside the selected clip, or a clip whose kind carries no
+    // source window, falls back to a free marker: a tie to material the mark
+    // does not touch means nothing (`markerAnchorFor` decides all of it).
+    addMarkerAtPlayhead: () => {
+      // Live store read, not the render-captured summary — same reason the
+      // raise-selection handler reads its stores at press time, and the reason
+      // the marker lands on the timeline that holds the keyboard NOW rather
+      // than the one App last rendered against.
+      const open = currentOpenComposition();
+      if (!open) return;
+      // Projected: a marker belongs to one composition's timeline, so the
+      // frame it lands on is that timeline's.
+      const frameUs = displayedFrameStartUs(
+        focusedPlayheadUs(),
+        open.fps_num,
+        open.fps_den,
+      );
+      const existing = markerStartingInFrame(
+        open.markers,
+        frameUs,
+        open.fps_num,
+        open.fps_den,
+      );
+      if (!markersVisible()) void setAppSettings({ markers_visible: true });
+      if (existing) {
+        openMarkerRenamePrompt(existing.id);
+        return;
+      }
+      // Live read for the same reason `open` is one: what is selected NOW is
+      // what the key was pressed about, not what App last rendered against.
+      const primary = primaryLayerIdOf(currentSelection());
+      const anchor =
+        primary === null ? null : markerAnchorFor(open, primary, frameUs);
+      void tryMutate(
+        () => addMarkerAtIn(open.id, frameUs, anchor),
+        "add_marker",
+      );
+    },
+    clearRange: () => clearMarkedRange(),
+    openSearchPalette: () => {
+      // Agent mode doesn't mount the palette — setting the flag would sit
+      // latent and pop the palette open when the user returns to the editor.
+      if (!agentMode) setPaletteOpen(true);
+    },
+    openSettings: () => openSettings("general"),
+  };
+  // Memoised so `useShortcuts`'s `useMemo(entries)` doesn't churn each
+  // render. The backend's `Record<string, string[]>` is structurally
+  // compatible with `OverrideMap`; the cast is purely a type assertion.
+  const shortcutOverrides = useMemo<OverrideMap>(
+    () => keybindings as OverrideMap,
+    [keybindings],
+  );
+  // The handler map is rebuilt each render — fine, because `useShortcuts` reads
+  // through a ref so the window listener never reattaches just because handler
+  // identities changed. It only reattaches when the resolved binding entries
+  // change (i.e. when user overrides land).
+  const availableShortcuts = exportReviewShortcuts(shortcutHandlers, exportEditLocked);
+  useShortcuts({
+    handlers: availableShortcuts,
+    overrides: shortcutOverrides,
+  });
+  // Same handlers, projected into the macOS native menu (File, Settings) and
+  // run from it. Inert off macOS. See menu/nativeMenu.ts.
+  useNativeMenu({ handlers: availableShortcuts, overrides: shortcutOverrides });
+
+  // Shared by the Insert menu and the search palette — one implementation,
+  // two entry points. Both name the FOCUSED composition at event time: a menu
+  // item means "the timeline I am editing in", and which one that is may have
+  // changed since App last rendered.
+  const handleAddColorLayer = useCallback(async () => {
+    const layerId = await addColorLayerIn({
+      compositionId: currentOpenComposition()?.id ?? null,
+      tStartUs: focusedPlayheadUs(),
+    });
+    setPendingRevealLayerId(layerId);
+    await settle();
+  }, [settle]);
+
+  const handleAddTextLayer = useCallback(async () => {
+    const layerId = await addTextLayerIn({
+      compositionId: currentOpenComposition()?.id ?? null,
+      tStartUs: focusedPlayheadUs(),
+    });
+    setPendingRevealLayerId(layerId);
+    await settle();
+  }, [settle]);
+
+  // Raise the selection to a fresh lane at the top of the z-stack
+  // (docs/features.md#track-placement). The selection is read from the store,
+  // not from a captured value: App does not re-render on a multi-select change,
+  // which is the same reason the command's `enabled` predicate reads it live.
+  //
+  // The new lane carries no role, so the A/B Roll filter would hide the clip the user
+  // just raised — routed through the existing inline reveal rather than a second
+  // visibility rule. `revealTrack(id, null)` disturbs no selection, and naming a
+  // lane the summary has not delivered yet simply matches nothing until it does.
+  // All Tracks consumes the same id to scroll the new row vertically into view.
+  const handleMoveToNewTrack = useCallback(async () => {
+    const layerIds = [...layerIdsOf(currentSelection())];
+    if (layerIds.length === 0) return;
+    try {
+      const trackId = await moveLayersToNewTrack(layerIds);
+      revealTrack(trackId, null);
+    } catch (err) {
+      logMutationFailure(err, "move_layers_to_new_track");
+    }
+    await settle();
+  }, [settle, revealTrack]);
+
+  // Local agent-mode entry (View menu + palette). The reason labels the
+  // record-panel header and the "Pre-agent: …" auto-checkpoint.
+  const handleEnterAgentMode = useCallback(
+    () => enterAgentMode(),
+    [enterAgentMode, t],
+  );
+
+  useCommandProvider(() => exportReviewCommands(
+    buildAppCommands(
+      shortcutHandlers,
+      {
+        addColorLayer: handleAddColorLayer,
+        addTextLayer: handleAddTextLayer,
+        openMotifPicker: () => setMotifPickerOpen(true),
+        openAgentPanel: () => workspaceController?.openPanel("agent"),
+        enterAgentMode: handleEnterAgentMode,
+        // Opens the History Panel first, on purpose: the checkpoint list is
+        // the ONLY surface where the result of this command is visible, and
+        // creating one blind (no toast, no timeline change — create records
+        // nothing and broadcasts nothing) would look like the command did
+        // nothing at all. `openPanel` is idempotent, so invoking it from the
+        // Panel's own header button costs a focus and nothing else.
+        createCheckpoint: () => {
+          workspaceController?.openPanel("history");
+          openCheckpointPrompt();
+        },
+        moveToNewTrack: handleMoveToNewTrack,
+        toggleMarkersVisible: () => void toggleMarkersVisible(),
+        // Crossfade at the resolved cut; the kernel reads playhead/selection
+        // live and reports refusals itself, so App only lends `settle`.
+        applyDefaultTransition: () =>
+          applyTransitionAtPlayhead("Crossfade", undefined, settle),
+        openVoiceoverDialog: openVoiceoverPrompt,
+      },
+      {
+        busy,
+        canUndo: !!summary?.history.can_undo,
+        canRedo: !!summary?.history.can_redo,
+        exportLocked: busy || exportEditLocked,
+      },
+    ),
+    exportEditLocked,
+  ));
+
+  const dockPanelContracts = useMemo<DockPanelContracts>(
+    () => ({
+      summary,
+      previewRef,
+      onSeek: seekTo,
+      onTogglePlay: togglePlay,
+      editingLocked: exportEditLocked,
+      backgroundExportActive,
+      previewDecodableOf,
+      revealedTrackId,
+      keybindings,
+      importsById,
+      readinessById,
+      readinessOf,
+      optimizeById,
+      onMutated: settle,
+      onImportMedia: importMediaFiles,
+      selectedLayerId: primaryLayerId,
+      onSelectLayer: selectLayerWithLink,
+      onRevealTrack: revealTrack,
+    }),
+    [
+      summary,
+      seekTo,
+      togglePlay,
+      exportEditLocked,
+      backgroundExportActive,
+      previewDecodableOf,
+      revealedTrackId,
+      keybindings,
+      importsById,
+      readinessById,
+      readinessOf,
+      optimizeById,
+      settle,
+      importMediaFiles,
+      primaryLayerId,
+      selectLayerWithLink,
+      revealTrack,
+    ],
+  );
+
+  if (agentMode) {
+    // View selection is independent of the work session. Render the
+    // lightweight shell while agent view is selected. ShortcutBindingsProvider stays so the agent-mode
+    // panel can still consume bound actions if it grows any (it has none
+    // today). Floating editor panels (export, settings, motif-picker) are
+    // deliberately suppressed — the user is
+    // watching the agent, not driving the editor.
+    return (
+      <ShortcutBindingsProvider overrides={shortcutOverrides}>
+        <AgentMode
+          ref={previewRef}
+          summary={summary}
+          onExit={exitAgentMode}
+          saveActions={saveFailureActions}
+          // Settings are an editor surface: the way there leaves agent mode.
+          onOpenSettings={(target) => { void exitAgentMode(); openSystemSettings(target); }}
+        />
+        <ComputeJobNotice />
+      </ShortcutBindingsProvider>
+    );
+  }
+
+  const exportPanel = exportState && (
+    <ExportPanel
+      key={exportState.job?.job_id}
+      state={exportState}
+      onClose={() => {
+        setExportState(null);
+        setExportDialogOpen(false);
+      }}
+      onPlay={openRenderPlayPopup}
+      onReveal={revealExportedFile}
+      onOpenSettings={() => {
+        if (exportState.kind !== "error" || !exportState.onRetry) setExportState(null);
+        setExportDialogOpen(false);
+        openSettings("performance");
+      }}
+    />
+  );
+
+  return (
+    <ShortcutBindingsProvider overrides={shortcutOverrides}>
+    <div className="app">
+      <div className="app-top-chrome">
+        <AppMenuBar
+          pong={pong}
+          onOpenSearch={() => setPaletteOpen(true)}
+          workspaceController={workspaceController}
+          workspaceSnapshot={workspaceSnapshot}
+          workspaceProfiles={viewMenuWorkspaces}
+          onMotifColdStart={runMotifColdStart}
+        />
+      </div>
+
+      <main className="app-main">
+        <DockWorkspace
+          contracts={dockPanelContracts}
+          onControllerReady={handleWorkspaceControllerReady}
+          {...(workspaceProfiles ? { onResetWorkspace: workspaceProfiles.reset } : {})}
+        />
+      </main>
+
+      {/* Checkpoint name prompt. Owned here rather than by the History Panel
+          so the `createCheckpoint` command works with the Panel closed; it
+          renders nothing until something calls `openCheckpointPrompt()`. */}
+      <CheckpointPromptDialog />
+      <MarkerRenameDialog />
+
+      {/* The clip-analysis dialogs, owned here for the same reason: every one
+          of their commands reaches the Edit menu and the palette, which must
+          work with every Panel closed. Each renders nothing until its prompt is
+          opened.
+
+          Transcribe, Describe and Pauses have no dialog at all — nothing is
+          left to ask before the first two run, and the third lives in the
+          Attribute Panel — so App lends each the reveal of the Panel its result
+          becomes visible in and the settings deep-link, through the handler map
+          above. */}
+      <VoiceoverDialog />
+      <TranscriptionInputDialog />
+
+      {/* Save Workspace As / Rename Workspace name prompt. */}
+      {workspaceNameDialog && workspaceProfiles && (
+        <WorkspaceNameDialog
+          mode={workspaceNameDialog.mode}
+          initialName={workspaceNameDialog.initialName}
+          onCancel={() => setWorkspaceNameDialog(null)}
+          onSubmit={(name) => {
+            if (workspaceNameDialog.mode === "save-as") {
+              workspaceProfiles.saveAs(name);
+            } else {
+              workspaceProfiles.rename(workspaceNameDialog.id, name);
+            }
+            setWorkspaceNameDialog(null);
+          }}
+        />
+      )}
+
+      {exportDialogOpen && summary && exportState == null && (
+        <ExportSettingsDialog
+          comp={rootCompositionOf(summary)}
+          durationUs={rootCompositionOf(summary).duration_us}
+          hasTenBitSource={summary.media.some(takesTenBitLane)}
+          onCancel={() => setExportDialogOpen(false)}
+          onConfirm={(settings, path, range, overwrite) => {
+            void runExportWithSettings(settings, path, range, overwrite);
+          }}
+        />
+      )}
+      {!backgroundExportActive && !settingsOpen && exportPanel}
+      <PickOverlayHost />
+      {settingsOpen && (
+        <SettingsPanel
+          readDecodeDevices={readDecodeDevices}
+          onClose={() => setSettingsOpen(false)}
+          initialCategory={settingsCategory}
+          keybindings={keybindings}
+          onKeybindingsChanged={setKeybindings}
+          composition={
+            rootComp
+              ? {
+                  id: rootComp.id,
+                  durationUs: rootComp.duration_us,
+                  durationPinned: rootComp.duration_pinned,
+                  // The floor for a user-set duration: `max(layer.t_end_us)`
+                  // across every track/layer. Mirrors the
+                  // `applyDurationAutofit` overflow guard in
+                  // main/state/mutations/helpers.ts so the UI can pre-validate
+                  // before invoking `set_composition`.
+                  layersMaxEndUs: rootComp.tracks
+                    .flatMap((t) => t.layers.map((l) => l.t_end_us))
+                    .reduce((a, b) => Math.max(a, b), 0),
+                  fpsNum: rootComp.fps_num,
+                  fpsDen: rootComp.fps_den,
+                  width: rootComp.width,
+                  height: rootComp.height,
+                  fpsLocked: rootComp.fps_locked,
+                }
+              : null
+          }
+          onCompositionChanged={settle}
+        />
+      )}
+      {motifPickerOpen && (
+        <MotifPicker
+          onClose={() => setMotifPickerOpen(false)}
+          onAdded={settle}
+          onPlaced={setPendingRevealLayerId}
+          currentTimeUs={focusedPlayheadUs()}
+          compositionId={comp?.id ?? null}
+          tracks={comp?.tracks ?? []}
+          fpsNum={comp?.fps_num ?? 30}
+          fpsDen={comp?.fps_den ?? 1}
+          compWidth={comp?.width ?? 1920}
+          compHeight={comp?.height ?? 1080}
+        />
+      )}
+      {logConsoleOpen && (
+        <LogConsole
+          ref={logConsoleRef}
+          onClose={() => setLogConsoleOpen(false)}
+        />
+      )}
+      {paletteOpen && <SearchPalette onClose={() => setPaletteOpen(false)} />}
+      <StatusBar
+        backgroundExport={backgroundExportActive && exportState ? exportState : undefined}
+        onToggleLogs={toggleLogConsole}
+        logsOpen={logConsoleOpen}
+        onOpenSettings={openSystemSettings}
+        saveActions={saveFailureActions}
+      />
+      <ComputeJobNotice />
+    </div>
+    </ShortcutBindingsProvider>
+  );
+}

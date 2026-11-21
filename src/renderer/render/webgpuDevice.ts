@@ -1,0 +1,45 @@
+// What Pixi leaves to whoever owns an Application's WebGPU device: ending its
+// life, and keeping uploads off it once it is lost. Structural access only — no
+// pixi import — so the decoder transports can share it. Both rules:
+// docs/notes/electron-chromium-behavior.md.
+
+/// The device of a WebGPU-backed Pixi renderer, or null for a WebGL/Canvas
+/// renderer, a renderer that never initialized, or no renderer at all.
+///
+/// Owners destroy it right AFTER Pixi's own teardown of the Application. Pixi
+/// drops its reference and nothing more, and a device left to the garbage
+/// collector dies at an arbitrary later moment — in practice while the NEXT
+/// Application's first work is in flight, which stalls the renderer main
+/// thread for tens of seconds on Chromium 152. The order is load-bearing:
+/// destroying the device BEFORE Pixi has released the canvas swap chain and
+/// its textures stalls the same way.
+export function webgpuDeviceOf(renderer: unknown): GPUDevice | null {
+  const gpu = (renderer as { gpu?: { device?: GPUDevice | null } | null } | null | undefined)
+    ?.gpu;
+  return gpu?.device ?? null;
+}
+
+const guarded = new WeakSet<GPUDevice>();
+
+/// Makes `copyExternalImageToTexture` on `device`'s queue a no-op once the
+/// device is lost. A lost device executes nothing, so the copy had no effect to
+/// lose, and nothing on its queue orders after a read: the slot fence takes no
+/// proof there (`WebgpuSlotFence`).
+///
+/// LANDMINE (Chromium 152): once the GPU process has restarted, that call on a
+/// device lost with the old process crashes the renderer, a null dereference in
+/// `WebGpuSharedImageWrapperCache::AcquireCachedWrapper`, whenever the device
+/// copied in the seconds before the loss. Pixi keeps drawing on the lost device
+/// until its restore hands it a new one, and a frame bound in between uploads
+/// on the old queue. Idempotent per device.
+export function dropCopiesOnceLost(device: GPUDevice): void {
+  if (guarded.has(device)) return;
+  guarded.add(device);
+  const queue = device.queue;
+  const copy = queue.copyExternalImageToTexture.bind(queue);
+  let lost = false;
+  void device.lost.then(() => { lost = true; });
+  queue.copyExternalImageToTexture = (...args) => {
+    if (!lost) copy(...args);
+  };
+}

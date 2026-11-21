@@ -1,0 +1,175 @@
+
+
+
+
+
+
+/* ============================================================ */
+/* Menu bar — dropdown-based action toolbar                     */
+/* ============================================================ */
+
+.menu-bar {
+  display: flex;
+  align-items: center;
+  gap: calc(2 * var(--ui-px));
+}
+
+.menu-trigger {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--color-gray-300);
+  padding: calc(4 * var(--ui-px)) calc(10 * var(--ui-px));
+  font-size: var(--font-size-body);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4 * var(--ui-px));
+}
+
+.menu-trigger:hover {
+  background: var(--hover-neutral);
+  color: var(--accent-foreground);
+}
+
+/* Base UI sets data-popup-open on the trigger while its menu is open. */
+.menu-trigger[data-popup-open] {
+  background: var(--secondary);
+  border-color: var(--border);
+  color: var(--accent-foreground);
+}
+
+.menu-chevron {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.7;
+}
+
+/* Placement (portal + 4px below the trigger) is owned by Base UI's
+ * Positioner; this class is purely the dropdown's visual chrome. */
+.app-popup-positioner {
+  /* Above any dialog, so a menu opened inside one still draws over it
+   * (app.css §Stacking). */
+  z-index: var(--layer-menu);
+}
+
+.app-menu-list {
+  /* Positioner recomputes the room on the chosen side on open/resize.
+   * Flipping alone cannot fit a long menu: constrain the popup itself so
+   * menu, submenu, select and popover contents stay reachable by scrolling. */
+  box-sizing: border-box;
+  min-width: min(calc(220 * var(--ui-px)), var(--available-width));
+  max-width: var(--available-width);
+  max-height: var(--available-height);
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-menu);
+  padding: calc(4 * var(--ui-px)) 0;
+}
+
+.app-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--foreground);
+  text-align: left;
+  padding: calc(6 * var(--ui-px)) calc(12 * var(--ui-px));
+  font-size: var(--font-size-body);
+  cursor: pointer;
+}
+
+/* Base UI moves DOM focus into the popup when it opens (it carries
+ * tabindex="-1") and onto each item as that item highlights (tabindex="0").
+ * Chromium's :focus-visible heuristic matches on BOTH — a right-click opens
+ * the menu with the mouse, yet the popup still takes the ring, because focus
+ * lands programmatically on an element the pointer never pressed. The result
+ * was a stray UA outline drawn around the whole menu on every right-click.
+ *
+ * Dropping it loses no affordance: [data-highlighted] below is set by
+ * arrow-key navigation as well as hover, so keyboard users still see which
+ * row is armed. Highlight, not outline, is this menu's focus indicator. */
+.app-menu-list,
+.app-menu-item {
+  outline: none;
+}
+
+/* data-highlighted is set by keyboard navigation, and by hover on every menu
+ * that still lets Base UI move the highlight with the pointer. The context
+ * menus holding a submenu switch that off (see the LANDMINE on `SubMenu`), so
+ * :hover carries their row feedback instead — the two are deliberately styled
+ * the same, because which one paints a row is an implementation detail the
+ * user should never be able to see. data-disabled replaces :disabled now that
+ * items render as divs, not buttons. */
+.app-menu-item[data-highlighted],
+.app-menu-item:hover:not([data-disabled]) {
+  background: var(--hover-neutral-strong);
+}
+
+.app-menu-item[data-disabled] {
+  color: var(--color-gray-500);
+  cursor: not-allowed;
+}
+
+.app-menu-item--destructive:not([data-disabled]) {
+  color: var(--destructive);
+}
+
+.app-menu-item-check {
+  width: calc(16 * var(--ui-px));
+  flex: 0 0 calc(16 * var(--ui-px));
+  display: inline-flex;
+  align-items: center;
+  color: var(--color-blue-300);
+}
+
+.app-menu-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.app-menu-item-accelerator {
+  margin-left: calc(24 * var(--ui-px));
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Submenu trigger's right chevron — same right-aligned slot as the
+ * accelerator, so rows with and without shortcuts stay aligned. */
+.app-submenu-chevron {
+  margin-left: calc(24 * var(--ui-px));
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted-foreground);
+}
+
+.app-menu-item[data-disabled] .app-menu-item-accelerator {
+  color: var(--color-gray-600);
+}
+
+.menu-separator {
+  height: calc(1 * var(--ui-px));
+  background: var(--secondary);
+  margin: calc(4 * var(--ui-px)) 0;
+}
+
+.menu-heading {
+  font-size: var(--font-size-caption);
+  color: var(--color-gray-500);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: calc(6 * var(--ui-px)) calc(12 * var(--ui-px)) calc(2 * var(--ui-px));
+}
+
+.menu-bar .error {
+  color: var(--destructive);
+  font-size: var(--font-size-body);
+  margin-left: auto;
+}

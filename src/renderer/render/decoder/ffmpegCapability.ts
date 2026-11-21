@@ -1,0 +1,145 @@
+// FFmpeg-engine capability machinery: the sticky per-media unusable markers,
+// the seek-validated HW codec allow-list, and `pickInitialLane` — the async
+// lane-selection entry point `FfmpegSource` calls so it owns lane selection
+// itself and the pure resolver never sees a lane. SESSION state — resets on
+// reload; the persisted machine truth is main's capability cache, never these
+// maps/sets.
+import type { FfmpegLane } from "./decodeEngine";
+import { hwEligibleOnAnyLane } from "../../../shared/hwLaneEligibility";
+import { notifyDecodeCapabilityChange } from './capabilityChanges';
+import type { DecodeHardwareDiagnostic } from '../../../shared/decode-hardware-diagnostic';
+
+/// TWIN of main's `classKeyOf` (src/main/decode-capability.ts) — MUST produce a
+/// BYTE-IDENTICAL format string so a renderer-derived key hits the exact cache
+/// entry main's HW probe writes/reads. Same shape `codec::pixFmt:res` with the
+/// resolution class bucketed on `px = max(w, h)` (sd/hd/uhd/huge) and a null
+/// pixFmt interpolated as "unknown". Returns null when `codec` is null
+/// (audio/image — no HW video lane). Keep in lockstep with `classKeyOf` if
+/// either side's string form ever changes.
+export function classKeyOfMedia(m: {
+  codec: string | null;
+  pix_fmt: string | null;
+  width?: number | null;
+  height?: number | null;
+}): string | null {
+  if (!m.codec) return null;
+  const px = Math.max(m.width ?? 0, m.height ?? 0);
+  const res = px <= 1024 ? "sd" : px <= 2048 ? "hd" : px <= 4096 ? "uhd" : "huge";
+  return `${m.codec}::${m.pix_fmt ?? "unknown"}:${res}`;
+}
+
+/// The renderer's HW-probe KICK gate: true when ANY lane could host the format,
+/// so an everywhere-ineligible codec never lights the HW lane. The per-lane
+/// seek-validated sets — and why a static allow-list narrows the probe at all —
+/// live in `shared/hwLaneEligibility.ts`.
+export function hwEligibleCodec(codec: string | null, pixFmt: string | null): boolean {
+  return hwEligibleOnAnyLane(codec, pixFmt);
+}
+
+/// Sticky per-media "never try HW again this session" marker. Set when a
+/// native-HW transport dies at runtime (device loss, driver reset, session
+/// crash); gates `pickInitialLane`, so a subsequent `FfmpegSource` open for
+/// this media skips straight to the software lane.
+const hwUnusable = new Map<string, string>();
+
+export function markHwUnusable(mediaId: string, reason: string): void {
+  hwUnusable.set(mediaId, reason);
+}
+
+/// Sticky per-media "ffmpeg engine terminally failed this session" marker —
+/// the runtime signal behind `DecodeResolveInputs.ffmpegUsable` (decodeEngine.ts).
+/// Consumed by `Compositor.ts` (calls `markFfmpegUnusable` on total FfmpegSource
+/// failure) and `PixiPreview.tsx` (calls `isFfmpegUnusable` to feed the resolver's
+/// `ffmpegUsable` input), keeping the pure resolver untouched.
+const ffmpegUnusable = new Set<string>();
+
+export function markFfmpegUnusable(mediaId: string, _reason: string): void {
+  if (!ffmpegUnusable.has(mediaId)) { ffmpegUnusable.add(mediaId); notifyDecodeCapabilityChange(); }
+}
+
+export function forgetFfmpegCapability(mediaId: string): void {
+  hwUnusable.delete(mediaId);
+  if (ffmpegUnusable.delete(mediaId)) notifyDecodeCapabilityChange();
+}
+
+export function isFfmpegUnusable(mediaId: string): boolean {
+  return ffmpegUnusable.has(mediaId);
+}
+
+/// Resolved lane verdict `pickInitialLane` hands back. Carries the binary lane
+/// `FfmpegSource`'s ring/recovery logic keys on PLUS the specific HW lane that
+/// passed, so the source can route the hardware transport by lane NAME (the
+/// copy-back lanes — Linux NVDEC/VAAPI, macOS VideoToolbox — ride SwTransport;
+/// Windows d3d11va rides GpuTransport).
+export interface FfmpegLaneResolution {
+  diagnostic?: DecodeHardwareDiagnostic;
+  /// Binary lane the FfmpegSource ring/recovery logic keys on.
+  lane: FfmpegLane;
+  /// The specific advertised HW lane that passed (`nvdec` | `vaapi` |
+  /// `videotoolbox` | `d3d11va`) when `lane === "hardware"`, else null. Drives
+  /// the FfmpegSource transport choice: nvdec/vaapi/videotoolbox ride
+  /// SwTransport (copy-back), d3d11va rides GpuTransport.
+  hwLane: string | null;
+  /// VAAPI DRM render node the verdict was measured on (else null).
+  device: string | null;
+}
+
+/// Async lane-selection entry point for `FfmpegSource`: consults the sticky
+/// `markHwUnusable` marker and the seek-validated HW codec allow-list. An
+/// HW-eligible codec with a valid classKey AND a path is probed; missing
+/// classKey or path → software (no probe). Resolves `lane: "hardware"` only if
+/// the probe succeeds (ok: true) — carrying the resolved HW lane name + device
+/// so the caller can pick the matching transport; all other failures
+/// (unavailable, marked unusable, ineligible codec, probe rejection/exception)
+/// resolve `lane: "software"` with null hwLane/device.
+export async function pickInitialLane(
+  input: {
+    mediaId: string;
+    codec: string | null;
+    pixFmt: string | null;
+    /// Media dimensions for the classKey's resolution bucket — omitting
+    /// these collapses `classKeyOfMedia` to the "sd" bucket for every source,
+    /// mismatching main's probe cache key.
+    width?: number | null;
+    height?: number | null;
+    componentAvailable: boolean;
+  },
+  probeFn: (
+    path: string,
+    classKey: string,
+  ) => Promise<{ ok: boolean; lane?: string | null; device?: string | null; reason?: string | null; diagnostic?: DecodeHardwareDiagnostic }> = (p, k) =>
+    window.api.decodeCap.probeHw(p, k),
+  path?: string,
+): Promise<FfmpegLaneResolution> {
+  const software = (diagnostic: DecodeHardwareDiagnostic): FfmpegLaneResolution => ({ lane: 'software', hwLane: null, device: null, diagnostic });
+  if (!input.componentAvailable) return software({ kind: 'failed', reason: 'native decode component unavailable' });
+  if (hwUnusable.has(input.mediaId)) return software({ kind: 'failed', reason: hwUnusable.get(input.mediaId)! });
+  if (!hwEligibleCodec(input.codec, input.pixFmt)) return software({ kind: 'unavailable', reason: 'format is outside the hardware lane eligibility list' });
+  // Conditional spread, not `width: input.width` — exactOptionalPropertyTypes
+  // rejects assigning `number | null | undefined` to the optional `width?:
+  // number | null` field when the key is present with an `undefined` value.
+  const classKey = classKeyOfMedia({
+    codec: input.codec,
+    pix_fmt: input.pixFmt,
+    ...(input.width !== undefined ? { width: input.width } : {}),
+    ...(input.height !== undefined ? { height: input.height } : {}),
+  });
+  if (classKey === null || !path) return software({ kind: 'failed', reason: 'hardware probe input is incomplete' });
+  try {
+    const r = await probeFn(path, classKey);
+    return r.ok
+      ? { lane: "hardware", hwLane: r.lane ?? null, device: r.device ?? null }
+      : { lane: "software", hwLane: null, device: null,
+          diagnostic: r.diagnostic ?? { kind: 'failed', reason: r.reason ?? 'hardware probe declined without a diagnostic' } };
+  } catch (error) {
+    return { lane: "software", hwLane: null, device: null,
+      diagnostic: { kind: 'failed', reason: `probe IPC failed: ${String(error)}` } };
+  }
+}
+
+/// Test/e2e hook: forget session verdicts (used by ffmpegCapability.test.ts).
+export function resetFfmpegCapabilitySession(): void {
+  hwUnusable.clear();
+  ffmpegUnusable.clear();
+  notifyDecodeCapabilityChange();
+}

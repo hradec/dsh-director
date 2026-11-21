@@ -1,0 +1,246 @@
+import { sourceIn, sourceOut, layerRateNumber } from '../layerTiming';
+import { approximateTime } from '../timeMapping';
+import { useEffect, useRef, useState } from "react";
+import { convertFileSrc } from "@/bridge/ipc";
+import { LAYER_PREVIEW_MIN_PX } from "./geometry";
+import { TimelineFilmstrip } from "./TimelineFilmstrip";
+import { TimelineWaveform } from "./TimelineWaveform";
+import { trackStatic, type LayerSummary, type Rgba } from "../ipc";
+import { useMediaPosterSrc } from "../panels/MediaThumbnail";
+import { useReadyPeaksKey } from "../state/audioFxStore";
+import {
+  useFirstVideoMediaIdIn,
+  useMediaById,
+} from "../state/projectStore";
+import { timelineLayerTheme } from "./layerTheme";
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function rgbaToCss(color: Rgba): string {
+  const alpha = color.a / 255;
+  return `rgba(${color.r}, ${color.g}, ${color.b}, ${clamp01(alpha)})`;
+}
+
+function fallbackFill(surface: string, pattern?: "motif") {
+  return (
+    <div
+      className="h-full w-full"
+      style={{
+        backgroundColor: surface,
+        backgroundImage:
+          pattern === "motif"
+            ? "radial-gradient(circle at 1px 1px, rgba(177,123,193,0.22) 1px, transparent 1.25px)"
+            : "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(0,0,0,0.10))",
+        backgroundSize: pattern === "motif" ? "10px 10px" : undefined,
+      }}
+    />
+  );
+}
+
+function usePreviewResourceGate(enabledByWidth: boolean) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [enabled, setEnabled] = useState(
+    () => enabledByWidth && typeof IntersectionObserver === "undefined",
+  );
+
+  useEffect(() => {
+    if (!enabledByWidth) {
+      setEnabled(false);
+      return;
+    }
+    if (typeof IntersectionObserver === "undefined") {
+      setEnabled(true);
+      return;
+    }
+    const element = rootRef.current;
+    if (!element) return;
+    setEnabled(false);
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (
+          entries.some(
+            (entry) => entry.isIntersecting || entry.intersectionRatio > 0,
+          )
+        ) {
+          setEnabled(true);
+        }
+      },
+      {
+        root: null,
+        rootMargin: "256px 512px",
+      },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [enabledByWidth]);
+
+  return { enabled, rootRef };
+}
+
+function colorFill(color: Rgba, colorHint: string) {
+  const alpha = color.a / 255;
+  if (alpha < 0.98) {
+    const fill = rgbaToCss(color);
+    return (
+      <div
+        className="h-full w-full"
+        style={{
+          backgroundColor: colorHint,
+          backgroundImage: [
+            `linear-gradient(${fill}, ${fill})`,
+            "linear-gradient(45deg, rgba(255,255,255,0.18) 25%, transparent 25%)",
+            "linear-gradient(-45deg, rgba(255,255,255,0.18) 25%, transparent 25%)",
+            "linear-gradient(45deg, transparent 75%, rgba(255,255,255,0.18) 75%)",
+            "linear-gradient(-45deg, transparent 75%, rgba(255,255,255,0.18) 75%)",
+          ].join(", "),
+          backgroundPosition: "0 0, 0 0, 0 4px, 4px -4px, -4px 0",
+          backgroundSize: "auto, 8px 8px, 8px 8px, 8px 8px, 8px 8px",
+        }}
+      />
+    );
+  }
+  return (
+    <div className="h-full w-full" style={{ backgroundColor: rgbaToCss(color) }} />
+  );
+}
+
+export function TimelineVisualPreview({
+  layer,
+  layerWidthPx,
+  layerHeightPx,
+  pxPerSec,
+}: {
+  layer: LayerSummary;
+  layerWidthPx: number;
+  layerHeightPx: number;
+  pxPerSec: number;
+}) {
+  const canRenderPreview = layerWidthPx >= LAYER_PREVIEW_MIN_PX;
+  const { enabled: resourceEnabled, rootRef } =
+    usePreviewResourceGate(canRenderPreview);
+  const imageMedia = useMediaById(
+    layer.params.kind === "ImageOverlay" ? layer.params.media_id : null,
+  );
+  const audioMedia = useMediaById(
+    layer.params.kind === "Audio" ? layer.params.media_id : null,
+  );
+  const videoMedia = useMediaById(
+    layer.params.kind === "VideoClip" ? layer.params.media_id : null,
+  );
+  // A Group's poster is the earliest video INSIDE the composition it shows — a
+  // still, not a filmstrip: the strip would have to map the Group's window onto
+  // one inner clip's own window, and there is no such mapping when the
+  // composition holds more than one clip. One frame says "this is that shot"
+  // without claiming anything about the rest of the span.
+  const groupPosterMediaId = useFirstVideoMediaIdIn(
+    layer.params.kind === "CompositionRef" ? layer.params.composition_id : null,
+  );
+  const groupPosterSrc = useMediaPosterSrc(groupPosterMediaId, "video");
+  // Audio-effect bake state for THIS layer, whatever its kind: a hook cannot
+  // be conditional, and a non-audio layer simply has no entry.
+  const readyPeaksKey = useReadyPeaksKey(layer.id);
+  if (!canRenderPreview) return null;
+  const layerTheme = timelineLayerTheme(layer.params.kind, layer.color_hint);
+
+  const preview = (() => {
+    switch (layer.params.kind) {
+      case "VideoClip":
+        return (
+          <TimelineFilmstrip
+            mediaId={layer.params.media_id}
+            srcInUs={approximateTime(sourceIn(layer.params))}
+            srcOutUs={approximateTime(sourceOut(layer))}
+            layerWidthPx={layerWidthPx}
+            layerHeightPx={layerHeightPx}
+            pxPerSec={pxPerSec / layerRateNumber(layer.params)}
+            colorHint={layerTheme.surface}
+            enabled={resourceEnabled}
+            mediaWidth={videoMedia?.width ?? undefined}
+            mediaHeight={videoMedia?.height ?? undefined}
+            mediaDurationUs={videoMedia?.duration_us ?? undefined}
+          />
+        );
+      case "Audio":
+        return (
+          <TimelineWaveform
+            mediaId={layer.params.media_id}
+            // The processed waveform wherever a bake is ready for this layer,
+            // else the raw conform's — the picture follows what plays
+            // (ADR 0063). Read through the store hook, so a bake landing
+            // re-renders the strip on its own.
+            waveformKey={readyPeaksKey ?? layer.params.media_id}
+            layerId={layer.id}
+            srcInUs={approximateTime(sourceIn(layer.params))}
+            srcOutUs={approximateTime(sourceOut(layer))}
+            layerWidthPx={layerWidthPx}
+            layerHeightPx={layerHeightPx}
+            colorHint={layerTheme.surface}
+            waveformColor={layerTheme.accent}
+            enabled={resourceEnabled}
+            pxPerSec={pxPerSec / layerRateNumber(layer.params)}
+            mediaChannels={audioMedia?.audio_channels ?? undefined}
+          />
+        );
+      case "ImageOverlay":
+        return resourceEnabled && imageMedia?.available ? (
+          <img
+            className="h-full w-full object-contain"
+            src={convertFileSrc(imageMedia.path)}
+            alt=""
+            draggable={false}
+          />
+        ) : (
+          fallbackFill(layerTheme.surface)
+        );
+      case "Color":
+        return colorFill(
+          trackStatic(layer.params.color, { r: 0, g: 0, b: 0, a: 255 }),
+          layer.color_hint,
+        );
+      // Deliberately NOT a text render. Text is the one kind whose content
+      // lives in the same visual channel as the block's name chip — same 10px,
+      // same centred baseline, same left inset, same 48px reveal threshold — so
+      // drawing it here put two strings on one line, out of phase by the width
+      // of the chip's icon, with only the chip's fade-to-transparent scrim
+      // between them. The chip carries the content now (layerName.ts names a
+      // Text layer by its words), and it carries it BETTER: it is sticky, so it
+      // stays readable when a long caption's head scrolls out of the viewport.
+      case "Text":
+        return fallbackFill(layerTheme.surface);
+      case "Motif":
+        return fallbackFill(layerTheme.surface, "motif");
+      // No poster (a Group of titles, a thumbnail job still running) falls back
+      // to the plain fill, and the block's `Group` glyph is then what names the
+      // clip — the same division every other kind uses when its resource is not
+      // there yet.
+      case "CompositionRef":
+        return resourceEnabled && groupPosterSrc !== null ? (
+          <img
+            className="h-full w-full object-contain"
+            src={groupPosterSrc}
+            alt=""
+            draggable={false}
+          />
+        ) : (
+          fallbackFill(layerTheme.surface)
+        );
+    }
+  })();
+
+  return (
+    <div
+      ref={rootRef}
+      data-testid="timeline-visual-preview"
+      className="pointer-events-none absolute inset-0 overflow-hidden"
+      style={{ borderRadius: "inherit", backgroundColor: layerTheme.surface }}
+      aria-hidden="true"
+    >
+      {preview}
+      {layer.params.kind !== "Color" && (
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.025),rgba(0,0,0,0.10))]" />
+      )}
+    </div>
+  );
+}

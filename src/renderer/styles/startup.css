@@ -1,0 +1,955 @@
+
+
+/* Caption buttons for the frameless window (WindowControls). Windows
+ * convention: square, flush to the top-right corner, full bar height,
+ * red close hover. The negative margins cancel .app-header's padding so
+ * the buttons truly reach the window edge; the 4px on the left is the
+ * buttons' own breathing room, which every bar keeps (the padding-less
+ * strips override only the three negative values). */
+.window-controls {
+  display: flex;
+  align-self: stretch;
+  margin: -8px calc(-1 * var(--app-chrome-inset)) -8px 4px; /* fixed-px: window chrome */
+}
+
+/* macOS: WindowControls renders nothing and the traffic lights sit on the
+ * LEFT, so the bars that count on the caption buttons to fill their right
+ * corner would leave their last item flush against the window edge. Give
+ * them the shared inset there instead — the same margin .app-header keeps
+ * through its own padding. */
+html.platform-mac :is(.startup-titlebar, .agent-titlebar, .perf-titlebar) {
+  padding-right: var(--app-chrome-inset);
+}
+
+.window-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px; /* fixed-px: window chrome caption button */
+  background: transparent;
+  border: none;
+  color: var(--muted-foreground);
+  cursor: default;
+}
+
+.window-control:hover {
+  background: var(--hover-neutral);
+  color: var(--foreground);
+}
+
+.window-control-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+.locale-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+  background: var(--secondary);
+  border: 1px solid var(--border);
+  color: var(--color-gray-300);
+  padding: calc(3 * var(--ui-px)) calc(10 * var(--ui-px));
+  font-size: var(--font-size-body);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.locale-toggle:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.locale-toggle .globe-icon {
+  opacity: 0.85;
+  flex-shrink: 0;
+}
+
+.locale-toggle-label {
+  line-height: 1;
+}
+
+
+
+
+/* --------------------------------------------------------------------------
+ * Startup screen. See docs/data-model.md.
+ * -------------------------------------------------------------------------- */
+
+.splash-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(24 * var(--ui-px));
+  overflow: hidden;
+  background: var(--surface-sunken);
+  user-select: none;
+}
+
+.splash-screen-exiting {
+  animation: splash-screen-out 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.splash-mark {
+  position: relative;
+  width: min(46vw, calc(290 * var(--ui-px)));
+  aspect-ratio: 640 / 440;
+  filter: drop-shadow(0 calc(18 * var(--ui-px)) calc(44 * var(--ui-px)) rgba(0, 0, 0, 0.38));
+  animation: splash-mark-settle 2500ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.splash-logo-pulse-trace .logo-pulse-glow,
+.splash-logo-pulse-trace .logo-pulse-core {
+  animation: none;
+  opacity: 0;
+}
+
+.splash-screen-pulsing .splash-logo-pulse-trace .logo-pulse-glow,
+.splash-screen-pulsing .splash-logo-pulse-trace .logo-pulse-core {
+  animation: logo-pulse-sweep 2.6s cubic-bezier(0.32, 0, 0.5, 1) infinite;
+}
+
+.splash-pulse-overlay {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.splash-film-stack,
+.splash-w-paint {
+  position: absolute;
+  inset: 0;
+}
+
+.splash-film-stack {
+  opacity: 0;
+  transform-origin: 50% 50%;
+  animation: splash-film-arrive 2500ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.splash-film-stack img,
+.splash-w-paint img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.splash-film-stack img {
+  position: absolute;
+  inset: 0;
+}
+
+/* The clip windows are the icon's cut regions measured in the 640×440 mark
+ * frame: the W cut sweeps x 88→552 (13.75%→86.25%) and the wedge split
+ * sweeps y 147→289 (33.4091%→65.6818%). */
+.splash-w-cut-filler {
+  animation: splash-w-cut-erase 2500ms cubic-bezier(0.42, 0, 0.58, 1) both;
+}
+
+.splash-wedge-filler {
+  animation: splash-wedge-erase 2500ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.splash-w-paint {
+  animation: splash-w-paint-reveal 2500ms cubic-bezier(0.42, 0, 0.58, 1) both;
+}
+
+.splash-wordmark {
+  color: #dce8fb;
+  font-size: var(--font-size-display);
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-indent: 0.22em;
+  opacity: 0;
+  /* The text's wait is a delay, not held keyframes: a running opacity or
+   * transform animation keeps the text on a compositor layer, which draws
+   * it soft until the animation ends. */
+  animation: splash-wordmark-in 225ms ease 1282ms both;
+}
+
+.splash-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(9 * var(--ui-px));
+}
+
+.splash-progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(7 * var(--ui-px));
+  min-height: calc(17 * var(--ui-px));
+  max-width: min(76vw, calc(620 * var(--ui-px)));
+  color: var(--muted-foreground);
+  font-size: var(--font-size-body);
+  line-height: 1.35;
+  text-align: center;
+  animation: splash-progress-in 350ms ease 1200ms both;
+}
+
+.splash-progress-dot {
+  width: calc(5 * var(--ui-px));
+  height: calc(5 * var(--ui-px));
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #6696e6;
+}
+
+.splash-progress-message {
+  min-width: 0;
+}
+
+.splash-progress-count {
+  flex: 0 0 auto;
+  color: var(--color-gray-500);
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes splash-w-cut-erase {
+  0%, 12% { clip-path: inset(0 0 0 13.75%); }
+  45%, 100% { clip-path: inset(0 0 0 86.25%); }
+}
+
+@keyframes splash-wedge-erase {
+  0%, 49% { clip-path: inset(33.4091% 0 0 0); }
+  65%, 100% { clip-path: inset(65.6818% 0 0 0); }
+}
+
+@keyframes splash-w-paint-reveal {
+  0%, 12% { clip-path: inset(0 86.25% 0 0); }
+  45%, 100% { clip-path: inset(0 13.75% 0 0); }
+}
+
+@keyframes splash-film-arrive {
+  0% { opacity: 0; transform: scale(0.96); }
+  10%, 100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes splash-mark-settle {
+  0% { opacity: 0; transform: scale(0.9); }
+  10%, 100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes splash-wordmark-in {
+  0% { opacity: 0; transform: translateY(calc(6 * var(--ui-px))); }
+  100% { opacity: 0.78; transform: translateY(0); }
+}
+
+@keyframes splash-progress-in {
+  0% { opacity: 0; transform: translateY(calc(4 * var(--ui-px))); }
+  100% { opacity: 0.78; transform: translateY(0); }
+}
+
+@keyframes splash-screen-out {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash-screen,
+  .splash-mark,
+  .splash-film-stack,
+  .splash-wordmark,
+  .splash-progress {
+    animation-duration: 120ms;
+    animation-delay: 0ms;
+  }
+
+  .splash-screen-exiting {
+    animation-duration: 120ms;
+  }
+
+  .splash-w-cut-filler,
+  .splash-wedge-filler,
+  .splash-w-paint {
+    animation: none;
+  }
+
+  .splash-w-cut-filler,
+  .splash-wedge-filler {
+    visibility: hidden;
+  }
+
+  .splash-film-stack {
+    opacity: 1;
+  }
+
+  .splash-screen-pulsing .splash-logo-pulse-trace .logo-pulse-glow,
+  .splash-screen-pulsing .splash-logo-pulse-trace .logo-pulse-core {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+/* Development-only splash toggle rendered by Root. It intentionally lives
+ * above both the startup screen and editor so the launch motion can be
+ * started and exited explicitly without restarting Electron. */
+.dev-splash-toggle {
+  position: fixed;
+  left: calc(14 * var(--ui-px));
+  bottom: calc(14 * var(--ui-px));
+  z-index: 1100;
+  -webkit-app-region: no-drag;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+  padding: calc(6 * var(--ui-px)) calc(10 * var(--ui-px));
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-card);
+  background: rgba(14, 19, 28, 0.92);
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow-menu);
+}
+
+.dev-splash-toggle:hover {
+  border-color: var(--border);
+  color: var(--foreground);
+  background: var(--surface-raised);
+}
+
+.startup-screen {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  /* Asymmetric top padding biases the (still-centered) panel downward by
+   * ~24px so the header + actions sit just below visual center. The panel
+   * itself is now fixed-height (recents pinned via min-height) so this
+   * doesn't reintroduce layout jitter. */
+  padding: calc(80 * var(--ui-px)) calc(32 * var(--ui-px)) calc(32 * var(--ui-px));
+  background: var(--background);
+}
+
+/* Frameless window: slim title strip across the top of the startup
+ * screen — drag region + locale toggle + caption buttons. */
+.startup-titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* The shared chrome band, so the caption bar is the same height here as in
+     the editor and in agent mode — see --app-chrome-height in app.css, which
+     also keeps the strip tall enough to contain the macOS traffic lights. */
+  height: var(--app-chrome-height);
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: var(--app-chrome-gap);
+  /* Keep the settings button clear of the traffic lights. Mirrors .app-header:
+     Chromium's own safe-content edge, which also restores itself as the
+     leave-fullscreen animation starts rather than after it finishes. */
+  padding-left: max(var(--app-chrome-inset), env(titlebar-area-x, var(--app-chrome-inset)));
+  user-select: none;
+  z-index: 10;
+}
+
+/* This strip has no padding for the negative margins to cancel — but keep the
+   4px the shared rule puts before the buttons, so the locale toggle clears
+   them by the same 16px as in the editor header. */
+.startup-titlebar .window-controls {
+  margin: 0 0 0 4px; /* fixed-px: window chrome */
+}
+
+/* Top-left app-level entries (settings, issue report, available update). The titlebar is
+ * justify-content: flex-end (the locale toggle + caption buttons cluster
+ * right), so margin-right: auto pins the group to the left edge. The icons
+ * sit close together as one cluster — the bar's --app-chrome-gap separates
+ * groups, not the buttons inside one. */
+.startup-titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+  margin-right: auto;
+}
+
+/* Borderless: the icon itself is the button — no pill chrome. */
+.startup-settings-toggle,
+.startup-report-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(4 * var(--ui-px));
+  background: transparent;
+  border: none;
+  color: var(--muted-foreground);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.startup-settings-toggle:hover,
+.startup-report-toggle:hover {
+  color: var(--foreground);
+}
+
+.startup-locale-toggle {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+  padding: calc(4 * var(--ui-px)) calc(10 * var(--ui-px));
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  color: var(--muted-foreground);
+  border-radius: var(--radius-control);
+  font-size: var(--font-size-body);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.startup-locale-toggle .globe-icon {
+  opacity: 0.85;
+  flex-shrink: 0;
+}
+
+.startup-locale-toggle:hover {
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.startup-panel {
+  width: min(var(--dialog-width-text), 100%);
+  display: flex;
+  flex-direction: column;
+  gap: calc(24 * var(--ui-px));
+}
+
+.startup-header {
+  display: flex;
+  align-items: center;
+  gap: calc(14 * var(--ui-px));
+}
+
+.startup-heading-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.startup-logo-mark {
+  position: relative;
+  display: block;
+  width: calc(44 * var(--ui-px));
+  height: calc(44 * var(--ui-px));
+  flex-shrink: 0;
+}
+
+.startup-logo {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* A short illuminated trace runs directly along the W's centre line. Two
+ * strokes share the same dash: a broad translucent glow below a crisp core.
+ * The trace crosses quickly and then rests, matching a monitor sweep rather
+ * than a continuously breathing light. */
+.startup-logo-pulse-trace {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.logo-pulse-glow,
+.logo-pulse-core {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  /* The gap deliberately exceeds the full normalized path length. If the
+   * pattern totals exactly 100, SVG wraps the dash and briefly lights both
+   * ends of the W as it crosses the boundary. */
+  stroke-dasharray: 11 200;
+  stroke-dashoffset: 11;
+  animation: logo-pulse-sweep 2.6s cubic-bezier(0.32, 0, 0.5, 1) infinite;
+}
+
+.logo-pulse-glow {
+  stroke: rgba(96, 165, 250, 0.72);
+  stroke-width: 34;
+  filter: blur(11px); /* fixed-px: glow effect */
+}
+
+.logo-pulse-core {
+  stroke: #d5e6ff;
+  stroke-width: 12;
+}
+
+@keyframes logo-pulse-sweep {
+  0% {
+    opacity: 0;
+    stroke-dashoffset: 11;
+  }
+  5% {
+    opacity: 1;
+  }
+  33% {
+    opacity: 1;
+    stroke-dashoffset: -100;
+  }
+  39%, 100% {
+    opacity: 0;
+    stroke-dashoffset: -100;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .logo-pulse-glow,
+  .logo-pulse-core {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+.startup-header h1 {
+  margin: 0 0 calc(4 * var(--ui-px));
+  font-size: var(--font-size-hero);
+  font-weight: 600;
+}
+
+.startup-subtitle {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-label);
+}
+
+.startup-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: calc(12 * var(--ui-px));
+}
+
+.startup-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(8 * var(--ui-px));
+  padding: calc(24 * var(--ui-px)) calc(16 * var(--ui-px));
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border-soft);
+  background: var(--card);
+  color: var(--foreground);
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.startup-action:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--surface-raised);
+}
+
+.startup-action:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.startup-action:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+  box-shadow: var(--focus-ring);
+}
+
+.startup-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.startup-action.primary {
+  border-color: var(--selection-border);
+  background: color-mix(in srgb, var(--primary) 28%, var(--card));
+  color: var(--primary-foreground);
+}
+
+.startup-action.primary:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ring) 72%, transparent);
+  background: color-mix(in srgb, var(--primary) 38%, var(--card));
+}
+
+.startup-action-label {
+  font-size: var(--font-size-label);
+  font-weight: 500;
+}
+
+.startup-error {
+  margin: 0;
+  padding: calc(10 * var(--ui-px)) calc(12 * var(--ui-px));
+  border-radius: var(--radius-card);
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  color: var(--color-red-200);
+  font-size: var(--font-size-body);
+}
+
+/* The screen centers the panel vertically, so the recents body keeps one
+ * fixed height whether it is loading, empty, collapsed or expanded; any
+ * change would bump the header and action buttons. That height is a whole
+ * number of rows (`--startup-recent-visible-rows`, set from
+ * COLLAPSED_RECENT_COUNT in StartupScreen.tsx) whose line heights are pinned:
+ * `line-height: normal` takes its value from the platform font (Segoe UI,
+ * SF, Noto Sans), and a height that fits on one OS overflows on another. */
+.startup-recent {
+  --startup-recent-gap: calc(4 * var(--ui-px));
+  --startup-recent-name-line: calc(18 * var(--ui-px));
+  --startup-recent-path-line: calc(13 * var(--ui-px));
+  /* Item padding (2 × 6) + its row gap (1) + the two lines + the li's 1px
+   * border on each side. Must match .startup-recent-item and the li rule. */
+  --startup-recent-row: calc(
+    13 * var(--ui-px) + var(--startup-recent-name-line) +
+      var(--startup-recent-path-line) + 2px
+  );
+  --startup-recent-body: calc(
+    var(--startup-recent-visible-rows) * var(--startup-recent-row) +
+      (var(--startup-recent-visible-rows) - 1) * var(--startup-recent-gap)
+  );
+}
+
+.startup-recent-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: calc(12 * var(--ui-px));
+  margin-bottom: calc(8 * var(--ui-px));
+}
+
+.startup-recent-header h2 {
+  margin: 0;
+  font-size: var(--font-size-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted-foreground);
+}
+
+.startup-recent-empty {
+  height: var(--startup-recent-body);
+  margin: 0;
+  font-size: var(--font-size-body);
+  color: var(--color-gray-500);
+}
+
+.startup-recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 calc(4 * var(--ui-px)) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--startup-recent-gap);
+  height: var(--startup-recent-body);
+  /* Collapsed shows exactly the rows the body has room for, so only the
+   * expanded list is a scroll container. */
+  overflow-y: hidden;
+}
+
+.startup-recent-list[data-expanded] {
+  overflow-y: auto;
+}
+
+.startup-recent-list li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: stretch;
+  border-radius: var(--radius-card);
+  border: 1px solid transparent;
+}
+
+.startup-recent-list li:hover {
+  border-color: var(--border-soft);
+  background: var(--card);
+}
+
+.startup-recent-list li:focus-within {
+  border-color: var(--selection-border);
+  background: var(--card);
+}
+
+.startup-recent-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  align-items: baseline;
+  gap: calc(1 * var(--ui-px)) calc(12 * var(--ui-px));
+  padding: calc(6 * var(--ui-px)) calc(12 * var(--ui-px));
+  background: transparent;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.startup-recent-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.startup-recent-name {
+  grid-row: 1;
+  grid-column: 1;
+  font-size: var(--font-size-label);
+  color: var(--foreground);
+  font-weight: 500;
+  line-height: var(--startup-recent-name-line);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.startup-recent-meta {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  align-self: center;
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.startup-recent-path {
+  grid-row: 2;
+  grid-column: 1;
+  font-size: var(--font-size-caption);
+  color: color-mix(in srgb, var(--muted-foreground) 82%, var(--background));
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  line-height: var(--startup-recent-path-line);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.startup-recent-remove {
+  align-self: center;
+  margin-right: calc(6 * var(--ui-px));
+  background: transparent;
+  border: none;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  padding: calc(2 * var(--ui-px)) calc(8 * var(--ui-px));
+  border-radius: var(--radius-control);
+  opacity: 0;
+  transition: opacity var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+
+.startup-recent-remove:focus-visible {
+  outline: none;
+  color: var(--foreground);
+  box-shadow: var(--focus-ring);
+}
+
+/* Hover row OR keyboard-focus inside the row reveals the ×. Using opacity
+ * (not display/visibility) so the button always occupies its grid cell —
+ * the card never reflows when the user mouses over it. */
+.startup-recent-list li:hover .startup-recent-remove,
+.startup-recent-list li:focus-within .startup-recent-remove {
+  opacity: 1;
+}
+
+.startup-recent-remove:hover {
+  color: var(--color-red-300);
+  background: color-mix(in srgb, var(--destructive) 12%, transparent);
+}
+
+.startup-recent-toggle {
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-body);
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+
+.startup-recent-toggle:focus-visible,
+.startup-locale-toggle:focus-visible,
+.startup-settings-toggle:focus-visible,
+.startup-report-toggle:focus-visible {
+  outline: none;
+  border-radius: var(--radius-control);
+  box-shadow: var(--focus-ring);
+}
+
+@media (max-width: 560px) {
+  .startup-screen {
+    padding-inline: calc(20 * var(--ui-px));
+  }
+
+  .startup-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .startup-action {
+    flex-direction: row;
+    padding: calc(18 * var(--ui-px)) calc(16 * var(--ui-px));
+  }
+}
+
+.startup-recent-toggle:hover {
+  color: var(--foreground);
+}
+
+.startup-recent-toggle-chevron {
+  display: inline-flex;
+  align-items: center;
+  margin-right: calc(4 * var(--ui-px));
+}
+
+/* --- Compact form dialog (new project, workspace name, rename, checkpoint) --- */
+
+.new-project-panel {
+  width: min(var(--dialog-width-prompt), calc(100vw - calc(32 * var(--ui-px))));
+  overflow-y: auto;
+  padding: calc(20 * var(--ui-px));
+  background: var(--card);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-modal);
+  display: flex;
+  flex-direction: column;
+  gap: calc(14 * var(--ui-px));
+}
+
+/* AppDialog's header holds the title plus an optional ✕, and `.settings-close`
+ * steers itself right with `margin-left: auto` — which needs a flex parent.
+ * Under block layout the ✕ stacks below the title in the left gutter. */
+.new-project-panel header {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+}
+
+/* The panel-title slot of the type scale (docs/ui-tokens.md); 16px+ is
+ * splash/HUD display type, one step above a dialog heading. */
+.new-project-panel h2 {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.new-project-row {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--ui-px));
+  font-size: var(--font-size-body);
+  color: var(--muted-foreground);
+}
+
+.new-project-row > span:first-child {
+  font-weight: 500;
+}
+
+/* The name input is now AppInput (.app-input skin); only .app-select keeps
+ * this per-row chrome so the two controls match in the dialog. */
+.new-project-row .app-select {
+  background: var(--background);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  color: var(--foreground);
+  padding: calc(6 * var(--ui-px)) calc(8 * var(--ui-px));
+  font-size: var(--font-size-label);
+  outline: none;
+}
+
+.new-project-row .app-select:focus-visible,
+.new-project-row .app-select[data-popup-open] {
+  border-color: var(--selection);
+}
+
+.new-project-folder {
+  display: flex;
+  gap: calc(8 * var(--ui-px));
+  align-items: center;
+}
+
+.new-project-folder-path {
+  flex: 1;
+  padding: calc(6 * var(--ui-px)) calc(8 * var(--ui-px));
+  background: var(--background);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  font-size: var(--font-size-body);
+  color: var(--color-gray-300);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+
+
+/* width × height, side by side. Wraps as a unit on a narrow dialog rather
+ * than squeezing the number fields. Mirrors .settings-size-fields, minus the
+ * Apply button — the New Project dialog commits on Create, not per field. */
+.new-project-size-fields {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+  flex-wrap: wrap;
+}
+
+.new-project-size-fields .app-number-field {
+  width: calc(88 * var(--ui-px));
+}
+
+.new-project-error {
+  margin: 0;
+  padding: calc(8 * var(--ui-px)) calc(10 * var(--ui-px));
+  border-radius: var(--radius-control);
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  color: var(--color-red-200);
+  font-size: var(--font-size-body);
+}
+
+/* Inline validation message under the project-name input. Lives inside
+ * the .new-project-row label so it sits flush with the field. */
+.new-project-validation {
+  display: block;
+  margin-top: calc(2 * var(--ui-px));
+  color: var(--color-red-300);
+  font-size: var(--font-size-caption);
+}
+
+/* Computed full path preview between the two input rows. Single line,
+ * left-truncated with ellipsis when too wide — the end of the path is
+ * what matters (it carries the project name). */
+.new-project-preview {
+  margin: calc(-6 * var(--ui-px)) 0 calc(4 * var(--ui-px));
+  padding: calc(4 * var(--ui-px)) calc(8 * var(--ui-px));
+  background: var(--surface-tint);
+  border-radius: var(--radius-control);
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  direction: rtl;
+  text-align: left;
+  unicode-bidi: plaintext;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.new-project-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: calc(8 * var(--ui-px));
+}

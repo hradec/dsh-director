@@ -1,0 +1,430 @@
+import { invoke } from "@/bridge/ipc";
+// NOTE: do NOT import "pixi.js/unsafe-eval" here. Its no-eval shader polyfill
+// renders every filtered object EMPTY on the WebGPU backend (the per-layer
+// effects subsystem would be dead on the preview). We instead let PixiJS use
+// its real `new Function()` codegen and allow `'unsafe-eval'` in the packaged
+// CSP (see electron.vite.config.ts). Filters then work on WebGPU + WebGL alike.
+import { listen } from "@/bridge/events";
+import { getCurrentWindow } from "@/bridge/window";
+import React,{ useCallback,useEffect,useState } from "react";
+import ReactDOM from "react-dom/client";
+import { PROJECT_OPENED_EVENT,type ProjectOpenedPayload } from "../shared/project-events";
+import { App } from "./App";
+import { PreviousSessionReport } from './app/DiagnosticReport';
+import { initEval } from "./eval";
+import { useAppNoticeEvents } from "./notifications/appNotices";
+import { useFocusRegions } from "./focus/useFocusRegions";
+import "./i18n";
+import {
+recentsGetReopenOnLaunch,
+recentsMostRecent
+} from "./ipc";
+import { isMac } from "./platform";
+import { PerformanceMonitorWindow } from "./render/PerfHUD";
+import { bindMotifFrameWorkspace } from "./render/motifs/motifFrameSource";
+import { wireAppSettingsStream } from './settings/appSettingsStore';
+import { applyLayoutTheme } from './settings/layoutTheme';
+import { SplashScreen } from "./startup/SplashScreen";
+import { StartupScreen } from "./startup/StartupScreen";
+import {
+startRendererInitialization,
+type StartupProgress,
+} from "./startup/initializeRenderer";
+// Tailwind entry first; styles.css stays unlayered so its legacy rules win
+// over Tailwind's layered output wherever both match (see app.css header).
+import "./app.css";
+import "./styles.css";
+
+const isPerfHudWindow = new URLSearchParams(window.location.search).get("perfHud") === "1";
+if (!isPerfHudWindow) {
+  window.addEventListener('error', event => {
+    window.api.diagnostics.recordError(event.error instanceof Error ? event.error.stack ?? event.message : event.message);
+  });
+  window.addEventListener('unhandledrejection', event => {
+    const reason: unknown = event.reason;
+    window.api.diagnostics.recordError(reason instanceof Error ? reason.stack ?? reason.message : String(reason));
+  });
+}
+const showSplashDebugControl =
+  import.meta.env.DEV || import.meta.env.VITE_WEFTCUT_E2E === "1";
+
+const root = document.getElementById("root");
+if (!root) throw new Error("#root missing from index.html");
+
+// macOS uses `titleBarStyle: 'hidden'`, so the window keeps the OS-drawn traffic
+// lights and its native rounded frame. Tag <html> for the chrome that differs on
+// that basis (base.css suppresses the self-drawn window edge). The titlebar
+// insets do NOT use this class — they read env(titlebar-area-*), which is empty
+// off macOS, so those rules stay platform-agnostic.
+// Applies to every renderer surface (main + Performance Monitor) that shares this bundle.
+if (isMac) document.documentElement.classList.add("platform-mac");
+
+// Theme the first frame from the preset main passed on the command line. The
+// settings stream hydrates only after an IPC round-trip, by which time the
+// window is shown and the splash has started its motion at the 1080p baseline,
+// so the mark would visibly jump to its themed size mid-intro.
+const launchLayoutTheme = window.api?.app?.launchLayoutTheme;
+if (launchLayoutTheme) applyLayoutTheme(launchLayoutTheme);
+
+// Production: suppress the Chromium/Electron default context menu (reload / print /
+// inspect) except over editable or copyable content, where the native
+// cut/copy/paste menu stays useful. The app's own context menus (timeline
+// layers, lane headers) preventDefault on their targets either way. Dev keeps the default
+// menu for right-click → Inspect.
+if (!import.meta.env.DEV) {
+  document.addEventListener("contextmenu", (e) => {
+    const t = e.target instanceof Element ? e.target : null;
+    if (
+      t?.closest(
+        "input, textarea, [contenteditable], .connect-snippet pre, .log-message, .log-details-json",
+      )
+    ) {
+      return;
+    }
+    e.preventDefault();
+  });
+}
+
+/// Top-level router. The app boots into the
+/// StartupScreen by default; once the user picks Create / Open / Recent
+/// (or the "Reopen last project on launch" auto-open fires), we flip to
+/// the editor. Reverse transition (back to startup) isn't supported yet —
+/// quitting and reopening is the natural flow.
+function Root() {
+  // `boot`: still resolving "reopen on launch" — keep the surface blank for
+  // a beat so we don't flash StartupScreen for users who *did* opt into
+  // auto-open. `startup`: user must pick. `editor`: workspace is mounted.
+  const [stage, setStage] = useState<"boot" | "startup" | "editor">("boot");
+  const [systemsReady, setSystemsReady] = useState(false);
+  const [startupProgress, setStartupProgress] =
+    useState<StartupProgress | null>(null);
+  const [splashVisible, setSplashVisible] = useState(true);
+  const [devSplashHeld, setDevSplashHeld] = useState(false);
+  // Latched on the splash's first intro completion — never reset, so a dev
+  // replay of the splash cannot unmount a live editor underneath it.
+  const [splashIntroDone, setSplashIntroDone] = useState(false);
+  const [editorPainted, setEditorPainted] = useState(false);
+  // Bumped when an agent opens or creates a project. It keys <App>, so an
+  // editor already on screen remounts on the new project exactly as a UI Close
+  // + Open would, and no store of the previous project survives.
+  const [projectEpoch, setProjectEpoch] = useState(0);
+  // Here, above both surfaces: the start screen's Settings shows a notice's
+  // home as the editor's bell and Settings do.
+  useAppNoticeEvents();
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    let received = false;
+    void listen<ProjectOpenedPayload>(PROJECT_OPENED_EVENT, () => {
+      received = true;
+      setProjectEpoch((n) => n + 1);
+      setStage("editor");
+    }).then((u) => {
+      if (cancelled) u();
+      else {
+        unlisten = u;
+        void invoke<{dir:string}|null>("project_open_state").then(opened => { if (!cancelled && !received && opened) setStage("editor"); });
+      }
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Focus regions (ADR 0041). Mounted here rather than in `App` so it also
+  // covers the startup screen and the splash: its listeners are on `window`
+  // and must exist before the first press of the session, whichever surface
+  // that press lands on.
+  useFocusRegions();
+
+  useEffect(() => {
+    const initialization = rendererInitialization;
+    if (!initialization) return;
+    let cancelled = false;
+    const unsubscribe = initialization.subscribe((progress) => {
+      if (!cancelled) setStartupProgress(progress);
+    });
+    void initialization.completion.then(() => {
+      if (!cancelled) setSystemsReady(true);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  // The main BrowserWindow is frameless, so draw a subtle inner edge in the
+  // renderer to keep the dark surface legible against dark desktops and
+  // overlapping windows. Window state lives on <html> so the frame spans the
+  // startup, editor, agent, and splash surfaces without affecting layout.
+  useEffect(() => {
+    const rootElement = document.documentElement;
+    const currentWindow = getCurrentWindow();
+    let cancelled = false;
+
+    const setFocused = () => rootElement.classList.remove("app-window-inactive");
+    const setInactive = () => rootElement.classList.add("app-window-inactive");
+    const setMaximized = (maximized: boolean) => {
+      rootElement.classList.toggle("app-window-maximized", maximized);
+    };
+    const setFullscreen = (fullscreen: boolean) => {
+      rootElement.classList.toggle("app-window-fullscreen", fullscreen);
+    };
+
+    rootElement.classList.add("app-window-framed");
+    rootElement.classList.toggle("app-window-inactive", !document.hasFocus());
+    void currentWindow.isMaximized().then((maximized) => {
+      if (!cancelled) setMaximized(maximized);
+    });
+    const unlisten = currentWindow.onMaximizeChange((maximized) => {
+      if (!cancelled) setMaximized(maximized);
+    });
+    // Only enter/leave transitions are tracked — no initial query, because the
+    // one state this class drives (the self-drawn edge) can't be wrong at boot:
+    // a window CAN now be restored straight into fullscreen, but only on macOS
+    // (sanitizeGeometry forces fullScreen false elsewhere), and macOS suppresses
+    // the self-drawn edge entirely in favour of the native frame. The
+    // traffic-light inset is not involved — that reads env(titlebar-area-*),
+    // which is already correct on the first paint.
+    const unlistenFullscreen = currentWindow.onFullscreenChange((fullscreen) => {
+      if (!cancelled) setFullscreen(fullscreen);
+    });
+    window.addEventListener("focus", setFocused);
+    window.addEventListener("blur", setInactive);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", setFocused);
+      window.removeEventListener("blur", setInactive);
+      void unlisten.then((dispose) => dispose());
+      void unlistenFullscreen.then((dispose) => dispose());
+      rootElement.classList.remove(
+        "app-window-framed",
+        "app-window-inactive",
+        "app-window-maximized",
+        "app-window-fullscreen",
+      );
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const resume = await window.api.updates.resume();
+        if (cancelled) return;
+        if (resume) {
+          if (resume.path) {
+            try {
+              const opened = await invoke("project_startup_open", {dir:resume.path});
+              if (!cancelled) setStage(current => opened ? "editor" : current === "editor" ? current : "startup");
+            } catch (error) {
+              console.warn("Update project restore failed", error);
+              if (!cancelled) setStage(current => current === "editor" ? current : "startup");
+            }
+          } else if (!cancelled) setStage(current => current === "editor" ? current : "startup");
+          return;
+        }
+        const enabled = await recentsGetReopenOnLaunch();
+        if (!enabled) {
+          if (!cancelled) setStage(current => current === "editor" ? current : "startup");
+          return;
+        }
+        const recent = await recentsMostRecent();
+        if (!recent) {
+          if (!cancelled) setStage(current => current === "editor" ? current : "startup");
+          return;
+        }
+        try {
+          const opened = await invoke("project_startup_open", {dir:recent.path});
+          if (!cancelled) setStage(current => opened ? "editor" : current === "editor" ? current : "startup");
+        } catch (err) {
+          console.warn("reopen-on-launch failed; falling back to startup", err);
+          if (!cancelled) setStage(current => current === "editor" ? current : "startup");
+        }
+      } catch (err) {
+        console.warn("startup pref read failed:", err);
+        if (!cancelled) setStage(current => current === "editor" ? current : "startup");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // E2E-only: expose `window.__weftcutTest.newProjectAndEnter` so the E2E
+  // suite can create a project + enter the editor headlessly. The dynamic
+  // import behind the static `VITE_WEFTCUT_E2E` check is stripped from prod.
+  useEffect(() => {
+    if (import.meta.env.VITE_WEFTCUT_E2E !== "1") return;
+    void import("./testhook/e2eHook").then(
+      ({ installBootstrapHook, installMotifTestHooks, installMotifHook, installAudioTestHooks, installDecodeBenchHooks }) => {
+        installBootstrapHook(
+          () => setStage("editor"),
+          () => setStage("startup"),
+        );
+        installMotifTestHooks();
+        installMotifHook();
+        installAudioTestHooks();
+        installDecodeBenchHooks();
+      },
+    );
+  }, []);
+
+  // Flash-free startup: the Electron main window is created hidden (the main
+  // process withholds show until the renderer signals ready) and revealed on
+  // the splash's first painted frame. Initialization runs behind that
+  // visible animation.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      void getCurrentWindow().show();
+    });
+    return () => cancelAnimationFrame(id);
+  }, []);
+  // Safety net: if boot wedges before the stage resolves (IPC hang), surface
+  // the window anyway so the failure is visible instead of a ghost process.
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      void getCurrentWindow().show();
+    }, 3000);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  const onWorkspaceReady = useCallback(() => setStage("editor"), []);
+  const onCloseProject = useCallback(() => {
+    bindMotifFrameWorkspace(null);
+    setStage("startup");
+  }, []);
+  const onSplashIntroComplete = useCallback(() => setSplashIntroDone(true), []);
+  const onSplashComplete = useCallback(() => {
+    setSplashVisible(false);
+    setDevSplashHeld(false);
+  }, []);
+  const toggleDevSplash = useCallback(() => {
+    if (splashVisible) {
+      setSplashVisible(false);
+      setDevSplashHeld(false);
+      return;
+    }
+    setDevSplashHeld(true);
+    setSplashVisible(true);
+  }, [splashVisible]);
+  const launchReady = systemsReady && stage !== "boot";
+
+  // The editor is the one launch destination heavy enough to fight the
+  // splash for the main thread and GPU (dockview layout, Pixi init, decode
+  // spin-up), which visibly stutters the intro motion when it mounts
+  // mid-animation (reopen-on-launch). It therefore waits for the intro to
+  // finish and mounts during the splash's hold phase instead. `!splashVisible`
+  // keeps the pre-splash paths intact: entering the editor from the startup
+  // screen mounts immediately.
+  const editorMounted =
+    launchReady && stage === "editor" && (splashIntroDone || !splashVisible);
+
+  // The splash's exit fade should reveal a fully committed editor, so the
+  // editor route reports ready one painted frame after the App mount commit —
+  // the mount's long task lands behind the held (static) mark, not under the
+  // 200ms fade.
+  useEffect(() => {
+    if (!editorMounted) {
+      setEditorPainted(false);
+      return;
+    }
+    const id = requestAnimationFrame(() => setEditorPainted(true));
+    return () => cancelAnimationFrame(id);
+  }, [editorMounted]);
+  const destinationReady =
+    launchReady && (stage !== "editor" || editorPainted);
+
+  // Route resolution and system initialization run behind the launch motion.
+  // The splash owns its minimum display time and holds its completed mark when
+  // any dependency is slower, then performs the exit once all are ready.
+  return (
+    <>
+      {launchReady && stage === "startup" && (
+        <StartupScreen onWorkspaceReady={onWorkspaceReady} />
+      )}
+      {editorMounted && (
+        <App
+          key={projectEpoch}
+          onCloseProject={onCloseProject}
+          onWorkspaceReady={onWorkspaceReady}
+        />
+      )}
+      {launchReady && !splashVisible && <PreviousSessionReport />}
+      {(splashVisible || !launchReady) && (
+        <SplashScreen
+          ready={destinationReady}
+          autoComplete={!devSplashHeld}
+          startupProgress={startupProgress}
+          routePending={stage === "boot"}
+          onIntroComplete={onSplashIntroComplete}
+          onComplete={onSplashComplete}
+        />
+      )}
+      {showSplashDebugControl && launchReady && (
+        <button
+          type="button"
+          className="dev-splash-toggle"
+          onClick={toggleDevSplash}
+          title={
+            splashVisible ? "Exit splash animation" : "Play splash animation"
+          }
+          aria-pressed={splashVisible}
+        >
+          <span aria-hidden="true">{splashVisible ? "×" : "▶"}</span>
+          {splashVisible ? "Exit splash" : "Play splash"}
+        </button>
+      )}
+    </>
+  );
+}
+
+// App preferences belong to the renderer lifetime, including startup, splash
+// and the standalone monitor. Opening Settings must not be needed to apply a
+// saved layout theme, and project switches must not tear down its subscription.
+function AppPreferences({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    let cancelled = false;
+    let stop: (() => void) | undefined;
+    void wireAppSettingsStream().then(unlisten => {
+      if (cancelled) unlisten();
+      else stop = unlisten;
+    }).catch(error => console.warn('App preferences unavailable:', error));
+    return () => { cancelled = true; stop?.(); };
+  }, []);
+  return children;
+}
+
+function mount() {
+  ReactDOM.createRoot(root!).render(
+    <React.StrictMode>
+      <AppPreferences>
+        {isPerfHudWindow ? <PerformanceMonitorWindow /> : <Root />}
+      </AppPreferences>
+    </React.StrictMode>,
+  );
+}
+
+// Main-window initialization begins before React mounts, then settles behind
+// the splash. The Performance Monitor keeps a lightweight route and does not
+// initialize main-window-only Motif systems.
+const rendererInitialization = isPerfHudWindow
+  ? null
+  : startRendererInitialization();
+const perfHudInitialization = isPerfHudWindow
+  ? initEval().catch((err) =>
+      console.error(
+        "eval wasm init failed; eval calls will throw until reload",
+        err,
+      ),
+    )
+  : null;
+
+if (isPerfHudWindow) {
+  void perfHudInitialization!.finally(mount);
+} else {
+  mount();
+}

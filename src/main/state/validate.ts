@@ -1,0 +1,550 @@
+import { enterClock, ROOT_CLOCK, type CompositionClock } from '../../renderer/render/compositionClock'
+import { layerRate, sourceIn, sourceOut, validateTimeFraction, keyTimeExact } from '../../renderer/layerTiming'
+import { approximateTime, exactTime, compareTime, ZERO_TIME } from '../../renderer/timeMapping'
+import { forEachAnimatedF64, forEachAnimatedRgba } from './mutations/animated'
+import { TimeMappingError } from '../../shared/timeMapping'
+import { cropProblem } from '../../shared/crop'
+import { graphicRoleProblem } from '../../shared/graphicRole'
+import { isProjectMotifKey } from '../../shared/motifs/projectMotifs'
+import { CommandFailure } from './errors'
+// apps/desktop/src/main/state/validate.ts
+import type { Composition, Layer, LayerParams, Project, Track, Transition, Uuid } from './model'
+import { eachLayer } from './model'
+import { ValidationFailure, type ValidationError } from './errors'
+import { frameGrid, gridForLayerKind, isCanonicalOnGrid, layerOverlapClass, snapFrameRound, snapOnGrid, type Grid } from './snap'
+// The `src_in_us`/`src_out_us` family, from the mutations layer. No cycle: this
+// is a leaf helper module (model + errors + snap + animated), and nothing it
+// reaches imports back here — the mutation modules that DO import validate
+// (duplicate/groups/moveToComposition, for `layerOverlapClass`) sit above it.
+// One predicate, so a marker cannot anchor to a kind trim and split refuse.
+import { hasSourceWindow } from './mutations/helpers'
+// THE definition of "asleep", borrowed rather than restated: the marker lane
+// paints from it and `reconcileMarkers` re-derives from it, so the projection
+// and the reconcile cannot disagree about which markers are hibernating.
+// `summary.ts` is a projection module over model + helpers and reaches nothing
+// here, so the edge is one-way.
+import { markerHibernatingForLayer, sourceInstantTimelineUs } from './summary'
+
+function fail(err: ValidationError): never { throw new ValidationFailure(err) }
+
+/** Re-exported so the batch mutations that must refuse a collision BEFORE
+ *  touching the draft keep their `../validate` import; the rule itself lives at
+ *  `renderer/grid.ts`, the one seam the ripple planner reads it from too. */
+export { layerOverlapClass }
+/** Canonical unordered layer-pair key for the authorized-overlap map. */
+function pairKey(a: Uuid, b: Uuid): string { return a < b ? `${a}|${b}` : `${b}|${a}` }
+
+export function validate(project: Project): void {
+  validateProjectShape(project)
+  for (const id of Object.keys(project.motifs)) if (!isProjectMotifKey(id)) fail({ rule: 'InvalidMotifKey', motif_id: id })
+  const root = project.compositions[project.root_id]
+  // PROJECT-wide: a layer id names one layer in the whole project (every
+  // layer-addressed op derives its composition from the id), so the duplicate
+  // check spans compositions.
+  const seenLayers = new Set<Uuid>()
+  const seenMarkers = new Set<Uuid>()
+  for (const c of Object.values(project.compositions)) {
+    validateComposition(c)
+    if (c !== root) validateLattice(c, root)
+    const authorized = validateTransitions(c) // also enforces transition rules
+    // Links get THIS composition's layer set, not `seenLayers`: a link's members
+    // are layers of one composition, and the project-wide set would accept a
+    // member that lives in a Group.
+    const layersHere = new Set<Uuid>()
+    for (const track of c.tracks) validateTrack(project, c, track, authorized, seenLayers, layersHere)
+    validateLinks(c, layersHere)
+    validateMarkers(c, seenMarkers)
+  }
+  validateCompositionRefs(project)
+}
+
+/** `root_id` resolves and every entry sits under its own id. First, because
+ *  everything below indexes `compositions[root_id]` and trusts the key. */
+function validateProjectShape(p: Project): void {
+  if (!(p.root_id in p.compositions)) fail({ rule: 'RootMissing', root_id: p.root_id })
+  for (const [key, c] of Object.entries(p.compositions))
+    if (c.id !== key) fail({ rule: 'CompositionIdMismatch', key, id: c.id })
+}
+
+/** Single lattice (ADR 0052 §5): a Group's `src_*` window is on the SAME grid
+ *  as the parent's `t_*`, or the reference is time-remapping under another
+ *  name. Rationals compare cross-multiplied (30/1 and 60/2 are one rate);
+ *  `width`/`height` may differ per composition and are not checked. */
+function validateLattice(c: Composition, root: Composition): void {
+  if (c.fps.num * root.fps.den !== root.fps.num * c.fps.den) fail({ rule: 'CompositionLatticeMismatch', composition: c.id, field: 'fps' })
+  if (c.sample_rate !== root.sample_rate) fail({ rule: 'CompositionLatticeMismatch', composition: c.id, field: 'sample_rate' })
+  if (c.channels !== root.channels) fail({ rule: 'CompositionLatticeMismatch', composition: c.id, field: 'channels' })
+}
+
+// ── Frame-grid backstop ───────────────────────────────────────────────────────
+// The endpoint invariant is STRUCTURAL, not per-mutation: every mutator snaps,
+// and these rules are what make "a committed project holds no off-grid timeline
+// time" true even for a mutator that forgot (docs/data-model.md § Timeline-field
+// alignment).
+//
+// Legacy off-grid data does NOT reach here: `replaceState` shares this validator
+// with `project_open`, so a hard rule alone would make an already-written
+// off-grid project unopenable. `parseProject` repairs on load instead, in one
+// pass, so validate only ever sees canonical input.
+
+/** The grid a layer's timeline endpoints must land on. Delegates to the ONE lookup
+ *  in `snap.ts` — the mutation snaps and `serialize.ts`'s load repair ask the same
+ *  function, which is what stops the three sites from disagreeing about where audio
+ *  lives (spec § Two data-loss dependencies).
+ *
+ *  Deliberately still NOT `i >= 0`: a negative canonical time passes this predicate
+ *  and is caught by `NegativeLayerStart` instead. Bounds and lattice stay separate
+ *  rules because they have different fixes — folding them together would report
+ *  "off grid" for a time that is exactly on it. */
+const layerEndpointGrid = gridForLayerKind
+
+/** Strip the `Grid` down to its wire shape for the error payload: `fps` carries the
+ *  lattice rational, `grid` names which lattice it is. Built here rather than
+ *  spreading the `Grid` so the extra field can never leak in unnoticed.
+ *
+ *  `snap_to` is computed HERE, at the one site that already holds the `Grid`, rather
+ *  than by the MCP layer that reports it — which keeps the error self-describing for
+ *  every consumer (status log, renderer, tests) and keeps the wasm-backed leaf out of
+ *  `mcp-commands.ts`'s otherwise pure module graph. */
+function offGridBoundary(layer: Uuid, field: 't_start_us' | 't_end_us', t: number, grid: Grid): ValidationError {
+  return { rule: 'OffGridLayerBoundary', layer, field, t, fps: { num: grid.num, den: grid.den }, grid: grid.domain, snap_to: snapOnGrid(t, grid) }
+}
+
+function validateComposition(c: Composition): void {
+  if (c.width === 0 || c.height === 0) fail({ rule: 'InvalidCanvas', width: c.width, height: c.height })
+  if (c.fps.num === 0 || c.fps.den === 0) fail({ rule: 'InvalidFps', num: c.fps.num, den: c.fps.den })
+  // The composition duration is a FRAME count even when the content reaching
+  // furthest is audio on the sample lattice — `applyDurationAutofit` rounds the
+  // high-water mark UP to the enclosing frame, so a sub-frame audio tail still fits
+  // inside the composition rather than pushing its duration off grid.
+  const compGrid = frameGrid(c.fps)
+  if (!isCanonicalOnGrid(c.duration_us, compGrid))
+    fail({ rule: 'OffGridTime', entity: 'Composition', id: c.id, field: 'duration_us', t: c.duration_us, fps: c.fps, snap_to: snapOnGrid(c.duration_us, compGrid) })
+}
+
+/** Marker times are on the composition grid (`snapMarkerTimes` is the mutation
+ *  side). Checked last so this rule never pre-empts an existing structural one.
+ *  Ids are PROJECT-wide unique (`seenMarkers` spans compositions), for the same
+ *  reason layer ids are: update/remove derive the composition from the id.
+ *
+ *  An anchor, when present, must resolve INSIDE this composition — `layersHere`
+ *  is the same one-composition layer set links are checked against, and for the
+ *  same reason: the project-wide set would accept a tie reaching into a Group,
+ *  which nothing can derive a `t_us` from (the two timelines have no shared
+ *  origin). The anchor layer must additionally carry a source window, since the
+ *  derivation reads `params.src_in_us`; an anchor on a Text or Color layer is
+ *  not representable rather than merely useless.
+ *
+ *  What is deliberately NOT checked: `anchor.src_us` against the layer's
+ *  `[src_in_us, src_out_us)` window. Outside it is the legal HIBERNATING state
+ *  (see `markerHibernating` in summary.ts) — the marker is kept, unpainted, and
+ *  revived by undoing the trim that pushed it out. Rejecting it here would make
+ *  an ordinary trim produce a project that cannot be committed, and then not
+ *  opened. This omission is a decision, not an oversight. */
+function validateMarkers(c: Composition, seenMarkers: Set<Uuid>): void {
+  const grid = frameGrid(c.fps)
+  // Built here rather than threaded in from `validateTrack`'s walk: it is
+  // needed only when a marker actually claims an anchor, and rebuilding it
+  // locally is what keeps "this composition's own layers" true by
+  // construction — the project-wide index could never express that.
+  let layersHere: Map<Uuid, LayerParams> | null = null
+  const paramsOf = (layer: Uuid): LayerParams | undefined => {
+    if (layersHere === null) {
+      layersHere = new Map()
+      for (const t of c.tracks) for (const l of t.layers) layersHere.set(l.id, l.params)
+    }
+    return layersHere.get(layer)
+  }
+  for (const m of c.markers) {
+    if (seenMarkers.has(m.id)) fail({ rule: 'DuplicateMarkerId', marker: m.id })
+    seenMarkers.add(m.id)
+    if (!isCanonicalOnGrid(m.t_us, grid))
+      fail({ rule: 'OffGridTime', entity: 'Marker', id: m.id, field: 't_us', t: m.t_us, fps: c.fps, snap_to: snapOnGrid(m.t_us, grid) })
+    if (m.end_t_us !== null && m.end_t_us !== undefined && !isCanonicalOnGrid(m.end_t_us, grid))
+      fail({ rule: 'OffGridTime', entity: 'Marker', id: m.id, field: 'end_t_us', t: m.end_t_us, fps: c.fps, snap_to: snapOnGrid(m.end_t_us, grid) })
+    if (m.anchor === null || m.anchor === undefined) continue
+    const params = paramsOf(m.anchor.layer)
+    if (params === undefined) fail({ rule: 'MarkerAnchorNotInComposition', marker: m.id, layer: m.anchor.layer, composition: c.id })
+    if (!hasSourceWindow(params)) fail({ rule: 'MarkerAnchorLayerHasNoSourceWindow', marker: m.id, layer: m.anchor.layer, kind: params.kind })
+  }
+}
+
+// ── Per-transition invariant — ONE predicate, TWO callers ─────────────────────
+// validateTransitions fails on it; reconcileTransitions drops on it. Keeping the
+// logic in a single function is the design's anti-drift guarantee (Policy B,
+// ADR 0035 § Reconcile on commit): validate and
+// reconcile can never disagree about what a healthy transition looks like.
+
+/** layer id → {track, start, end, kind} geometry snapshot for the predicate.
+ *  Per composition: a transition's participants share a track, so they share a
+ *  composition. */
+type TransitionLayerIndex = Map<Uuid, { track: Uuid; start: number; end: number; kind: LayerParams['kind'] }>
+function buildTransitionLayerIndex(c: Composition): TransitionLayerIndex {
+  const idx: TransitionLayerIndex = new Map()
+  for (const t of c.tracks) for (const l of t.layers) idx.set(l.id, { track: t.id, start: l.t_start_us, end: l.t_end_us, kind: l.params.kind })
+  return idx
+}
+
+/** The invariant an ordinary layer edit (trim/move/split/delete/track op) can
+ *  break: participants exist, same track, visual-only, duration in range,
+ *  overlap exactly equals duration. Structural corruption (duplicate transition
+ *  id, self-reference, LayerInMultipleTransitions, extended_us out of
+ *  [0, duration_us]) is deliberately NOT here — no layer edit can produce
+ *  those, so they stay validate-only failures; a reconcile that silently
+ *  swallowed them would mask real bugs. */
+function transitionInvariantError(tr: Transition, idx: TransitionLayerIndex): ValidationError | null {
+  const from = idx.get(tr.from_layer)
+  if (!from) return { rule: 'TransitionLayerMissing', transition: tr.id, layer: tr.from_layer }
+  const to = idx.get(tr.to_layer)
+  if (!to) return { rule: 'TransitionLayerMissing', transition: tr.id, layer: tr.to_layer }
+  if (from.track !== to.track) return { rule: 'TransitionCrossTrack', transition: tr.id, from: tr.from_layer, to: tr.to_layer }
+  // Visual participants only (audio crossfade is a named fast-follow). Backstop
+  // for applyAddTransition's mutation-level check — no path sneaks in a
+  // semantically dead audio transition (deserialize, replace_state, ...).
+  if (from.kind === 'Audio') return { rule: 'TransitionUnsupportedLayerKind', transition: tr.id, layer: tr.from_layer }
+  if (to.kind === 'Audio') return { rule: 'TransitionUnsupportedLayerKind', transition: tr.id, layer: tr.to_layer }
+  const fromLen = Math.max(from.end - from.start, 0)
+  const toLen = Math.max(to.end - to.start, 0)
+  if (tr.duration_us <= 0 || tr.duration_us > fromLen || tr.duration_us > toLen)
+    return { rule: 'TransitionDurationOutOfRange', transition: tr.id, duration: tr.duration_us }
+  const overlapStart = Math.max(from.start, to.start)
+  const overlapEnd = Math.min(from.end, to.end)
+  const overlap = Math.max(overlapEnd - overlapStart, 0)
+  // This equality IS the transition's frame-grid rule, and there is deliberately
+  // no `isCanonicalOn(tr.duration_us)` beside it: a duration is a DISTANCE
+  // between two canonical boundaries, and at fractional rates a distance is not
+  // itself a canonical time (a 1-frame transition at 30000/1001 is 33_367 µs at
+  // cut frame 0 and 33_366 µs at cut frame 1). Both participants' endpoints are
+  // grid-checked below, so overlap === duration_us already forces the duration to
+  // be a whole number of frames — asserting canonicality on top would be false at
+  // every fractional rate.
+  if (overlap !== tr.duration_us) return { rule: 'TransitionDurationMismatch', transition: tr.id, duration: tr.duration_us, overlap }
+  return null
+}
+
+/** Returns authorized overlaps (pairKey → overlap µs) for the per-track check. */
+function validateTransitions(c: Composition): Map<string, number> {
+  const idx = buildTransitionLayerIndex(c)
+  const authorized = new Map<string, number>()
+  const seenIds = new Set<Uuid>()
+  const asFrom = new Set<Uuid>()
+  const asTo = new Set<Uuid>()
+  for (const tr of c.transitions) {
+    if (seenIds.has(tr.id)) fail({ rule: 'DuplicateTransitionId', transition: tr.id })
+    seenIds.add(tr.id)
+    if (tr.from_layer === tr.to_layer) fail({ rule: 'TransitionSelfReference', transition: tr.id, layer: tr.from_layer })
+    // Borrowed-tail counter in its lane. VALIDATE-ONLY, like the two structural
+    // checks above and deliberately NOT in transitionInvariantError: only the
+    // transition commands write the counter and every layer edit that touches
+    // the participants' geometry breaks the overlap equality first, so no edit
+    // can corrupt it — a reconcile that dropped on it would be swallowing a
+    // writer bug (or hand-edited corruption) instead of surfacing it. The
+    // negated form also fails a non-numeric counter a hand-edited file smuggles
+    // past the parse backfill.
+    if (!(tr.extended_us >= 0 && tr.extended_us <= tr.duration_us))
+      fail({ rule: 'TransitionExtendedOutOfRange', transition: tr.id, extended: tr.extended_us, duration: tr.duration_us })
+    const invariantErr = transitionInvariantError(tr, idx)
+    if (invariantErr !== null) fail(invariantErr)
+    if (asFrom.has(tr.from_layer)) fail({ rule: 'LayerInMultipleTransitions', layer: tr.from_layer })
+    asFrom.add(tr.from_layer)
+    if (asTo.has(tr.to_layer)) fail({ rule: 'LayerInMultipleTransitions', layer: tr.to_layer })
+    asTo.add(tr.to_layer)
+    // Predicate passed ⇒ geometric overlap === duration_us.
+    authorized.set(pairKey(tr.from_layer, tr.to_layer), tr.duration_us)
+  }
+  return authorized
+}
+
+export interface DroppedTransition { id: Uuid; from_layer: Uuid; to_layer: Uuid; reason: ValidationError }
+
+/** Reconcile-on-commit (Policy B): remove every transition whose invariant no
+ *  longer holds, in every composition. The actor runs this inside commit's
+ *  produce() — AFTER the mutation apply, BEFORE validate — so ordinary edits
+ *  stay transition-blind and the removal lands in the SAME history snapshot
+ *  (one undo restores the edit and the transition together). Deliberately does
+ *  NOT shrink the outgoing layer back: the user's edit defines the new shape
+ *  (only the explicit applyRemoveTransition shrinks). Returns primitive drop
+ *  info (never draft references — immer revokes them) for the actor's
+ *  status-log rows. */
+export function reconcileTransitions(p: Project): DroppedTransition[] {
+  const dropped: DroppedTransition[] = []
+  for (const c of Object.values(p.compositions)) {
+    if (c.transitions.length === 0) continue
+    const idx = buildTransitionLayerIndex(c)
+    const kept: Transition[] = []
+    let droppedHere = false
+    for (const tr of c.transitions) {
+      const reason = transitionInvariantError(tr, idx)
+      if (reason === null) kept.push(tr)
+      else { dropped.push({ id: tr.id, from_layer: tr.from_layer, to_layer: tr.to_layer, reason }); droppedHere = true }
+    }
+    if (droppedHere) c.transitions = kept
+  }
+  return dropped
+}
+
+export interface DroppedMarker { id: Uuid; composition: Uuid; layer: Uuid; label: string }
+
+/** Markers sorted by `t_us` — the invariant `markerStartingInFrame` (the lane's
+ *  frame lookup) and `applyAddMarker`'s insertion scan both read. The same
+ *  stable comparator `applyUpdateMarker` re-sorts with, so a marker that lands
+ *  on an existing marker's frame keeps its relative order however it got there. */
+function sortMarkers(c: Composition): void {
+  c.markers.sort((a, b) => (a.t_us < b.t_us ? -1 : a.t_us > b.t_us ? 1 : 0))
+}
+
+/** Reconcile-on-commit for anchored markers, the twin of `reconcileTransitions`
+ *  and run from the same slot in the actor's `produce()` — AFTER the mutation
+ *  apply, BEFORE validate. The three reasons are the transitions' three
+ *  verbatim: ordinary edits stay marker-blind (no mutation needs to know
+ *  markers exist), the correction lands in the SAME history snapshot as the
+ *  edit (one undo restores both), and what comes back is PRIMITIVE drop info,
+ *  never draft references — immer revokes those the moment `produce` returns.
+ *
+ *  `anchor` is truth and `t_us` is the cache this rebuilds:
+ *
+ *      t_us = snapFrameRound(layer.t_start_us + (src_us − params.src_in_us), fps)
+ *
+ *  the same source→timeline mapping `resolveShotCuts` performs, and valid only
+ *  while that mapping is speed=1. LANDMINE: variable speed is deferred there and
+ *  here alike, and when it lands this addition becomes a time remap — the field
+ *  is right, the arithmetic is what needs revisiting.
+ *
+ *  Four cases, and only the first two write anything:
+ *
+ *  - **Anchor layer nowhere in the project** — the clip was deleted. DROP the
+ *    marker and report it, the same policy a transition takes when a
+ *    participant leaves: delete means delete, and a clip-scoped mark outlives
+ *    nothing.
+ *  - **Layer here, `src_us` inside its window** — re-derive `t_us` (and carry a
+ *    region's `end_t_us` by the same frame delta, so the span the user drew
+ *    survives the follow and can never invert), then re-sort the composition.
+ *  - **Layer here, `src_us` outside `[src_in_us, src_out_us)`** — HIBERNATING.
+ *    Keep the anchor, freeze `t_us`, derive nothing. Hibernation is never stored:
+ *    it is recomputed here every commit, which is exactly what makes revival on
+ *    re-extend or undo automatic and free.
+ *  - **Layer in ANOTHER composition** — leave the marker exactly where it is.
+ *    Not a drop condition: the layer is alive, so this can only mean a
+ *    cross-composition move failed to carry its markers along
+ *    (`moveLinksTransitionsAndMarkers`), and validate then refuses the whole
+ *    commit with `MarkerAnchorNotInComposition`. Dropping instead would destroy
+ *    the user's marker AND hide the bug that caused it. The "gone" test is
+ *    therefore project-wide and deliberately runs SECOND, only for an anchor
+ *    this composition cannot resolve.
+ *
+ *  A free marker (`anchor === null`) is never touched by any of it. */
+export function reconcileMarkers(p: Project): DroppedMarker[] {
+  const dropped: DroppedMarker[] = []
+  // Built at most once per commit, and only when some anchor misses its own
+  // composition — the rare arm. Every other marker is answered by the
+  // per-composition index below, which the derivation needs anyway.
+  let projectLayers: Set<Uuid> | null = null
+  const existsAnywhere = (layer: Uuid): boolean => {
+    if (projectLayers === null) {
+      const seen = new Set<Uuid>()
+      for (const e of eachLayer(p)) seen.add(e.layer.id)
+      projectLayers = seen
+    }
+    return projectLayers.has(layer)
+  }
+  for (const c of Object.values(p.compositions)) {
+    if (c.markers.length === 0) continue
+    let here: Map<Uuid, Layer> | null = null
+    const layerHere = (id: Uuid): Layer | undefined => {
+      if (here === null) {
+        const idx = new Map<Uuid, Layer>()
+        for (const t of c.tracks) for (const l of t.layers) idx.set(l.id, l)
+        here = idx
+      }
+      return here.get(id)
+    }
+    const goneHere = new Set<Uuid>()
+    let moved = false
+    for (const m of c.markers) {
+      const anchor = m.anchor
+      if (anchor === null || anchor === undefined) continue
+      const layer = layerHere(anchor.layer)
+      if (layer === undefined) {
+        if (!existsAnywhere(anchor.layer)) {
+          dropped.push({ id: m.id, composition: c.id, layer: anchor.layer, label: m.label })
+          goneHere.add(m.id)
+        }
+        continue
+      }
+      // Redundant against the line below — the shared predicate already reads a
+      // windowless kind as asleep — and kept because it is what narrows
+      // `layer.params` to the arm carrying the `src_in_us` the derivation reads.
+      // Such an anchor never survives the commit anyway
+      // (`MarkerAnchorLayerHasNoSourceWindow`); this only decides what happens
+      // in the moment between the mutation and the validate that refuses it.
+      if (!hasSourceWindow(layer.params)) continue
+      if (markerHibernatingForLayer(m, layer)) continue
+      const t = sourceInstantTimelineUs(layer, anchor, c.fps)
+      if (t === m.t_us) continue
+      // A region carries its END by the same frame delta rather than a second
+      // anchor: one tie means one mapping, and holding `end_t_us` still while
+      // `t_us` follows would stretch the span and eventually invert it.
+      // Re-snapped rather than added, because the difference of two canonical
+      // times is not itself canonical at a fractional rate.
+      if (m.end_t_us !== null && m.end_t_us !== undefined)
+        m.end_t_us = snapFrameRound(m.end_t_us + (t - m.t_us), c.fps.num, c.fps.den)
+      m.t_us = t
+      moved = true
+    }
+    if (goneHere.size > 0) c.markers = c.markers.filter((m) => !goneHere.has(m.id))
+    if (moved) sortMarkers(c)
+  }
+  return dropped
+}
+
+function validateLayerParams(p: Project, layer: Layer): void {
+  // Out-of-range keyframes are intentionally NOT checked.
+  // Neither are OFF-GRID keyframe times, and for a sharper reason: content-glued
+  // rebases (`trim.ts` shiftLayerKeyframes, `split.ts` shiftKeyframes) move keys by
+  // a DELTA, and the difference of two canonical times is not canonical at
+  // fractional rates. Re-snapping to satisfy a rule here would run
+  // `normalizeKeyframes`' dedupe-last-wins over the shifted set and SILENTLY MERGE
+  // two keys that landed on one frame — authored data lost. The visible cost of
+  // leaving it is a ≤ half-frame offset on an interpolated value.
+  const pa = layer.params
+  try {
+    if (pa.kind !== 'Color' && pa.kind !== 'Text') {
+      layerRate(pa);
+      if (pa.source_phase) { validateTimeFraction(pa.source_phase.in); validateTimeFraction(pa.source_phase.out); }
+      if (pa.fade_phase) { validateTimeFraction(pa.fade_phase.in); validateTimeFraction(pa.fade_phase.out); }
+      if (pa.preserve_pitch !== undefined && typeof pa.preserve_pitch !== 'boolean') throw new TimeMappingError('InvalidNumber');
+      if (pa.frame_interpolation && pa.frame_interpolation.kind !== 'FrameSampling')
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'frame_interpolation', detail: 'This build supports FrameSampling only' });
+      const start = sourceIn(pa), end = sourceOut(layer);
+      if (compareTime(start, ZERO_TIME) < 0 || compareTime(start, end) >= 0) fail({ rule: 'InvalidSrcRange', layer: layer.id, src_in: approximateTime(start), src_out: approximateTime(end) });
+      if (pa.kind === 'VideoClip' || pa.kind === 'Audio') {
+        const duration = p.media_pool[pa.media]?.metadata.duration_us;
+        if (duration != null && compareTime(end, exactTime(duration)) > 0)
+          fail({ rule: 'SrcRangeExceedsMedia', layer: layer.id, src_in: approximateTime(start), src_out: approximateTime(end), media_duration: duration });
+      }
+    }
+    const check = (track: import('./model').Animated<unknown>) => {
+      if (track.mode === 'Keyframed') for (const key of track.value) {
+        if (key.time_fraction) validateTimeFraction(key.time_fraction);
+        keyTimeExact(key);
+      }
+    };
+    forEachAnimatedF64(pa, check); forEachAnimatedRgba(pa, check);
+    for (const effect of layer.effects) for (const track of Object.values(effect.params)) check(track);
+  } catch (error) {
+    if (error instanceof TimeMappingError) throw new CommandFailure({ error: 'InvalidArgument', field: 'timing', detail: error.code });
+    throw error;
+  }
+  if (pa.kind === 'VideoClip' && pa.crop != null) {
+    const problem = cropProblem(pa.crop)
+    if (problem) throw new CommandFailure({ error: 'InvalidArgument', field: 'crop', detail: problem })
+  }
+  if (pa.kind === 'Text' || pa.kind === 'ImageOverlay' || pa.kind === 'Motif') {
+    const problem = graphicRoleProblem(pa.graphic_role)
+    if (problem) throw new CommandFailure({ error: 'InvalidArgument', field: 'graphic_role', detail: problem })
+  }
+  if ((pa.kind === 'VideoClip' || pa.kind === 'Audio' || pa.kind === 'ImageOverlay') && !(pa.media in p.media_pool))
+    fail({ rule: 'MissingMedia', layer: layer.id, media: pa.media })
+  if (pa.kind === 'Motif' && !Object.hasOwn(p.motifs, pa.motif_id))
+    fail({ rule: 'MotifNotInProject', layer: layer.id, motif_id: pa.motif_id })
+  // A CompositionRef's window has only the lower checks above and NO upper bound:
+  // `src_out_us` past the referenced composition's `duration_us` is tolerated in
+  // state and clamped at the gesture (ADR 0052 §6), or deleting a layer INSIDE a
+  // Group would be refused because a parent's window overhangs. Target existence
+  // is validateCompositionRefs' (it needs the whole graph for the cycle check).
+}
+
+function validateTrack(p: Project, c: Composition, track: Track, authorized: Map<string, number>, seenLayers: Set<Uuid>, layersHere: Set<Uuid>): void {
+  const sorted = [...track.layers].sort((x, y) => x.t_start_us - y.t_start_us)
+  let prevVisual: Layer | null = null
+  let prevAudio: Layer | null = null
+  for (const layer of sorted) {
+    if (seenLayers.has(layer.id)) fail({ rule: 'DuplicateLayerId', layer: layer.id })
+    seenLayers.add(layer.id)
+    layersHere.add(layer.id)
+    if (layer.t_start_us >= layer.t_end_us) fail({ rule: 'InvalidLayerRange', layer: layer.id, t_start: layer.t_start_us, t_end: layer.t_end_us })
+    // Bounds BEFORE lattice: a negative start is usually also off-grid, and
+    // "off grid" is the less actionable of the two reports (the caller's mistake was
+    // the sign, not the quantum). `t_end` needs no companion rule — start >= 0 and
+    // start < end together force it positive.
+    if (layer.t_start_us < 0) fail({ rule: 'NegativeLayerStart', layer: layer.id, t_start: layer.t_start_us })
+    const grid = layerEndpointGrid(layer.params.kind, c.fps)
+    if (!isCanonicalOnGrid(layer.t_start_us, grid))
+      fail(offGridBoundary(layer.id, 't_start_us', layer.t_start_us, grid))
+    if (!isCanonicalOnGrid(layer.t_end_us, grid))
+      fail(offGridBoundary(layer.id, 't_end_us', layer.t_end_us, grid))
+    validateLayerParams(p, layer)
+    const cls = layerOverlapClass(layer.params)
+    const prev = cls === 'visual' ? prevVisual : prevAudio
+    // Half-open `[t_start, t_end)`, which is what makes this correct at the audio
+    // lattice's 20.83 µs quantum for free: two audio layers whose edges differ by
+    // ONE SAMPLE do not overlap, and abutting ones (start === prev end) do not
+    // either. No sample-aware special case is wanted here — a tolerance would be
+    // the bug, not the fix.
+    if (prev && layer.t_start_us < prev.t_end_us) {
+      const overlap = prev.t_end_us - layer.t_start_us
+      const allowed = authorized.get(pairKey(prev.id, layer.id)) ?? 0
+      if (allowed !== overlap)
+        fail({ rule: 'LayerOverlap', track: track.id, a: prev.id, a_start: prev.t_start_us, a_end: prev.t_end_us, b: layer.id, b_start: layer.t_start_us, b_end: layer.t_end_us })
+    }
+    // Track the longest-reaching prior layer of this class (handles a long
+    // clip starting earlier than a short one).
+    if (cls === 'visual') prevVisual = prevVisual && prevVisual.t_end_us >= layer.t_end_us ? prevVisual : layer
+    else prevAudio = prevAudio && prevAudio.t_end_us >= layer.t_end_us ? prevAudio : layer
+  }
+}
+
+function validateLinks(c: Composition, knownLayers: Set<Uuid>): void {
+  const seenIds = new Set<Uuid>()
+  const layerToLink = new Map<Uuid, Uuid>()
+  for (const g of c.links) {
+    if (seenIds.has(g.id)) fail({ rule: 'DuplicateLinkId', link: g.id })
+    seenIds.add(g.id)
+    if (g.members.length < 2) fail({ rule: 'LinkBelowMinSize', link: g.id, members: g.members.length })
+    for (const m of g.members) {
+      if (!knownLayers.has(m)) fail({ rule: 'LinkMemberMissing', link: g.id, layer: m })
+      const first = layerToLink.get(m)
+      if (first !== undefined) fail({ rule: 'LayerInMultipleLinks', layer: m, first, second: g.id })
+      layerToLink.set(m, g.id)
+    }
+  }
+}
+
+/** The reference graph (ADR 0052 §3): every `CompositionRef` names an existing
+ *  composition that is not the root, and no chain of references closes on
+ *  itself. One pass collects the edges; a white/grey/black DFS then starts from
+ *  EVERY composition — orphans (referenced by nothing) are legal and may cycle
+ *  among themselves, so a walk from the root alone would miss them. */
+function validateCompositionRefs(p: Project): void {
+  const refs = new Map<Uuid, Uuid[]>()
+  for (const id of Object.keys(p.compositions)) refs.set(id, [])
+  for (const { composition, layer } of eachLayer(p)) {
+    const pa = layer.params
+    if (pa.kind !== 'CompositionRef') continue
+    if (!(pa.composition in p.compositions)) fail({ rule: 'CompositionMissing', layer: layer.id, composition: pa.composition })
+    if (pa.composition === p.root_id) fail({ rule: 'RootReferenced', layer: layer.id })
+    refs.get(composition.id)!.push(pa.composition)
+  }
+  const state = new Map<Uuid, 'grey' | 'black'>()
+  const path: Uuid[] = []
+  const visit = (id: Uuid): void => {
+    const s = state.get(id)
+    if (s === 'black') return
+    // `path` from the repeated id back round to it, so the report reads as the
+    // loop it is: `[A, B, A]`.
+    if (s === 'grey') fail({ rule: 'CompositionCycle', path: [...path.slice(path.indexOf(id)), id] })
+    state.set(id, 'grey')
+    path.push(id)
+    for (const next of refs.get(id) ?? []) visit(next)
+    path.pop()
+    state.set(id, 'black')
+  }
+  for (const id of Object.keys(p.compositions)) visit(id)
+  const checkClock = (id: string, clock: CompositionClock): void => {
+    for (const track of p.compositions[id].tracks) for (const layer of track.layers) {
+      if (layer.params.kind === 'CompositionRef') checkClock(layer.params.composition, enterClock(clock, layer));
+    }
+  };
+  try { for (const id of Object.keys(p.compositions)) checkClock(id, ROOT_CLOCK); }
+  catch (e) { if (e instanceof TimeMappingError) throw new CommandFailure({ error: 'RetimeRejected', reason: { kind: 'Numeric', reason: e.code } }); throw e; }
+}

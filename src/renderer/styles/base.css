@@ -1,0 +1,110 @@
+:root {
+  color-scheme: dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Tailwind preflight sets `html { line-height: 1.5 }`; every legacy
+   * layout in this file was sized against the UA default (`normal`,
+   * ~1.2). Pin the pre-Tailwind metric here (unlayered, so it beats preflight's
+   * @layer base). New shadcn components are unaffected: their text-*
+   * utilities set their own line-height. */
+  line-height: normal;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+* {
+  box-sizing: border-box;
+  /* One scrollbar style app-wide. Chromium draws the bar itself: a thin
+   * classic bar that takes layout width on Windows and Linux, an overlay
+   * bar on macOS. Once either property is set Chromium ignores every
+   * ::-webkit-scrollbar rule, so scrollbar styling belongs here. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+/* Some canvas-like surfaces scroll without exposing browser chrome. */
+.scrollbar-hidden {
+  scrollbar-width: none;
+}
+
+html, body, #root { height: 100%; margin: 0; }
+
+/* Frameless main-window edge. An inset overlay preserves every existing layout
+ * dimension while separating WeftCut's near-black surface from a dark desktop.
+ * Keep the edge neutral: blue remains reserved for focus and selection.
+ * The 0.10/0.08 (focused/unfocused) alphas stay literal — this OS-adjacent
+ * chrome keeps its own calibration instead of joining --border-on-dark.
+ * The radius follows the frameless window's own rounded mask: Chromium rounds
+ * frameless windows at 8px on Linux and Windows 11, so a square hairline would
+ * visibly cut the corners. Maximized/fullscreen windows are square and the
+ * edge is hidden there anyway (below). */
+html.app-window-framed::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  pointer-events: none;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+}
+
+html.app-window-framed.app-window-inactive::after {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+html.app-window-framed.app-window-maximized::after,
+html.app-window-framed.app-window-fullscreen::after,
+html.app-window-framed:fullscreen::after {
+  display: none;
+}
+
+/* macOS keeps the native window frame (titleBarStyle: 'hidden' — rounded
+   corners, shadow, border), so the self-drawn inset edge would double up. */
+html.platform-mac.app-window-framed::after {
+  display: none;
+}
+
+/* Desktop-app selection model: nothing is selectable by default —
+ * pointer drags belong to the timeline, sliders, and the window drag
+ * region, not to text selection. Content the user legitimately edits
+ * or copies opts back in below. */
+body {
+  user-select: none;
+}
+
+input,
+textarea,
+[contenteditable] {
+  user-select: text;
+}
+
+button.preview-timecode {
+  user-select: none;
+  cursor: text;
+  outline: none;
+  background: transparent;
+  border: none;
+  padding: 0 0 0 calc(4 * var(--ui-px));
+  border-radius: var(--radius-control);
+}
+
+button.preview-timecode:hover {
+  color: var(--foreground);
+}
+
+button.preview-timecode:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+input.preview-timecode {
+  background: var(--hover-neutral);
+  border: 1px solid var(--border-on-dark);
+  border-radius: var(--radius-control);
+  color: var(--foreground);
+  padding: 1px calc(4 * var(--ui-px));
+  outline: none;
+  width: 13ch;
+}
+
+input.preview-timecode:focus {
+  border-color: var(--selection);
+}

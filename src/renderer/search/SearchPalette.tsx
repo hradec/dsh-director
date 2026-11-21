@@ -1,0 +1,464 @@
+import { useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { CheckIcon } from "lucide-react";
+import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
+import { Dialog, DialogOverlay, DialogPortal } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
+import { AppInput } from "../components/AppInput";
+import { getCommand } from "../commands/registry";
+import { formatTimecode } from "../frames";
+import { logEmit } from "../ipc";
+import { resolveAccelerator } from "../shortcuts/match";
+import { useEffectiveBindings } from "../shortcuts/bindings-context";
+import {
+  jumpToLayer,
+  jumpToTimeUs,
+  revealInMediaPool,
+  revealLayerWithoutSeek,
+} from "../state/navigation";
+import { focusedRootUs } from "../state/playheadProjection";
+import { useOpenComposition } from "../state/projectStore";
+import { openComposition, focusedCompositionId } from "../state/compositionAnchorStore";
+import { GROUP_ORDER, rankEntries, type RankedResult } from "./matcher";
+import { useSearchEntries } from "./searchIndexStore";
+import type { MediaUsage, SearchEntryType } from "./types";
+import { AppIcon } from "@/components/AppIcon";
+
+const VISIBLE_PER_GROUP = 5;
+const RANK_CAP = 50;
+/// How much of an entry's detail text one row may spend. The context line is a
+/// single line in a narrow overlay, and it already carries where and when.
+const DETAIL_EXCERPT_MAX = 48;
+/// Characters kept ahead of the hit, so the matched words are not flush against
+/// the leading ellipsis with nothing around them to read them in.
+const DETAIL_EXCERPT_LEAD = 8;
+
+interface MediaSubList {
+  label: string;
+  mediaId: string;
+  usages: MediaUsage[];
+}
+
+function logStaleTarget(): void {
+  void logEmit({
+    level: "info",
+    category: { kind: "System" },
+    source: { kind: "User" },
+    message: "search: target no longer exists",
+  });
+}
+
+/// The global search palette (Mod+K): fuzzy-ranked commands/media/tracks/
+/// clips/captions/markers/descriptions in one Spotlight-style overlay. Mounted
+/// conditionally by App.tsx (mount == open, same convention as every other
+/// dialog in the app); the Dialog's `onOpenChange` is the single Esc/
+/// backdrop path and unwinds one level (media sub-list → results → closed)
+/// per the behavior contract.
+export function SearchPalette({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
+  const entries = useSearchEntries();
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const [sub, setSubState] = useState<MediaSubList | null>(null);
+  const [expanded, setExpanded] = useState<Set<SearchEntryType>>(new Set());
+  const subRef = useRef<MediaSubList | null>(null);
+  const setSub = (v: MediaSubList | null) => { subRef.current = v; setSubState(v); };
+  const comp = useOpenComposition();
+  const fpsNum = comp?.fps_num ?? 30;
+  const fpsDen = comp?.fps_den ?? 1;
+
+  const grouped = useMemo(() => rankEntries(query, entries, RANK_CAP), [query, entries]);
+  // Visible rows after per-group slicing; `flat` drives keyboard order.
+  // `flatIndex` is the row → keyboard-position lookup so each rendered row
+  // knows its index without a per-row O(n) search.
+  const { flat, flatIndex, truncatedCounts } = useMemo(() => {
+    const flat: RankedResult[] = [];
+    const flatIndex = new Map<RankedResult, number>();
+    const truncatedCounts = new Map<SearchEntryType, number>();
+    for (const g of GROUP_ORDER) {
+      const rows = grouped.get(g) ?? [];
+      const visible = expanded.has(g) ? rows : rows.slice(0, VISIBLE_PER_GROUP);
+      for (const r of visible) {
+        flatIndex.set(r, flat.length);
+        flat.push(r);
+      }
+      if (rows.length > visible.length) truncatedCounts.set(g, rows.length - visible.length);
+    }
+    return { flat, flatIndex, truncatedCounts };
+  }, [grouped, expanded]);
+
+  type SubAction =
+    | { kind: "reveal"; mediaId: string }
+    | { kind: "usage"; usage: MediaUsage };
+  const subActions: SubAction[] = useMemo(() => {
+    if (!sub) return [];
+    return [
+      { kind: "reveal" as const, mediaId: sub.mediaId },
+      ...sub.usages.map((usage) => ({ kind: "usage" as const, usage })),
+    ];
+  }, [sub]);
+
+  const count = sub ? subActions.length : flat.length;
+  const clampedActive = Math.min(active, Math.max(0, count - 1));
+
+  const activate = (idx: number) => {
+    if (sub) {
+      const a = subActions[idx];
+      if (!a) return;
+      if (a.kind === "reveal") {
+        if (!revealInMediaPool(a.mediaId)) logStaleTarget();
+      } else if (!jumpToLayer(a.usage.layerId)) {
+        logStaleTarget();
+      }
+      onClose();
+      return;
+    }
+    const r = flat[idx];
+    if (!r) return;
+    const p = r.entry.payload;
+    switch (p.type) {
+      case "command": {
+        const cmd = getCommand(p.commandId);
+        if (!cmd || cmd.enabled?.() === false) return;
+        onClose(); // close first — the command may open its own dialog
+        void cmd.run();
+        return;
+      }
+      case "media":
+        if (p.usages.length === 0) {
+          // Unused media: skip the one-row sub-list, reveal directly.
+          if (!revealInMediaPool(p.mediaId)) logStaleTarget();
+          onClose();
+          return;
+        }
+        setSub({ label: r.entry.label, mediaId: p.mediaId, usages: p.usages });
+        setActive(0);
+        return;
+      case "group":
+        // Enter it. Reuse — placing a second instance — is a drag from the pool,
+        // so the palette's one keyboard answer for a Group is the useful one.
+        if (!openComposition(p.compositionId, null)) logStaleTarget();
+        onClose();
+        return;
+      case "track":
+        if (p.firstLayerId && !jumpToLayer(p.firstLayerId)) logStaleTarget();
+        onClose();
+        return;
+      case "clip":
+      case "caption":
+        if (!jumpToLayer(p.layerId)) logStaleTarget();
+        onClose();
+        return;
+      case "marker":
+        // The marker's timeline first — a seek means nothing on another one.
+        if (
+          p.compositionId !== focusedCompositionId() &&
+          !openComposition(p.compositionId, null)
+        ) {
+          logStaleTarget();
+          onClose();
+          return;
+        }
+        // The marker's time is on ITS composition's clock, and that
+        // composition is open by now — so the moment to park the film on is
+        // that time projected up through the anchor the open gave it.
+        jumpToTimeUs(focusedRootUs(p.tUs));
+        onClose();
+        return;
+      case "description":
+        // The clip first, and it carries the composition hop: a description is
+        // prose about one clip, so selecting that clip is half the answer and
+        // the timeline it lives on has to be the open one before the other
+        // half means anything.
+        if (!revealLayerWithoutSeek(p.layerId)) {
+          logStaleTarget();
+          onClose();
+          return;
+        }
+        // Then the described stretch itself, rather than the clip's start —
+        // the whole point of the row is where in the clip that content is.
+        // Skipped when the clip has moved to another composition since the
+        // index was built: `tStartUs` is on the recorded one's clock and names
+        // no instant of the timeline now open, and a wrong seek is worse than
+        // none when the selection already landed.
+        if (p.compositionId === focusedCompositionId()) {
+          jumpToTimeUs(focusedRootUs(p.tStartUs));
+        }
+        onClose();
+        return;
+    }
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((v) => Math.min(v + 1, count - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((v) => Math.max(v - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      activate(clampedActive);
+    }
+    // Escape is NOT handled here — the Dialog's onOpenChange intercept
+    // below unwinds one level at a time (sub-list → results → closed)
+    // and catches backdrop clicks through the same path.
+  };
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (open) return;
+        if (subRef.current) {
+          setSub(null);
+          setActive(0);
+          return;
+        }
+        onClose();
+      }}
+    >
+      <DialogPortal>
+        <DialogOverlay className="search-palette-backdrop bg-black/50 supports-backdrop-filter:backdrop-blur-none" />
+        <DialogPrimitive.Popup className="search-palette" aria-label={t("actions.open_search")}>
+          <div className="search-palette-input">
+            <AppInput
+              type="search"
+              clearable
+              autoFocus
+              placeholder={t("search.placeholder")}
+              ariaLabel={t("search.placeholder")}
+              clearAriaLabel={t("media_pool.clear_search")}
+              value={query}
+              onValueChange={(v) => {
+                setQuery(v);
+                setActive(0);
+                setSub(null);
+              }}
+              onKeyDown={onKeyDown}
+            />
+          </div>
+          <div className="search-palette-list" role="listbox">
+            {sub ? (
+              <>
+                <div className="search-group-header">{sub.label}</div>
+                {subActions.map((a, i) => (
+                  <SubActionRow
+                    key={a.kind === "reveal" ? "reveal" : a.usage.layerId}
+                    action={a}
+                    fpsNum={fpsNum}
+                    fpsDen={fpsDen}
+                    active={i === clampedActive}
+                    onHover={() => setActive(i)}
+                    onActivate={() => activate(i)}
+                  />
+                ))}
+              </>
+            ) : flat.length === 0 ? (
+              <div className="search-empty">{t("search.no_results", { query })}</div>
+            ) : (
+              GROUP_ORDER.map((g) => grouped.has(g) ? (
+                <div key={g}>
+                  <div className="search-group-header">{t(`search.group_${g}`)}</div>
+                  {(expanded.has(g)
+                    ? grouped.get(g)!
+                    : grouped.get(g)!.slice(0, VISIBLE_PER_GROUP)
+                  ).map((r) => {
+                    const idx = flatIndex.get(r) ?? -1;
+                    return (
+                      <ResultRow
+                        key={r.entry.key}
+                        r={r}
+                        query={query}
+                        active={idx === clampedActive}
+                        onHover={() => setActive(idx)}
+                        onActivate={() => activate(idx)}
+                      />
+                    );
+                  })}
+                  {truncatedCounts.has(g) && (
+                    <button
+                      type="button"
+                      className="search-show-more"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        // Expanding this group inserts `delta` rows into
+                        // `flat` BEFORE every later group — shift the
+                        // keyboard cursor by the same amount when it sits
+                        // in one of those later groups, so the highlighted
+                        // row (not just its index) survives the expansion.
+                        // Rows in/before this group keep their indices:
+                        // the visible slice is a stable prefix.
+                        const delta = truncatedCounts.get(g) ?? 0;
+                        const activeGroup = flat[clampedActive]?.entry.type;
+                        if (
+                          activeGroup !== undefined &&
+                          GROUP_ORDER.indexOf(activeGroup) > GROUP_ORDER.indexOf(g)
+                        ) {
+                          setActive(clampedActive + delta);
+                        }
+                        setExpanded((prev) => new Set(prev).add(g));
+                      }}
+                    >
+                      {t("search.show_more", { count: truncatedCounts.get(g) })}
+                    </button>
+                  )}
+                </div>
+              ) : null)
+            )}
+          </div>
+        </DialogPrimitive.Popup>
+      </DialogPortal>
+    </Dialog>
+  );
+}
+
+function HighlightedLabel({ label, indexes }: { label: string; indexes: number[] }) {
+  if (indexes.length === 0) return <>{label}</>;
+  const set = new Set(indexes);
+  const out: React.ReactNode[] = [];
+  // fuzzysort indexes are UTF-16 code units; render per code point so
+  // surrogate pairs (emoji in labels) stay whole and offsets stay aligned.
+  let unit = 0;
+  for (const ch of label) {
+    const hit = set.has(unit) || (ch.length === 2 && set.has(unit + 1));
+    out.push(hit ? <mark key={unit}>{ch}</mark> : <span key={unit}>{ch}</span>);
+    unit += ch.length;
+  }
+  return <>{out}</>;
+}
+
+/// A one-line window onto text the row shows nowhere else, opened at the query
+/// wherever the query occurs in it literally. This is the only layer holding
+/// both halves of that question — the index is built without ever seeing a
+/// query, and the ranker knows which haystack won but not what was typed — so
+/// the window is cut here. A pinyin or fuzzy hit has no literal position to open
+/// at and falls back to the head, which still shows text the label didn't.
+function detailExcerpt(text: string, query: string): string {
+  if (text.length <= DETAIL_EXCERPT_MAX) return text;
+  const q = query.trim().toLowerCase();
+  const at = q ? text.toLowerCase().indexOf(q) : -1;
+  const start =
+    at < 0
+      ? 0
+      : Math.max(0, Math.min(at - DETAIL_EXCERPT_LEAD, text.length - DETAIL_EXCERPT_MAX));
+  const end = start + DETAIL_EXCERPT_MAX;
+  return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
+}
+
+function ResultRow({
+  r,
+  query,
+  active,
+  onHover,
+  onActivate,
+}: {
+  r: RankedResult;
+  query: string;
+  active: boolean;
+  onHover: () => void;
+  onActivate: () => void;
+}) {
+  const { t } = useTranslation();
+  const p = r.entry.payload;
+  const binding = useEffectiveBindings(p.type === "command" ? p.actionId : undefined);
+  const accelerator = binding ? resolveAccelerator(binding) : "";
+  const command = p.type === "command" ? getCommand(p.commandId) : undefined;
+  const disabled = command?.enabled?.() === false;
+  // Which way a checkable command is currently set — `undefined` for everything
+  // that isn't checkable, which is most rows. Read live, in this row's own
+  // render, for the same reason `enabled` is: the index is rebuilt on a debounce
+  // and would carry a stale answer. Without it the palette lists a toggle
+  // without saying which way selecting it would flip it.
+  const checked = command?.checked?.();
+  // "Nothing places this" — a media item on no track, or a composition no Group
+  // clip shows. One note, because it is one fact about a source.
+  const unused =
+    (p.type === "media" && p.usages.length === 0) ||
+    (p.type === "group" && p.refCount === 0);
+  // Found by text the row doesn't show: without the words themselves the row
+  // reads as a result that doesn't contain what was typed.
+  const detail = r.entry.detail;
+  const excerpt =
+    detail && r.matchedHaystack >= detail.from ? detailExcerpt(detail.text, query) : "";
+  return (
+    <div
+      role="option"
+      tabIndex={-1}
+      aria-selected={active}
+      {...(checked === undefined ? {} : { "aria-checked": checked })}
+      aria-disabled={disabled || undefined}
+      className={cn("search-row", active && "is-active", disabled && "is-disabled")}
+      // Keep focus in the input (AppInput clear-button precedent).
+      onMouseDown={(e) => e.preventDefault()}
+      onMouseMove={onHover}
+      onClick={onActivate}
+      ref={(el) => {
+        if (active) el?.scrollIntoView({ block: "nearest" });
+      }}
+    >
+      <span className="search-row-label">
+        <HighlightedLabel label={r.entry.label} indexes={r.highlight} />
+      </span>
+      {p.type === "media" && !p.available && (
+        <span className="search-row-badge">{t("search.missing_badge")}</span>
+      )}
+      <span className="search-row-context">
+        {unused
+          ? t("search.unused")
+          : excerpt
+            ? `${r.entry.context} · ${excerpt}`
+            : r.entry.context}
+      </span>
+      {/* Right-hand end, beside the accelerator, rather than a leading check
+          slot like the menus': most rows here are not commands, so a leading
+          slot would either indent every label in the palette or indent only the
+          checkable rows. `aria-checked` on the row above carries this to a
+          screen reader, hence aria-hidden. */}
+      {checked && (
+        <span className="search-row-check" aria-hidden="true">
+          <AppIcon icon={CheckIcon} size="body" />
+        </span>
+      )}
+      {accelerator && <kbd className="search-row-kbd">{accelerator}</kbd>}
+    </div>
+  );
+}
+
+function SubActionRow({
+  action,
+  fpsNum,
+  fpsDen,
+  active,
+  onHover,
+  onActivate,
+}: {
+  action: { kind: "reveal"; mediaId: string } | { kind: "usage"; usage: MediaUsage };
+  fpsNum: number;
+  fpsDen: number;
+  active: boolean;
+  onHover: () => void;
+  onActivate: () => void;
+}) {
+  const { t } = useTranslation();
+  const label =
+    action.kind === "reveal"
+      ? t("search.reveal_in_pool")
+      : `${action.usage.trackLabel} · ${formatTimecode(action.usage.tStartUs, fpsNum, fpsDen)}`;
+  return (
+    <div
+      role="option"
+      tabIndex={-1}
+      aria-selected={active}
+      className={cn("search-row", active && "is-active")}
+      onMouseDown={(e) => e.preventDefault()}
+      onMouseMove={onHover}
+      onClick={onActivate}
+      ref={(el) => {
+        if (active) el?.scrollIntoView({ block: "nearest" });
+      }}
+    >
+      <span className="search-row-label">{label}</span>
+    </div>
+  );
+}

@@ -1,0 +1,56 @@
+// The stand-down rule for the timeline's capture-phase Delete preemptor.
+//
+// The selected transition chip claims Delete/Backspace — and `Shift` with
+// either, the ripple delete's chord — before the app-level shortcuts can see
+// them, from a raw capture-phase `window` listener on the `Timeline` with
+// `stopImmediatePropagation()` rather than an entry in `ACTION_DEFS`. Winning
+// that race is what it exists for: a chip and a clip selection are mutually
+// exclusive, so there is exactly one target, and the chip's is not the one
+// `deleteSelected` would reach.
+//
+// The keyframe selection is NOT here. Its precedence over the clip delete lives
+// inside `deleteSelected` itself, so that Settings → Keyboard can state the
+// rule on the Delete row instead of one action's behaviour being decided by a
+// listener the catalogue cannot see.
+//
+// The cost of bypassing the dispatcher is having to reproduce its stand-down
+// rules by hand — and every rule this forgets becomes "Delete does something
+// different depending on which selection happens to be armed".
+
+import { isEditableTarget } from "../shortcuts/match";
+import { activeRegion } from "../focus/focusRegionStore";
+
+/// True when a sub-selection must NOT claim this Delete. Mirrors the two rules
+/// `deleteSelected` carries in `ACTION_DEFS`:
+///
+///   * a bare key is dead while a text field is focused — otherwise Delete
+///     aimed at a character in the Attribute panel silently removes a
+///     transition and eats the keystroke;
+///   * `scope: ["timeline"]` is dead unless the timeline region owns the
+///     keyboard (ADR 0041).
+export function subSelectionDeleteYields(target: EventTarget | null): boolean {
+  return isEditableTarget(target) || activeRegion() !== "timeline";
+}
+
+/// The keys a sub-selection claims: both spellings of Delete, bare or under
+/// `Shift`.
+///
+/// `Shift` is in here because `rippleDeleteSelected` is bound to it, and a
+/// ripple has no meaning over a transition chip — there is no span to close, and
+/// a "stronger delete" that silently did nothing would be the worst version of
+/// the key. It DEGRADES to the chip's plain delete, which is the same rule
+/// `deleteSelected` applies to a keyframe selection, so the precedence order
+/// stays the one Delete already has.
+///
+/// The other modifiers are NOT claimed: nothing in the catalogue binds them
+/// today, and swallowing a chord the app has no handler for would take the key
+/// away from the platform for nothing.
+export function subSelectionDeleteKey(ev: {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+}): boolean {
+  if (ev.key !== "Delete" && ev.key !== "Backspace") return false;
+  return !ev.ctrlKey && !ev.metaKey && !ev.altKey;
+}

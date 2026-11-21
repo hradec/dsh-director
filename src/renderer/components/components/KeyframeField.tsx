@@ -1,0 +1,197 @@
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import type { AnimTrack } from "../ipc";
+import { formatParam, paramNumberFormat, type KfWidget } from "../keyframe/descriptors";
+import { autoKeyTrack } from "../keyframe/autoKey";
+import { AppNumberField } from "./AppNumberField";
+import { AppSlider } from "./AppSlider";
+import { resolveAnimated } from "../render/animated";
+import { collapseToStatic } from "../keyframe/edits";
+import { AnimatableField, displayValue } from "./AnimatableField";
+import { logMutationFailure } from "../errors/tryMutate";
+
+// Sliders fire onValueChange continuously; debounce the recorded commit so a
+// drag doesn't flood the actor. (Mirrors the inspector's debounce window.)
+const SLIDER_COMMIT_DEBOUNCE_MS = 250;
+
+export interface KeyframeFieldProps {
+  layerId: string;
+  paramKey: string;
+  label: string;
+  track: AnimTrack<number>;
+  fallback: number;
+  /// Playhead time relative to the layer's t_start (may be <0 / > duration).
+  tInLayerUs: number;
+  /// Within the layer's span — gates keyframe creation (inspector stopwatch) and
+  /// disables the inputs in no-stopwatch mode (can't author off-clip).
+  playheadInSpan: boolean;
+  /// Commit sink — decouples the component from the transport. The inspector
+  /// calls updateLayerParamTrack; the timeline routes through onCommitParamTrack.
+  onCommitTrack: (paramKey: string, next: AnimTrack<number>) => void | Promise<void>;
+  /// Which controls to render, in order — all bound to one shared draft value.
+  widgets: KfWidget[];
+  step?: number;
+  min?: number;
+  max?: number;
+  /// Inspector: true (wraps in AnimatableField's stopwatch). Timeline: false.
+  showStopwatch?: boolean;
+  /// Forwarded to AnimatableField: `"cell"` renders one axis of a merged pair
+  /// row (no caption) instead of a full property row.
+  layout?: "row" | "cell";
+  /// Timeline density.
+  compact?: boolean;
+  /// Required when showStopwatch — AnimatableField's toggle refreshes through it.
+  onMutated?: () => Promise<void>;
+}
+
+export function KeyframeField({
+  layerId,
+  paramKey,
+  label,
+  track,
+  fallback,
+  tInLayerUs,
+  playheadInSpan,
+  onCommitTrack,
+  widgets,
+  step,
+  min,
+  max,
+  showStopwatch = true,
+  compact = false,
+  onMutated,
+  layout = "row",
+}: KeyframeFieldProps) {
+  const shown = displayValue(track, tInLayerUs, fallback, resolveAnimated);
+  // Shared draft: null = idle (display `shown`, which tracks playhead/undo);
+  // a number while a widget is mid-interaction. Every widget reads `value` and
+  // writes the draft, so a slider drag and a sibling number field stay in sync.
+  const [draft, setDraft] = useState<number | null>(null);
+  // Closure-stable timer slot for the slider debounce (mirrors the inspector's
+  // useDebouncedCommit).
+  const slot = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Each new edit invalidates earlier completions, including saves that finish
+  // while the next slider value is still waiting for its debounce.
+  const revision = useRef(0);
+  useEffect(() => {
+    setDraft(null);
+    return () => {
+      ++revision.current;
+      if (slot.current) clearTimeout(slot.current);
+      slot.current = null;
+    };
+  }, [layerId, paramKey]);
+  const value = draft ?? shown;
+
+  const beginEdit = (val: number) => {
+    if (slot.current) clearTimeout(slot.current);
+    slot.current = null;
+    setDraft(val);
+    return ++revision.current;
+  };
+  const save = async (val: number, edit: number) => {
+    try {
+      // The inspector sink includes the snapshot refresh. Until it finishes,
+      // `shown` still evaluates the old track (often opacity 0).
+      await onCommitTrack(paramKey, autoKeyTrack(track, tInLayerUs, val));
+    } catch (error) {
+      logMutationFailure(error, "Edit keyframes");
+    } finally {
+      if (revision.current === edit) setDraft(null);
+    }
+  };
+  const commit = (val: number) => {
+    void save(val, beginEdit(val));
+  };
+  const commitDebounced = (val: number) => {
+    const edit = beginEdit(val);
+    slot.current = setTimeout(() => {
+      slot.current = null;
+      void save(val, edit);
+    }, SLIDER_COMMIT_DEBOUNCE_MS);
+  };
+
+  // No-stopwatch mode (timeline) can't author off-clip → disable the inputs.
+  // With the stopwatch, AnimatableField owns its own disabled logic and the
+  // widgets stay enabled (the inspector allows editing a keyed param off-span).
+  const inputsDisabled = !showStopwatch && !playheadInSpan;
+
+  // exactOptionalPropertyTypes rejects an explicit `undefined` for `?: number`
+  // props (AppNumberField/AppSlider), so spread these only when set — omitting
+  // a prop and passing it `undefined` are identical at runtime.
+  const numBounds = {
+    ...(step !== undefined ? { step:step*(paramKey==='path_progress'?100:1) } : {}),
+    ...(min !== undefined ? { min:min*(paramKey==='path_progress'?100:1) } : {}),
+    ...(max !== undefined ? { max:max*(paramKey==='path_progress'?100:1) } : {}),
+  };
+  const sldStep = step !== undefined ? { step } : {};
+
+  const controls: ReactNode[] = widgets.map((w, i) => {
+    switch (w) {
+      case "number":
+        return (
+          <AppNumberField
+            key={`number-${i}`}
+            className={widgets.includes("slider") ? "kf-slider-number" : ""}
+            value={value*(paramKey==='path_progress'?100:1)}
+            {...numBounds}
+            format={paramNumberFormat(paramKey)}
+            disabled={inputsDisabled}
+            ariaLabel={label}
+            // No-op live change: let Base UI self-buffer the typed text and
+            // commit on blur/Enter (the inspector-proven pattern). A sibling
+            // slider drives `draft`, so this field still reflects it live.
+            onValueChange={() => {}}
+            onCommit={(v)=>commit(v/(paramKey==='path_progress'?100:1))}
+          />
+        );
+      case "slider":
+        return (
+          <AppSlider
+            key={`slider-${i}`}
+            value={value}
+            min={min ?? 0}
+            max={max ?? 1}
+            {...sldStep}
+            disabled={inputsDisabled}
+            ariaLabel={label}
+            onValueChange={commitDebounced}
+          />
+        );
+      case "readout":
+        return (
+          <span key={`readout-${i}`} className="prop-range-value">
+            {formatParam(paramKey, value)}
+          </span>
+        );
+    }
+  });
+
+  if (showStopwatch) {
+    return (
+      <AnimatableField
+        layerId={layerId}
+        paramKey={paramKey}
+        label={label}
+        track={track}
+        fallback={fallback}
+        collapse={collapseToStatic}
+        tInLayerUs={tInLayerUs}
+        playheadInSpan={playheadInSpan}
+        onMutated={onMutated ?? (async () => {})}
+        layout={layout}
+        // The stopwatch's lift/collapse writes flow through the SAME sink as
+        // the value widgets, so a composite (fan-out) field keeps its twin
+        // invariant on every write path, stopwatch included.
+        commitTrack={onCommitTrack}
+      >
+        {controls}
+      </AnimatableField>
+    );
+  }
+
+  return (
+    <div className={compact ? "kf-value-field kf-value-field--compact" : "kf-value-field"}>
+      {controls}
+    </div>
+  );
+}

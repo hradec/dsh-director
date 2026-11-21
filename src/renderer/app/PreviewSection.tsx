@@ -1,0 +1,311 @@
+import { AppMenuPositioner } from "../components/PopupPositioner";
+import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Menu } from "@base-ui/react/menu";
+import {
+  CheckIcon,
+  LoaderCircleIcon,
+  ChevronDownIcon,
+  PauseIcon,
+  PlayIcon,
+  SkipBackIcon,
+  SkipForwardIcon,
+} from "lucide-react";
+
+import { type ProjectSummary } from "../ipc";
+import { formatTimecode } from "../frames";
+import {
+  setPreviewRenderTarget,
+  usePreviewRenderTargetId,
+  usePreviewTargetChoice,
+} from "../state/compositionAnchorStore";
+import {
+  useComposition,
+  useCompositionRefCounts,
+  useGroupOrdinals,
+  useProjectSummary,
+} from "../state/projectStore";
+import {
+  previewClockUs,
+  seekPreviewLocalUs,
+} from "../state/playheadProjection";
+import { AppSelect } from "../components/AppSelect";
+import { AppTimecodeField } from "../components/AppTimecodeField";
+import {
+  PreviewSurface,
+  type PreviewSurfaceHandle,
+} from "../preview/PreviewSurface";
+import {
+  previewTargetOptions,
+  targetOptionChoice,
+  targetOptionValue,
+} from "../preview/previewTargetOptions";
+import { PlayheadTimecode } from "../preview/PlayheadTimecode";
+import { DroppedFramesIndicator } from "../preview/DroppedFramesIndicator";
+import { RendererLimitIndicator } from "../preview/RendererLimitIndicator";
+import { MotifProposalIndicator } from "../motifs/MotifProposalIndicator";
+import { AudioPlaybackStatus } from "../preview/AudioPlaybackStatus";
+import { usePlaybackStore } from "../state/playbackStore";
+import {
+  PREVIEW_ZOOM_STEPS,
+  setPreviewZoom,
+  usePreviewViewStore,
+} from "../state/previewViewStore";
+import { AppIcon } from "@/components/AppIcon";
+import { PreviewGridToolbar } from "./PreviewGridToolbar";
+
+interface PreviewSectionProps {
+  previewRef: React.RefObject<PreviewSurfaceHandle | null>;
+  summary: ProjectSummary | null;
+  onTogglePlay: () => void;
+  previewDecodableOf: (id: string) => boolean;
+  visible: boolean;
+  editingLocked?: boolean;
+  backgroundExportActive?: boolean;
+}
+
+/// The preview quadrant: the render-target control, `PreviewSurface`, and the
+/// transport strip (editable timecode, skip/play buttons, canvas + duration
+/// meta). Owns the timecode-edit state — purely local to this transport UI.
+/// Playback state comes directly from the session transport store.
+export function PreviewSection({
+  previewRef,
+  summary,
+
+  onTogglePlay,
+  previewDecodableOf,
+  visible,
+  editingLocked = false,
+  backgroundExportActive = false,
+}: PreviewSectionProps) {
+  const { t } = useTranslation();
+  const phase = usePlaybackStore((s) => s.phase);
+  const playbackError = usePlaybackStore((s) => s.error);
+  const playHint = t(phase === "error" ? "transport.retry_playback" : phase === "preparing" ? "transport.cancel_playback" : "transport.play_pause_hint");
+  // Timecode-edit state doubles as the field's seed value: capturing the
+  // playhead at the moment editing opens (instead of live-updating the field
+  // from a React-subscribed time) keeps the edit box stable during playback.
+  const [tcEditUs, setTcEditUs] = useState<number | null>(null);
+  // The transport and the meta line describe what is ON THE CANVAS — the render
+  // target, which is the composition being edited only while the preview
+  // follows focus. Every time on this strip is therefore that composition's own
+  // clock, and reaches the one moment through `seekPreviewLocalUs`. `summary`
+  // stays for the project-wide bits.
+  const comp = useComposition(usePreviewRenderTargetId());
+
+  const fpsLabel =
+    comp &&
+    (comp.fps_den === 1
+      ? t("project.fps_simple", { fps: comp.fps_num })
+      : t("project.fps_rational", {
+          fps: (comp.fps_num / comp.fps_den).toFixed(2),
+        }));
+
+  return (
+    <section className="preview">
+      {/* A toolbar row, not a header bar — the Panel's title is its dock tab. */}
+      <div className="preview-target-bar">
+        <RenderTargetControl />
+        <PreviewGridToolbar />
+        <PreviewZoomControl />
+      </div>
+      <div id="video-surface" className="video-surface">
+        <PreviewSurface
+          ref={previewRef}
+          hasContent={(summary?.layer_count ?? 0) > 0}
+          previewDecodableOf={previewDecodableOf}
+          visible={visible}
+          editingLocked={editingLocked}
+          backgroundExportActive={backgroundExportActive}
+        />
+      </div>
+      <div className="preview-transport" role="toolbar" aria-label="Preview transport">
+        {tcEditUs !== null ? (
+          <AppTimecodeField
+            className="preview-timecode"
+            valueUs={tcEditUs}
+            fpsNum={comp?.fps_num ?? 30}
+            fpsDen={comp?.fps_den ?? 1}
+            autoFocus
+            ariaLabel={t("transport.timecode_label")}
+            onCommit={(us) => {
+              setTcEditUs(null);
+              seekPreviewLocalUs(us);
+            }}
+            onCancel={() => setTcEditUs(null)}
+          />
+        ) : (
+          <PlayheadTimecode
+            fpsNum={comp?.fps_num ?? 30}
+            fpsDen={comp?.fps_den ?? 1}
+            visible={visible}
+            editHint={t("transport.timecode_edit_hint")}
+            onActivate={() => setTcEditUs(previewClockUs())}
+          />
+        )}
+        <div className="transport-buttons">
+          <button
+            type="button"
+            onClick={() => seekPreviewLocalUs(0)}
+            title={t("transport.to_start_hint")}
+            aria-label={t("transport.to_start_hint")}
+          >
+            <AppIcon icon={SkipBackIcon} size="heading" aria-hidden />
+          </button>
+          <button
+            type="button"
+            onClick={onTogglePlay}
+            title={playHint}
+            aria-label={playHint}
+            disabled={(summary?.layer_count ?? 0) === 0}
+            aria-busy={phase === "preparing"}
+          >
+            {phase === "preparing" ? (
+              <AppIcon icon={LoaderCircleIcon} size="heading" className="animate-spin" aria-hidden />
+            ) : phase !== "playing" ? (
+              <AppIcon icon={PlayIcon} size="heading" aria-hidden />
+            ) : (
+              <AppIcon icon={PauseIcon} size="heading" aria-hidden />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => seekPreviewLocalUs(comp?.duration_us ?? 0)}
+            title={t("transport.to_end_hint")}
+            aria-label={t("transport.to_end_hint")}
+            disabled={!comp || comp.duration_us === 0}
+          >
+            <AppIcon icon={SkipForwardIcon} size="heading" aria-hidden />
+          </button>
+        </div>
+        <span className="preview-meta-cell">
+          <AudioPlaybackStatus phase={phase} error={playbackError} />
+          <RendererLimitIndicator />
+          <MotifProposalIndicator />
+          <DroppedFramesIndicator />
+          <span className="preview-meta" aria-hidden="true">
+            {comp && (
+              <>
+                {t("project.canvas", {
+                  width: comp.width,
+                  height: comp.height,
+                  fps: fpsLabel,
+                })}
+                {" · "}
+                {t("project.duration", {
+                  value: formatTimecode(comp.duration_us, comp.fps_num, comp.fps_den),
+                })}
+              </>
+            )}
+          </span>
+        </span>
+      </div>
+    </section>
+  );
+}
+
+/// What the preview renders: *follow focus*, or one named composition it holds
+/// on to while the keyboard edits somewhere else (ADR 0053 decision 3).
+///
+/// Shows the raw CHOICE rather than the resolved target, so following reads as
+/// following rather than as whichever composition happens to have focus.
+/// The zoom readout IS the control, as it is in every NLE monitor: a menu of
+/// Fit plus the labelled percentages, where the percentage is composition
+/// pixels per device pixel and 100 % therefore means "actual detail".
+///
+/// A MENU rather than `AppSelect`, though it wears the same skin. The wheel
+/// zooms continuously and lands between the rungs, and a Select must render
+/// its value FROM its items: an off-rung value would have to be injected as a
+/// ninth item, and the moment the next notch snapped back onto a rung that
+/// item would vanish — Base UI then falls back to the first entry and fires
+/// the change, which put the view back to Fit mid-gesture. A radio menu owns
+/// its trigger text and is content to check nothing.
+function PreviewZoomControl() {
+  const { t } = useTranslation();
+  const zoom = usePreviewViewStore((s) => s.zoom);
+  const percent = (scale: number) =>
+    t("preview.zoom_percent", { percent: Math.round(scale * 100) });
+  const rungs: { value: string; label: string; pick: () => void }[] = [
+    { value: "fit", label: t("preview.zoom_fit"), pick: () => setPreviewZoom("fit") },
+    ...PREVIEW_ZOOM_STEPS.map((step) => ({
+      value: String(step),
+      label: percent(step),
+      pick: () => setPreviewZoom(step),
+    })),
+  ];
+  return (
+    <Menu.Root>
+      <Menu.Trigger className="app-select preview-zoom-select" aria-label={t("preview.zoom_label")}>
+        <span>{zoom === "fit" ? t("preview.zoom_fit") : percent(zoom)}</span>
+        <span className="menu-chevron" aria-hidden="true">
+          <AppIcon icon={ChevronDownIcon} size="caption" />
+        </span>
+      </Menu.Trigger>
+      <Menu.Portal>
+        <AppMenuPositioner align="start" sideOffset={4} className="app-popup-positioner">
+          <Menu.Popup className="app-menu-list app-select-popup preview-select-popup">
+            <Menu.RadioGroup value={zoom === "fit" ? "fit" : String(zoom)}>
+              {rungs.map((rung) => (
+                <Menu.RadioItem
+                  key={rung.value}
+                  value={rung.value}
+                  label={rung.label}
+                  closeOnClick
+                  className="app-menu-item"
+                  onClick={rung.pick}
+                >
+                  <span className="app-menu-item-check" aria-hidden="true">
+                    <Menu.RadioItemIndicator>
+                      <AppIcon icon={CheckIcon} size="body" />
+                    </Menu.RadioItemIndicator>
+                  </span>
+                  <span className="app-menu-item-label">{rung.label}</span>
+                </Menu.RadioItem>
+              ))}
+            </Menu.RadioGroup>
+          </Menu.Popup>
+        </AppMenuPositioner>
+      </Menu.Portal>
+    </Menu.Root>
+  );
+}
+
+function RenderTargetControl() {
+  const { t } = useTranslation();
+  const summary = useProjectSummary();
+  const ordinals = useGroupOrdinals();
+  const refCounts = useCompositionRefCounts();
+  const choice = usePreviewTargetChoice();
+  const panelTitle = t("dock_workspace.panels.timeline");
+  const options = useMemo(
+    () => previewTargetOptions(summary, ordinals, refCounts, panelTitle, t),
+    [summary, ordinals, refCounts, panelTitle, t],
+  );
+  return (
+    <AppSelect
+      className="preview-target-select"
+      popupClassName="preview-select-popup"
+      ariaLabel={t("preview.target_label")}
+      value={targetOptionValue(choice)}
+      onValueChange={(value) => setPreviewRenderTarget(targetOptionChoice(value))}
+      options={options.map((option) => ({
+        value: targetOptionValue(option.compositionId),
+        label: option.isolated ? (
+          // The media pool's own treatment of an orphan, down to the word: a
+          // dimmed entry carrying an `isolated` badge.
+          <span className="flex min-w-0 items-center gap-2 opacity-55">
+            <span className="min-w-0 truncate">{option.label}</span>
+            <span
+              data-testid="preview-target-isolated"
+              className="shrink-0 rounded bg-amber-500/20 px-1 text-[length:var(--font-size-fine)] font-semibold uppercase text-amber-200"
+            >
+              {t("media_pool.groups_isolated")}
+            </span>
+          </span>
+        ) : (
+          option.label
+        ),
+      }))}
+    />
+  );
+}

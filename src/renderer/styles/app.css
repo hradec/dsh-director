@@ -1,0 +1,73 @@
+
+
+.app {
+  display: grid;
+  /* Header (with inline menu-bar), main (1fr), status-bar */
+  grid-template-rows: auto 1fr auto;
+  /* `minmax(0, 1fr)` so the single implicit column does NOT grow to
+     `max-content` of its children — without this a nowrap line in the
+     status bar (a very long log message) pushes the column past the
+     viewport, and the inner `flex:1 / text-overflow: ellipsis` chain
+     has nothing to clip against. */
+  grid-template-columns: minmax(0, 1fr);
+  height: 100%;
+}
+
+.app-top-chrome {
+  min-width: 0;
+  container: app-chrome / inline-size;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px var(--app-chrome-inset); /* fixed-px: window chrome */
+  /* macOS: begin content to the RIGHT of the native traffic lights. The inset
+     comes from Chromium (titleBarOverlay in src/main/index.ts publishes the real
+     button geometry as env(titlebar-area-*)) rather than a hardcoded width, for
+     two reasons: it is the browser's own safe-content edge, and it updates in
+     lockstep with the native frame — including at the START of the
+     leave-fullscreen animation, ~500ms before Electron's 'leave-full-screen'
+     event lands. Driving this off that event instead left the title overlapping
+     the reappearing buttons for the length of the animation.
+     The fallback covers every no-overlay case — macOS fullscreen (buttons
+     hidden) and Win/Linux (no traffic lights at all) — so no platform or
+     fullscreen selector is needed. max() so a narrow overlay can never shrink
+     the header's own padding. */
+  padding-left: max(var(--app-chrome-inset), env(titlebar-area-x, var(--app-chrome-inset)));
+  /* The shared chrome band (app.css --app-chrome-height) as a FLOOR: the token
+     is this header's own content height, so the sizing here is unchanged — it
+     just publishes the number the startup and agent bars match. The token also
+     carries the macOS button band, which the bar must contain or the buttons
+     hang below it onto the content. */
+  min-height: var(--app-chrome-height);
+  border-bottom: 1px solid var(--border-soft);
+  user-select: none;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 7px; /* fixed-px: window chrome */
+}
+
+.app-header-logo {
+  display: block;
+  width: 18px; /* fixed-px: window chrome */
+  height: 18px; /* fixed-px: window chrome */
+  flex-shrink: 0;
+}
+
+.app-main {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}

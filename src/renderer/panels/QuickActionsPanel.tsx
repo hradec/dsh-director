@@ -1,0 +1,414 @@
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type RefObject,
+} from "react";
+import { useTranslation } from "react-i18next";
+import { useCanEditCrop } from '../commands/cropCommands';
+import { useCropEditingStore } from '../state/cropEditingStore';
+import { useAgentActivity } from '../agent/activityStore';
+
+import {
+  commandRegistryVersion,
+  getCommand,
+  subscribeCommandRegistry,
+  type CommandDef,
+} from "../commands/registry";
+import { useEdgeOverflow } from "../hooks/useEdgeOverflow";
+import { useEffectiveBindings } from "../shortcuts/bindings-context";
+import { resolveAccelerator } from "../shortcuts/match";
+import {
+  useDisplayMode,
+  useFollowPlayheadEnabled,
+  useMarkersVisible,
+  usePlaybackResolution,
+  usePreviewGridEnabled,
+  usePreviewSnapEnabled,
+  useSafeAreaGuidesVisible,
+  useTailSnapEnabled,
+} from "../settings/appSettingsStore";
+import { useActiveTool } from "../state/toolStore";
+import { useProjectStore } from "../state/projectStore";
+import { useLinkOverride } from "../state/linkOverrideStore";
+import { useHasMarkedRange } from "../state/rangeStore";
+import { useLinkToggleState } from "../timeline/linkEligibility";
+import { useGroupState, useUngroupState } from "../timeline/groupEligibility";
+import {
+  rippleDeleteReason,
+  useRippleDeleteState,
+} from "../timeline/rippleEligibility";
+import {
+  QUICK_ACTION_SECTIONS,
+  resolveIcon,
+  type QuickActionItem,
+  type QuickActionSection,
+  type QuickActionState,
+} from "./quickActions";
+import { AppIcon } from "@/components/AppIcon";
+
+/// Which way the strip runs. Single row or single column, never wrapped —
+/// overflow scrolls instead.
+export type StripOrientation = "horizontal" | "vertical";
+
+/** The panel's own geometry source — structurally a Dockview `PanelApi`, but
+ *  narrowed to what the strip reads so tests can hand in a plain object. */
+export interface StripGeometry {
+  readonly width: number;
+  readonly height: number;
+  onDidDimensionsChange(
+    listener: (event: { readonly width: number; readonly height: number }) => void,
+  ): { dispose(): void };
+}
+
+/** Below this |width − height| the axis is left alone. Resizing through square
+ *  would otherwise flip the strip back and forth every frame. */
+const ORIENTATION_DEADBAND = 24;
+
+function decideOrientation(
+  width: number,
+  height: number,
+  previous: StripOrientation | null,
+): StripOrientation {
+  if (previous !== null && Math.abs(width - height) <= ORIENTATION_DEADBAND) {
+    return previous;
+  }
+  return height > width ? "vertical" : "horizontal";
+}
+
+/**
+ * The strip's axis: whichever way it is docked, or — for a strip with no dock
+ * position to read (`docked` null: floating, popped out) — whichever way its own
+ * box is longer.
+ *
+ * `docked` leads because the way the bar runs and the edge it can be pinned
+ * along have to be the same axis, and only the dock position carries that. A
+ * bar beside the Timeline gets a wide, short cell whose one free edge is
+ * vertical: read it as a row and the buttons run across an axis that cannot be
+ * pinned.
+ *
+ * The geometry subscription is deliberately NOT hoisted into
+ * `DockPanelRuntimeContract`: that context is shared by every Panel, so live
+ * dimensions in it would re-render all of them on every splitter drag. Both the
+ * strip body and its grip tab call this against the same `api`, so they observe
+ * one event stream and stay in step.
+ */
+export function useStripOrientation(
+  geometry: StripGeometry,
+  docked: StripOrientation | null,
+): StripOrientation {
+  const [orientation, setOrientation] = useState<StripOrientation>(() =>
+    decideOrientation(geometry.width, geometry.height, null),
+  );
+  useEffect(() => {
+    setOrientation((previous) =>
+      decideOrientation(geometry.width, geometry.height, previous),
+    );
+    const disposable = geometry.onDidDimensionsChange((event) => {
+      setOrientation((previous) =>
+        decideOrientation(event.width, event.height, previous),
+      );
+    });
+    return () => disposable.dispose();
+  }, [geometry]);
+  return docked ?? orientation;
+}
+
+/** Chromium maps the wheel to horizontal scrolling only under `Shift`, which
+ *  nobody knows — a horizontal strip would look like it had jammed. */
+function useHorizontalWheel(
+  ref: RefObject<HTMLElement | null>,
+  enabled: boolean,
+): void {
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || !enabled) return;
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY === 0 || event.shiftKey) return;
+      const before = element.scrollLeft;
+      element.scrollLeft += event.deltaY;
+      // Only claim the gesture if it was actually consumed; at either end the
+      // wheel should keep bubbling to whatever scrolls outside the strip.
+      if (element.scrollLeft !== before) event.preventDefault();
+    };
+    // Not passive: the handler calls preventDefault when it scrolls.
+    element.addEventListener("wheel", onWheel, { passive: false });
+    return () => element.removeEventListener("wheel", onWheel);
+  }, [ref, enabled]);
+}
+
+/**
+ * Roving tabindex, the ARIA toolbar pattern: one Tab stop for the whole strip,
+ * arrows move between buttons. Without it, crossing a strip of N buttons would
+ * cost N Tab presses.
+ */
+function useRovingFocus(
+  ref: RefObject<HTMLElement | null>,
+  orientation: StripOrientation,
+) {
+  const [focusIndex, setFocusIndex] = useState(0);
+  // The strip's own axis leads; the cross-axis arrows are accepted too so the
+  // keys never feel dead after the strip flips.
+  const back =
+    orientation === "vertical" ? ["ArrowUp", "ArrowLeft"] : ["ArrowLeft", "ArrowUp"];
+  const forward =
+    orientation === "vertical"
+      ? ["ArrowDown", "ArrowRight"]
+      : ["ArrowRight", "ArrowDown"];
+
+  const onKeyDown = (event: React.KeyboardEvent) => {
+    const container = ref.current;
+    if (!container) return;
+    const buttons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button[data-quick-action]"),
+    );
+    if (buttons.length === 0) return;
+    const current = buttons.findIndex((b) => b === document.activeElement);
+    const from = current < 0 ? focusIndex : current;
+    let target: number | null = null;
+    if (back.includes(event.key)) target = from - 1;
+    else if (forward.includes(event.key)) target = from + 1;
+    else if (event.key === "Home") target = 0;
+    else if (event.key === "End") target = buttons.length - 1;
+    if (target === null) return;
+    event.preventDefault();
+    const clamped = Math.max(0, Math.min(buttons.length - 1, target));
+    setFocusIndex(clamped);
+    buttons[clamped]?.focus();
+    // Optional call: jsdom doesn't implement scrollIntoView.
+    buttons[clamped]?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  };
+
+  return { focusIndex, setFocusIndex, onKeyDown };
+}
+
+interface QuickActionButtonProps {
+  item: QuickActionItem;
+  command: CommandDef;
+  state: QuickActionState;
+  /// The owning section's mode, which picks the ARIA state attribute below.
+  /// See `QuickActionSection.mode` in quickActions.ts.
+  mode: QuickActionSection["mode"];
+  tabbable: boolean;
+  onFocus: () => void;
+}
+
+function QuickActionButton({
+  item,
+  command,
+  state,
+  mode,
+  tabbable,
+  onFocus,
+}: QuickActionButtonProps) {
+  const { t } = useTranslation();
+  const binding = useEffectiveBindings(command.actionId);
+  const accelerator = binding ? resolveAccelerator(binding) : "";
+  // `command` items carry no `active` predicate; they never render pressed.
+  const active = item.active?.(state) ?? false;
+  const disabled = command.enabled?.() === false;
+  // A state-bearing hint where the item has one (the display-mode button needs
+  // "showing X, click for Y"); otherwise the command's own label. A hint that
+  // came back as `{ text }` is already a sentence — a refusal naming clips the
+  // locale has never heard of — so it is rendered as-is rather than looked up.
+  const hint = item.hint?.(state);
+  const label =
+    hint === undefined
+      ? t(command.labelKey)
+      : typeof hint === "string"
+        ? t(hint)
+        : hint.text;
+  // Same override shape as the hint: a state-bearing glyph where the item
+  // declares one, its static icon otherwise.
+  const Icon = resolveIcon(item, state);
+  return (
+    <button
+      type="button"
+      data-quick-action={item.id}
+      className="weft-quick-action"
+      data-active={active ? "true" : "false"}
+      disabled={disabled}
+      tabIndex={tabbable ? 0 : -1}
+      onFocus={onFocus}
+      {...(mode === "radio"
+        ? { role: "radio", "aria-checked": active }
+        : mode === "independent"
+          ? { "aria-pressed": active }
+          : {})}
+      aria-label={label}
+      title={accelerator ? `${label} (${accelerator})` : label}
+      onClick={() => void command.run()}
+    >
+      <AppIcon icon={Icon} size="heading" aria-hidden="true" />
+    </button>
+  );
+}
+
+/**
+ * The Quick Actions strip — a single row or single column of icon buttons for
+ * the commands worth one click, grouped into the topical sections
+ * `quickActions.ts` authors. Each section declares how its buttons report
+ * state — `radio`, `independent` or `command` — and that declaration is what
+ * this panel turns into `aria-checked`, `aria-pressed`, or neither.
+ *
+ * Layout invariant: NEVER wraps. Whatever doesn't fit scrolls, with the ends
+ * fading to advertise that there is more.
+ */
+export function QuickActionsPanel({
+  geometry,
+  docked = null,
+}: {
+  geometry: StripGeometry;
+  /** The axis the Dock Tree dictates. Omitted or null for a strip with no dock
+   *  position to read, which falls back to its own shape — see
+   *  `useStripOrientation`. */
+  docked?: StripOrientation | null;
+}) {
+  const { t } = useTranslation();
+  // The registry is a store like the rest, and the same subscribed-not-
+  // imperative rule below applies to it: WHICH commands resolve changes when a
+  // Panel that provides them opens, closes, or hands its ids to a sibling of
+  // the same kind (ADR 0053). Without this the buttons those ids back would
+  // keep their last state until something unrelated re-rendered the strip.
+  useSyncExternalStore(subscribeCommandRegistry, commandRegistryVersion);
+  const tool = useActiveTool();
+  // One boolean off the project mirror, so the strip re-renders when the
+  // project gains its first layer or loses its last — the Text tool's hint
+  // flips there — and on nothing else the mirror does.
+  const hasLayers = useProjectStore((s) => (s.summary?.layer_count ?? 0) > 0);
+  const displayMode = useDisplayMode();
+  // Subscribed, not read imperatively: `clearRange`'s `enabled` predicate is
+  // evaluated during THIS render, so without a subscription the button would
+  // stay greyed out until some unrelated state happened to re-render the strip.
+  // The boolean selector means marking or dragging in/out re-renders the strip
+  // only when the range appears or disappears, not on every position change.
+  const hasRange = useHasMarkedRange();
+  const markersVisible = useMarkersVisible();
+  const reviewOverlay = useAgentActivity((s) => s.reviewOverlay);
+  // The app-settings values the strip renders as pressed or armed: five
+  // toggles and the modal playback resolution. Atomic selectors, one field
+  // each — never a composite one
+  // (`feedback_zustand_composite_selector`).
+  const snapEnabled = useTailSnapEnabled();
+  const previewSnapEnabled = usePreviewSnapEnabled();
+  const gridEnabled = usePreviewGridEnabled();
+  const followPlayhead = useFollowPlayheadEnabled();
+  const safeAreaGuides = useSafeAreaGuidesVisible();
+  const playbackResolution = usePlaybackResolution();
+  // The link toggle's state. Same subscribed-not-imperative rule again:
+  // `CommandDef.enabled` for it is evaluated during THIS render, so without a
+  // subscription the button would stay greyed out until some unrelated state
+  // happened to re-render the strip. A string selector, so a click-select
+  // re-renders the strip only when the ANSWER flips.
+  const linkToggle = useLinkToggleState();
+  // The override's pressed state; a boolean selector like the settings toggles.
+  const linkOverride = useLinkOverride();
+  // The Group pair's two states, subscribed for the `linkToggle` reason: their
+  // `enabled` predicates are evaluated during THIS render, and both tooltips
+  // name a precondition that changes with the selection.
+  const groupSelection = useGroupState();
+  const ungroupSelection = useUngroupState();
+  // Ripple delete's verdict, subscribed for the same reason and resolved to a
+  // sentence here rather than in the catalogue: the refusal names clips, so the
+  // string needs both `t` and the project mirror, and only this component has
+  // the first (`panels/quickActions.ts` says why the field is a sentence).
+  const rippleDelete = rippleDeleteReason(useRippleDeleteState(), t);
+  const cropActive = useCropEditingStore(s => s.layerId !== null);
+  const cropAvailable = useCanEditCrop();
+  const orientation = useStripOrientation(geometry, docked);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  useHorizontalWheel(scrollRef, orientation === "horizontal");
+  // Which ends still hide a button. Same predicate the dock tab strip reads, so
+  // the two strips cannot disagree about what "there is more this way" means;
+  // this one draws only the gradient, no arrows
+  // (docs/features.md#strip-overflow).
+  const edge = useEdgeOverflow(scrollRef, orientation);
+  const fade = !edge.overflowing
+    ? "none"
+    : edge.atStart
+      ? "end"
+      : edge.atEnd
+        ? "start"
+        : "both";
+  const { focusIndex, setFocusIndex, onKeyDown } = useRovingFocus(
+    scrollRef,
+    orientation,
+  );
+
+  const state: QuickActionState = {
+    cropActive,
+    cropAvailable,
+    tool,
+    hasLayers,
+    displayMode,
+    hasRange,
+    markersVisible,
+    reviewOverlay,
+    snapEnabled,
+    previewSnapEnabled,
+    gridEnabled,
+    followPlayhead,
+    safeAreaGuides,
+    playbackResolution,
+    linkToggle,
+    linkOverride,
+    groupSelection,
+    ungroupSelection,
+    rippleDeleteReason: rippleDelete,
+  };
+
+  // Buttons resolve against the command registry, so a command whose provider
+  // hasn't mounted yet is simply absent rather than a dead button.
+  const sections = QUICK_ACTION_SECTIONS.map((section) => ({
+    ...section,
+    resolved: section.items
+      .map((item) => ({ item, command: getCommand(item.id) }))
+      .filter(
+        (entry): entry is { item: QuickActionItem; command: CommandDef } =>
+          entry.command !== undefined,
+      ),
+  })).filter((section) => section.resolved.length > 0);
+
+  let index = -1;
+  return (
+    <div
+      ref={scrollRef}
+      className="weft-quick-actions"
+      data-orientation={orientation}
+      data-fade={fade}
+      role="toolbar"
+      aria-orientation={orientation}
+      aria-label={t("dock_workspace.panels.quick-actions")}
+      onKeyDown={onKeyDown}
+    >
+      {sections.map((section) => (
+        <div
+          key={section.id}
+          className="weft-quick-actions-section"
+          // Every section is a labelled landmark so a screen reader walking the
+          // toolbar hears which family it has entered; only the modal one is a
+          // `radiogroup`, because only there does "exactly one is chosen" hold.
+          role={section.mode === "radio" ? "radiogroup" : "group"}
+          aria-label={t(`quick_actions.${section.id}`)}
+        >
+          {section.resolved.map(({ item, command }) => {
+            index += 1;
+            const own = index;
+            return (
+              <QuickActionButton
+                key={item.id}
+                item={item}
+                command={command}
+                state={state}
+                mode={section.mode}
+                tabbable={own === focusIndex}
+                onFocus={() => setFocusIndex(own)}
+              />
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}

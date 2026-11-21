@@ -1,0 +1,1101 @@
+// Export-only decoder pool. Drops every preview-tuned mechanism the
+// SourceDecoderPool needs (lookahead window, per-frame setAnchor, polling-
+// based catch-up) in favor of a batched producer (`decodeRange`) and a
+// consuming frame store. The producer parks at its admitted frame window;
+// consumption releases credits even while a long GOP spans planning blocks.
+// NO decoder.flush() between ranges; only true EOS drains the reorder tail.
+//
+// The store + handle expose `frameAt` / `containsPts` / `ensureReady`
+// / `requestFrameAt` (no-op) / `onFirstFrame` (no-op) so the Compositor
+// can plug this in as a drop-in replacement for `SourceDecoderPool`.
+
+import type { EncodedPacket } from "mediabunny";
+import type { DecoderPool, ExportDecodeSession, FrameStore, SourceHandleInit } from "./session";
+import { NativeExportSourceHandle } from "../worker/nativeExportSource";
+import { decodesInSoftwareForColour, withDefaultColorSpace } from "./colorSpaceDefault";
+import type { ColourStamp, SourceColor } from "./ffprobeColorSpace";
+import { DecodeClock } from "./decodeClock";
+import { handleDecodeError } from "./decoderFallback";
+import { openMediaInput, type OpenedMedia } from "./mediaInput";
+import { acquireRenderResources } from '../resourceClient';
+import type { NativeNv12Frame } from "./nv12Frame";
+import { copyToTenBit, isTenBitDecoderFormat, type TenBitFrame } from "./tenBitFrame";
+
+/// SW decoders hold a reorder/pipelining tail internally and the chunked
+/// model never mid-flushes, so feed a bounded lead-in past the stop key to
+/// push the tail out; H.264's max DPB is 16. Applies to EVERY lane: Chromium's
+/// macOS prefer-software H.264 decoder withholds the last 2 frames of a fed
+/// window (4 with B-frames) until more input or a flush arrives — wedging each
+/// short-GOP chunk's final frame against `waitForPts` (the macOS Lite-export
+/// freeze: 61 packets fed, 59 emitted, queue 0, no error).
+const REORDER_MARGIN = 16;
+
+// Packets awaiting output, live pictures and copies share this window.
+// Keep headroom over the existing DPB-16 assumption.
+import { EXPORT_FRAME_WINDOW, exportDecoderMiB, minimumExportFrames } from "../../../shared/export-resources";
+
+interface RingEntry {
+  ptsUs: number;
+  durationUs: number;
+  frame: VideoFrame | TenBitFrame | NativeNv12Frame;
+}
+
+/// E2E color diagnostic captured off the FIRST decoded frame of a handle.
+/// Surfaced through the export `done` perf message (`window.__weftcutExportPerf`)
+/// so a test can see, without Worker console access, what colorSpace we asked
+/// the decoder for vs what the decoder actually stamped on its output frames —
+/// the crux of whether Chromium/Electron's VideoDecoder propagates config.colorSpace.
+export interface ExportColorDiag {
+  mediaId: string;
+  /// `config.colorSpace` handed to `decoder.configure` (post-withDefaultColorSpace).
+  configColor: ColourStamp | null;
+  /// `frame.colorSpace` the decoder stamped on its output (the real tag the
+  /// downstream YUV→RGB conversion honors).
+  frameColor: ColourStamp | null;
+  /// `frame.format` (NV12 / I420 / RGBA / …) — RGBA would mean the conversion
+  /// already happened in the decoder.
+  frameFormat: string | null;
+}
+
+export class ExportFrameStore implements FrameStore {
+  constructor(private readonly onShrink: () => void = () => {}) {}
+  private entries: RingEntry[] = [];
+  /// EOS drain lifecycle. Once `ended`, no frame will ever arrive again and
+  /// `isReadyFor` may clamp any target while a frame is held. `evictBefore`
+  /// always retains the immediate lower PTS neighbour, so the drain needs no
+  /// pinning state.
+  private ended = false;
+  /// Pending `waitForPts` resolvers. On every `push` we resolve and
+  /// remove the ones whose tUs is now covered. The Worker uses this
+  /// to await each source frame before composing the next output
+  /// frame — keeps the WebCodecs decoder pool from piling up
+  /// unconsumed frames (pool exhaustion at ~8 outstanding frames
+  /// was the export-stuck wedge).
+  private waiters: Array<{ tUs: number; resolve: () => void; reject: (e: Error) => void }> = [];
+  /// The most recent decode range whose ordered producer has confirmed that
+  /// every in-range frame was delivered. This is a presentation-finality
+  /// proof, not an eviction or selection hint: `frameAt` still chooses the
+  /// greatest held PTS at/before the target.
+  private completedRange: { aUs: number; bUs: number } | null = null;
+  /// Non-null after fail(); subsequent waitForPts calls reject.
+  private failure: string | null = null;
+
+  get residentFrames(): number { return this.entries.length; }
+
+  push(frame: VideoFrame | TenBitFrame | NativeNv12Frame, ptsUs = frame.timestamp): void {
+    this.entries.push({
+      ptsUs,
+      durationUs: frame.duration ?? 0,
+      frame,
+    });
+    // Decoder output for a single GOP is usually monotonic, but B-frame
+    // streams can reorder. Sort defensively — cost is negligible for
+    // chunk-sized stores (~60 entries).
+    this.entries.sort((a, b) => a.ptsUs - b.ptsUs);
+    if (this.waiters.length > 0) {
+      const stillWaiting: typeof this.waiters = [];
+      for (const w of this.waiters) {
+        if (this.isReadyFor(w.tUs)) {
+          w.resolve();
+        } else {
+          stillWaiting.push(w);
+        }
+      }
+      this.waiters = stillWaiting;
+    }
+    this.freeBehindWaiters();
+  }
+
+  /// Free WebCodecs VideoFrame-pool slots while a consumer is PARKED: drop
+  /// frames strictly below the lowest still-pending waiter's target, keeping
+  /// the immediate lower neighbour (the frame `frameAt` / `isReadyFor` may
+  /// still need to satisfy that waiter under PTS-grid drift — see `isReadyFor`).
+  ///
+  /// Without this, a long re-decode from a GOP key (e.g. a long-GOP DirectExport
+  /// source: x264 default keyint=250) piles decoded-but-unconsumed frames into
+  /// the ring while the export's encode loop is awaiting a far-ahead frame. The
+  /// decoder's hardware pool (~13 slots) exhausts, the decoder stalls, and the
+  /// per-frame `evictBefore` that would free the pool only runs AFTER the await
+  /// resolves → circular wait → permanent deadlock (observed: export frozen at
+  /// frame 250, the 2nd GOP key). Freeing on `push` breaks the cycle: the
+  /// producer can always make forward progress toward the awaited frame.
+  private freeBehindWaiters(): void {
+    if (this.waiters.length === 0 || this.entries.length === 0) return;
+    let minTus = Number.POSITIVE_INFINITY;
+    for (const w of this.waiters) if (w.tUs < minTus) minTus = w.tUs;
+    // Highest entry index whose pts is at/below the lowest waiter — the
+    // immediate lower neighbour. Keep it + everything above; drop below it.
+    let keepFrom = 0;
+    for (let i = 0; i < this.entries.length; i++) {
+      if (this.entries[i]!.ptsUs <= minTus) keepFrom = i;
+      else break;
+    }
+    if (keepFrom > 0) {
+      for (let i = 0; i < keepFrom; i++) this.entries[i]!.frame.close();
+      this.entries.splice(0, keepFrom);
+      this.notifyShrink();
+    }
+  }
+
+  /// Await until the greatest presentation PTS at/before `tUs` is final: an
+  /// exact PTS is held, a strictly later PTS proves ordering, or EOS completed.
+  /// Producer→consumer sync point for the export Worker.
+  waitForPts(tUs: number): Promise<void> {
+    if (this.failure) return Promise.reject(new Error(this.failure));
+    if (this.isReadyFor(tUs)) return Promise.resolve();
+    const p = new Promise<void>((resolve, reject) => {
+      this.waiters.push({ tUs, resolve, reject });
+    });
+    // KICK a possibly-stalled decoder: free pool slots behind this newly-parked
+    // waiter NOW. Frames can pile up during a chunk's `decodeRange` dispatch
+    // (before any waiter exists), filling the WebCodecs pool so the decoder
+    // stalls and stops firing `push` — at which point `push`-side freeing can
+    // never run. Freeing here, when the consumer parks, gives the stalled
+    // decoder slots to resume toward the awaited frame.
+    this.freeBehindWaiters();
+    return p;
+  }
+
+  /// Record that the ordered producer delivered every frame in `[aUs, bUs]`.
+  /// A target in that range is now final even when integer time conversion
+  /// leaves it one microsecond after the last presentation PTS and no later
+  /// proof frame was included in the decode range.
+  completeRange(aUs: number, bUs: number): void {
+    this.completedRange = { aUs, bUs };
+    if (this.waiters.length === 0) return;
+    const stillWaiting: typeof this.waiters = [];
+    for (const w of this.waiters) {
+      if (this.isReadyFor(w.tUs)) {
+        w.resolve();
+      } else {
+        stillWaiting.push(w);
+      }
+    }
+    this.waiters = stillWaiting;
+  }
+
+  /// The end-of-stream `decoder.flush()` was issued. Kept as an explicit phase
+  /// marker in the interface: frames may still arrive, so callers must not yet
+  /// activate the finalized EOS clamp. Lower-neighbour retention is already an
+  /// invariant of `evictBefore`, including during this phase.
+  beginEosDrain(): void {
+    // Intentionally no state transition until every drain output has arrived.
+  }
+
+  /// The end-of-stream flush completed: every frame the source will ever
+  /// produce has been pushed. Remaining wait targets are final — resolve them
+  /// (and all future ones) by applying the store's PTS identity rule. Must NOT be
+  /// called while the drain is still emitting: clamping early hands a stale
+  /// frame to a waiter whose real frame is still on its way (silent dup-frame
+  /// corruption across the export tail).
+  finishEosDrain(): void {
+    this.ended = true;
+    if (this.waiters.length === 0) return;
+    const stillWaiting: typeof this.waiters = [];
+    for (const w of this.waiters) {
+      if (this.isReadyFor(w.tUs)) {
+        w.resolve();
+      } else {
+        stillWaiting.push(w);
+      }
+    }
+    this.waiters = stillWaiting;
+  }
+
+  /// A re-seek (backward clip-reuse jump / decoder rebuild) makes new frames
+  /// possible again, so finalized EOS clamping must deactivate.
+  clearEosDrain(): void {
+    this.ended = false;
+    this.completedRange = null;
+  }
+
+  /// Readiness gate for `waitForPts`. The source frame to display at `tUs`
+  /// is FINAL once the exact PTS is held, a strictly later PTS has arrived, or
+  /// EOS has completed. Decoder output is presentation-ordered, so a later PTS
+  /// proves no future frame can become a better `greatest PTS <= target` match.
+  ///
+  /// Duration containment is deliberately NOT a completion signal. Durations
+  /// are independently quantized and can overlap a later presentation PTS;
+  /// resolving from the older interval would silently select the wrong frame.
+  /// Conversely, gating on strict interval containment alone WEDGES export: the
+  /// decoder's PTS grid (e.g. 0, 33333, 66666, 100000 … — irregular 33333/
+  /// 33334 steps) drifts off the integer `i × frameDurUs` output grid (0,
+  /// 33333, 66666, 99999 …). At a drift point the target (99999) lands in a
+  /// 1µs gap between two frames' [pts, pts+dur) intervals.
+  private isReadyFor(tUs: number): boolean {
+    const atOrBefore = this.indexAtOrBefore(tUs);
+    if (atOrBefore >= 0 && this.entries[atOrBefore]!.ptsUs === tUs) return true;
+    const last = this.lastPtsUs();
+    if (last !== null && last > tUs) return true;
+    if (
+      this.entries.length > 0 &&
+      this.completedRange !== null &&
+      this.completedRange.aUs <= tUs &&
+      tUs <= this.completedRange.bUs
+    ) {
+      return true;
+    }
+    // Source fully drained: no better frame can arrive — clamp to what's held.
+    return this.ended && this.entries.length > 0;
+  }
+
+  frameAt(tUs: number): VideoFrame | TenBitFrame | NativeNv12Frame | null { // satisfies DecodedFrame | null
+    if (this.entries.length === 0) return null;
+    const index = this.indexAtOrBefore(tUs);
+    return this.entries[index >= 0 ? index : 0]!.frame;
+  }
+
+  selectFrame(tUs: number): { frame: VideoFrame | TenBitFrame | NativeNv12Frame; ptsUs: number; durationUs: number } | null {
+    if (this.entries.length === 0) return null;
+    const index = this.indexAtOrBefore(tUs);
+    // A target before the first source PTS displays the opening frame. For all
+    // other targets, identity is solely the greatest presentation PTS <= tUs;
+    // independently-quantized duration must never redirect it to a neighbour.
+    const selected = this.entries[index >= 0 ? index : 0]!;
+    return {
+      frame: selected.frame,
+      ptsUs: selected.ptsUs,
+      durationUs: selected.durationUs,
+    };
+  }
+
+  private indexAtOrBefore(tUs: number): number {
+    let lo = 0;
+    let hi = this.entries.length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const e = this.entries[mid]!;
+      if (e.ptsUs <= tUs) {
+        found = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return found;
+  }
+
+  lastPtsUs(): number | null {
+    return this.entries[this.entries.length - 1]?.ptsUs ?? null;
+  }
+
+  firstPtsUs(): number | null {
+    return this.entries[0]?.ptsUs ?? null;
+  }
+
+  containsPts(tUs: number): boolean {
+    if (this.entries.length === 0) return false;
+    let lo = 0;
+    let hi = this.entries.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const e = this.entries[mid]!;
+      const end = e.ptsUs + (e.durationUs || 0);
+      if (e.ptsUs <= tUs && tUs < end) return true;
+      if (e.ptsUs > tUs) hi = mid - 1;
+      else lo = mid + 1;
+    }
+    return false;
+  }
+
+  evictBefore(cutoffUs: number): void {
+    if (this.entries.length <= 1) return;
+
+    // Frame identity is the greatest presentation PTS <= target. Duration is
+    // quantized independently and can leave a 1 µs gap before the next PTS;
+    // evicting by `pts + duration <= cutoff` used to delete the only correct
+    // lower neighbour in that gap, forcing frameAt() to return the FUTURE
+    // frame. Keep the highest entry at/below cutoff plus everything above it.
+    const keepFrom = this.indexAtOrBefore(cutoffUs);
+    if (keepFrom > 0) {
+      for (let i = 0; i < keepFrom; i++) this.entries[i]!.frame.close();
+      this.entries.splice(0, keepFrom);
+      this.notifyShrink();
+    }
+  }
+
+  flush(): void {
+    for (const e of this.entries) e.frame.close();
+    this.entries = [];
+    this.ended = false;
+    this.completedRange = null;
+    // Any caller still awaiting waitForPts is now in a state where
+    // their wait will never resolve naturally. Don't resolve them —
+    // that would mislead the caller into thinking a frame is
+    // present. Caller is expected to bail out via the dispose path.
+    this.waiters = [];
+    this.notifyShrink();
+  }
+
+  /// Every eviction path returns capacity, including a parked consumer.
+  private notifyShrink(): void { this.onShrink(); }
+
+  /// Reject pending and future consumers with the original failure.
+  fail(reason: string): void {
+    if (this.failure) return; // idempotent
+    this.failure = reason;
+    // Reject pending waitForPts waiters.
+    const err = new Error(reason);
+    const pending = this.waiters.splice(0);
+    for (const w of pending) w.reject(err);
+  }
+
+  size(): number {
+    return this.entries.length;
+  }
+
+  dispose(): void {
+    this.fail('Export decode session disposed');
+    this.flush();
+  }
+}
+
+export class ExportSourceHandle implements ExportDecodeSession {
+  private releaseResources: (() => void) | null = null;
+  private readonly admittedFrames: number;
+  private pendingPackets = 0;
+  private pendingCopies = 0;
+  // Outputs can arrive before the worker starts consuming a dispatched range.
+  // Retain the lower neighbour of its first target, not the whole GOP preroll.
+  private retainFromUs = Number.NEGATIVE_INFINITY;
+  private capacityWaiters = new Set<{ resolve(): void; reject(error: Error): void }>();
+  private capacityFailure: Error | null = null;
+  readonly bufferStats = { capacityFrames: EXPORT_FRAME_WINDOW, peakFrames: 0, waits: 0, waitMs: 0 };
+  readonly mediaId: string;
+  private readonly proxyAssetUrl: string;
+  /// The media's resolved colour, for original AND proxy decode targets (a
+  /// proxy preserves the source's colorimetry). Threaded into
+  /// `withDefaultColorSpace`; the target's own colr tag outranks per-field.
+  private readonly sourceColor: SourceColor;
+  private readonly knownStartPtsUs: number | null;
+  private clock = DecodeClock.fromOrigin(0);
+  /// Copy >8-bit decoder output to CPU planes (TenBitFrame) instead of
+  /// holding VideoFrames. Also activates the reorder-margin extension in
+  /// `decodeRange` so SW decoders drain their reorder tail.
+  private readonly tenBitLane: boolean;
+  /// Pre-configure the decoder as prefer-software. For Hi10P this skips a
+  /// doomed HW attempt (no HW path exists); for AV1-10 it is a CORRECTNESS
+  /// requirement — the HW decoder succeeds but emits opaque format=null
+  /// frames with no copyTo, so the error-fallback never fires.
+  private readonly preferSoftware: boolean;
+  readonly ring: ExportFrameStore;
+  /// E2E-only: colorSpace of the first decoded frame vs the config we passed.
+  /// Read by the export worker and forwarded in the `done` perf payload.
+  firstFrameDiag: ExportColorDiag | null = null;
+  private opened: OpenedMedia | null = null;
+  private config: VideoDecoderConfig | null = null;
+  private decoder: VideoDecoder | null = null;
+  private readyP: Promise<void> | null = null;
+  /// Last packet dispatched to the decoder (decode order); null = unpositioned.
+  private cursor: EncodedPacket | null = null;
+  /// Presentation PTS (µs) of the last dispatched packet. Diagnostic only —
+  /// the stop-after-key rule overshoots it to the NEXT GOP's key, so it must
+  /// NOT drive the seek-vs-continue decision (see `lastRangeAUs`): treating a
+  /// forward range below the overshot key as a backward jump re-feeds the
+  /// whole stream prefix behind the consumer, and the decoder's stale
+  /// re-emissions then get composited into the output (observed: source
+  /// frame 12 at output frame 150 around a 5s-GOP boundary).
+  private lastDispatchedPtsUs = Number.NEGATIVE_INFINITY;
+  /// `aUs` of the previous `decodeRange`. Ranges are monotonic per handle in
+  /// the export's forward march; `aUs < lastRangeAUs` is a true backward jump
+  /// (same-media clip reuse) and the only case that re-seeks.
+  private lastRangeAUs = Number.NEGATIVE_INFINITY;
+  /// Presentation time strictly below which EVERY packet has been dispatched.
+  /// Advanced to the stop key's PTS on a key-break exit (the leading-B peek
+  /// makes that claim exact even for open-GOP streams) and to +∞ at EOS. A
+  /// forward range with `bUs < coveredThroughUs` needs no dispatch at all —
+  /// its frames are already in the decoder/ring pipeline.
+  private coveredThroughUs = Number.NEGATIVE_INFINITY;
+  private outputFrameCount = 0;
+  /// Serialized copy chain for the 10-bit lane. Each decoder output callback
+  /// appends to this chain so copies land in emit order and the EOS flush
+  /// `.then` awaits the chain before calling finishEosDrain.
+  private copyChain: Promise<void> = Promise.resolve();
+  /// Cumulative packets fed to the decoder across all `decodeRange` calls.
+  /// With a 1:1 export this should track the frame count; a large excess means
+  /// re-decode waste (the long-GOP re-seek redundancy). Read by the export
+  /// worker for the E2E perf diagnostic.
+  dispatchedTotal = 0;
+  private downgraded = false;
+  /// Bumped by `rebuildDecoder`/`dispose` — the two things that interleave with
+  /// `decodeRange`'s awaits (the WebCodecs error callback fires as a queued
+  /// task). Same discipline as PacketPump's generation guard: a moved
+  /// generation means the fresh decoder is keyframe-hungry and the in-flight
+  /// dispatch must restart from a key seek, not feed it its next delta.
+  private generation = 0;
+  /// The most recently requested range and whether its dispatch is still in
+  /// flight. An error-callback rebuild landing BETWEEN ranges (short single-GOP
+  /// sources dispatch + return before the async configure error arrives) has no
+  /// restart loop to re-drive it — `rebuildDecoder` re-runs this range itself,
+  /// else the ring stays empty and every `waitForPts` waiter hangs.
+  private lastRange: { aUs: number; bUs: number } | null = null;
+  private rangeInFlight = false;
+  /// Serializes range dispatches: a rebuild-issued re-drive must never
+  /// interleave with the worker's next `decodeRange` (shared cursor).
+  private driveChain: Promise<void> = Promise.resolve();
+  private _disposed = false;
+  /// Source PTS where the EOS drain began — the `aUs` of the range whose
+  /// dispatch ran out of packets. Ranges at/after it need no packet dispatch
+  /// (everything was already fed; frames arrive via the floated flush); a range
+  /// before it is a true backward clip-reuse jump and re-seeks through a
+  /// decoder rebuild. null = EOS not reached.
+  private eosFrontierUs: number | null = null;
+
+  get disposed(): boolean {
+    return this._disposed;
+  }
+
+  get sourceUrl(): string {
+    return this.proxyAssetUrl;
+  }
+
+  constructor(init: SourceHandleInit) {
+    this.admittedFrames = init.exportFrameWindow ?? EXPORT_FRAME_WINDOW;
+    this.bufferStats.capacityFrames = this.admittedFrames;
+    this.mediaId = init.mediaId;
+    this.proxyAssetUrl = init.proxyAssetUrl;
+    this.sourceColor = init.sourceColor;
+    this.knownStartPtsUs = init.sourceStartPtsUs ?? null;
+    this.tenBitLane = init.tenBitLane ?? false;
+    this.preferSoftware = init.preferSoftware ?? false;
+    this.ring = new ExportFrameStore(() => this.wakeCapacity());
+  }
+
+  async ensureReady(): Promise<void> {
+    if (this._disposed) return;
+    if (this.config && this.decoder) return;
+    if (this.readyP) return this.readyP;
+    this.readyP = this._doEnsureReady().catch(error => {
+      try { this.decoder?.close(); } catch { /* already closed */ }
+      this.decoder = null;
+      this.releaseResources?.(); this.releaseResources = null;
+      this.opened?.dispose(); this.opened = null;
+      this.readyP = null;
+      throw error;
+    });
+    return this.readyP;
+  }
+
+  private async _doEnsureReady(): Promise<void> {
+    const opened = await openMediaInput(this.proxyAssetUrl);
+    if (this._disposed) { opened.dispose(); return; }
+    this.opened = opened;
+    const config = await opened.videoTrack.getDecoderConfig();
+    if (this._disposed) return;
+    if (!config) {
+      throw new Error(`[weftcut/export] ${this.mediaId}: no decoder config`);
+    }
+    // Match preview: offset comes from the decode target's first packet, not
+    // import-time metadata (re-encoded proxies start at PTS 0).
+    const first = await opened.packetSink.getFirstPacket();
+    if (this._disposed) return;
+    this.clock = DecodeClock.fromFirstPacket(first, this.knownStartPtsUs ?? 0);
+    // The decode target's own colr tag per field, else the media's resolved
+    // colour — the same colour preview and the native export lane use.
+    this.config = withDefaultColorSpace(config, this.sourceColor);
+    if (!this.releaseResources) {
+      // Admitted dispatch window plus unchanged codec-private surfaces.
+      if (!Number.isInteger(this.admittedFrames) || this.admittedFrames < minimumExportFrames(config) || this.admittedFrames > EXPORT_FRAME_WINDOW)
+        throw new Error('Invalid export decoder window');
+      const release = await acquireRenderResources(exportDecoderMiB(config.codedWidth ?? 1920, config.codedHeight ?? 1080, this.tenBitLane, this.admittedFrames));
+      if (this._disposed) { release(); return; }
+      this.releaseResources = release;
+    }
+    // eslint-disable-next-line no-console
+    console.log(
+      `[weftcut/export] source ${this.mediaId} ready: codec=${config.codec} ` +
+        `${config.codedWidth ?? "?"}x${config.codedHeight ?? "?"} ` +
+        `startPts=${this.clock.containerUs(0)}us`,
+    );
+    // Diagnostic: log whether HW decode is actually available in Worker scope
+    // (Chrome sometimes silently lands on software; software 1080p ≈ 2 fps).
+    if (typeof VideoDecoder.isConfigSupported === "function") {
+      const support = new Map<HardwareAcceleration, boolean>();
+      for (const hw of ["prefer-hardware", "prefer-software"] as const) {
+        try {
+          const supported = await VideoDecoder.isConfigSupported({
+            ...this.config,
+            hardwareAcceleration: hw,
+          });
+          support.set(hw, supported.supported === true);
+          // eslint-disable-next-line no-console
+          console.log(
+            `[weftcut/export] ${this.mediaId} isConfigSupported(${hw})=${supported.supported}`,
+          );
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn(`[weftcut/export] isConfigSupported(${hw}) threw:`, e);
+        }
+      }
+      // Hosted runners may have no hardware decoder. Honor a definitive
+      // probe before configure rather than deliberately failing the first
+      // decoder and recovering through its asynchronous error callback.
+      if (support.get("prefer-hardware") === false && support.get("prefer-software") === true) {
+        this.downgraded = true;
+      }
+    }
+    if (this._disposed) return;
+    this.decoder = this.buildDecoder();
+    this.decoder.configure(this.buildConfig());
+  }
+
+  /// Construct a fresh `VideoDecoder` with the identity-guarded output/error
+  /// callbacks. Used by initial ready + the rebuild recovery paths.
+  private buildDecoder(): VideoDecoder {
+    let dec: VideoDecoder;
+    dec = new VideoDecoder({
+      output: (frame: VideoFrame) => {
+        if (this.decoder !== dec) {
+          frame.close();
+          return;
+        }
+        this.pendingPackets = Math.max(0, this.pendingPackets - 1);
+        this.outputFrameCount += 1;
+        if (!this.firstFrameDiag) {
+          const cs = frame.colorSpace;
+          this.firstFrameDiag = {
+            mediaId: this.mediaId,
+            configColor: this.config?.colorSpace ?? null,
+            frameColor: cs
+              ? {
+                  matrix: cs.matrix ?? null,
+                  primaries: cs.primaries ?? null,
+                  transfer: cs.transfer ?? null,
+                  fullRange: cs.fullRange ?? null,
+                }
+              : null,
+            frameFormat: frame.format ?? null,
+          };
+        }
+        if (this.outputFrameCount === 1 || this.outputFrameCount % 30 === 0) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[weftcut/export] ${this.mediaId} output #${this.outputFrameCount}: ` +
+              `pts=${frame.timestamp}us`,
+          );
+        }
+        if (this.tenBitLane && isTenBitDecoderFormat(frame.format)) {
+          this.pendingCopies++;
+          this.copyChain = this.copyChain.then(async () => {
+            // The producer's window includes pending copies and decoded frames.
+            // A second ring-only gate is unnecessary; keeping one gate also
+            // lets stale copies drain promptly after a decoder rebuild.
+            if (this.decoder !== dec) { frame.close(); return; }
+            const tb = await copyToTenBit(frame);
+            const ptsUs = this.clock.sourceUs(tb.timestamp);
+            frame.close();
+            if (this.decoder !== dec) return;
+            this.ring.push(tb, ptsUs);
+            this.ring.evictBefore(this.retainFromUs);
+          }).catch((e: unknown) => {
+            try { frame.close(); } catch { /* already closed */ }
+            if (this.decoder !== dec) return;
+            const msg = `[weftcut/export] ${this.mediaId} 10-bit copyTo failed: ${String(e)}`;
+            // eslint-disable-next-line no-console
+            console.error(msg);
+            // A dropped frame is silent corruption and a parked-forever waiter —
+            // fail the ring loudly so the worker's waitForPts rejects the export.
+            this.ring.fail(msg);
+            this.wakeCapacity(new Error(msg));
+          }).finally(() => { this.pendingCopies--; this.wakeCapacity(); });
+          return;
+        }
+        this.ring.push(frame, this.clock.sourceUs(frame.timestamp));
+        this.ring.evictBefore(this.retainFromUs);
+        this.wakeCapacity();
+      },
+      error: (e: unknown) => {
+        if (this.decoder !== dec) return;
+        const err = e instanceof Error ? e : new Error(String(e));
+        // eslint-disable-next-line no-console
+        console.error(`[weftcut/export] decoder ${this.mediaId} error:`, err.message);
+        const action = handleDecodeError({
+          err,
+          outputFrameCount: this.outputFrameCount,
+          alreadyDowngraded: this.downgraded,
+          mediaId: this.mediaId,
+          // eslint-disable-next-line no-console
+          log: (msg) => console.warn(`[weftcut/export] ${msg}`),
+        });
+        if (action.kind === "downgrade-to-software") {
+          this.downgraded = true;
+          this.rebuildDecoder();
+        } else if (action.kind === "inactivity-rebuild") {
+          this.rebuildDecoder();
+        } else {
+          this.wakeCapacity(err);
+          this.ring.fail(err.message);
+        }
+      },
+    });
+    return dec;
+  }
+
+  /// Build the decoder config, honoring `downgraded` and `preferSoftware`
+  /// (see the `preferSoftware` field for why SW is pre-configured).
+  private buildConfig(): VideoDecoderConfig {
+    if (!this.config) {
+      throw new Error(`[weftcut/export] ${this.mediaId}: buildConfig before ready`);
+    }
+    return {
+      ...this.config,
+      hardwareAcceleration:
+        this.downgraded || this.preferSoftware || decodesInSoftwareForColour(this.sourceColor)
+          ? "prefer-software"
+          : "prefer-hardware",
+    };
+  }
+
+  /// Recovery: WebCodecs closes the codec before firing `error`, so
+  /// reset()/configure() on the dead decoder throws — rebuild instead.
+  /// Keeps the opened media; resets the cursor so the next decodeRange
+  /// re-seeks a key packet into the fresh decoder. `downgraded` + in-store
+  /// frames stay.
+  private rebuildDecoder(): void {
+    this.generation += 1;
+    this.pendingPackets = 0;
+    this.capacityFailure = null;
+    this.wakeCapacity();
+    try {
+      this.decoder?.close();
+    } catch {
+      // already closed
+    }
+    this.decoder = this.buildDecoder();
+    this.decoder.configure(this.buildConfig());
+    this.cursor = null;
+    this.lastDispatchedPtsUs = Number.NEGATIVE_INFINITY;
+    this.lastRangeAUs = Number.NEGATIVE_INFINITY;
+    this.coveredThroughUs = Number.NEGATIVE_INFINITY;
+    // The fresh decoder supersedes any in-flight EOS flush on the old one (its
+    // .then/.catch are identity-guarded and settle harmlessly), and can produce
+    // frames again — reset the EOS frontier and the ring's finalized state.
+    this.eosFrontierUs = null;
+    this.ring.clearEosDrain();
+    // Preserve the chain: stale links close their frames via the identity
+    // guard, and disposal must await ALL copies before returning the lease.
+    // Between ranges there is no restart loop to notice the new generation —
+    // re-drive the last range into the fresh decoder, or the ring never fills
+    // and the worker's waitForPts hangs. A failed re-drive fails the ring so
+    // the export errors loudly instead of wedging.
+    if (!this.rangeInFlight && this.lastRange && !this._disposed) {
+      const { aUs, bUs } = this.lastRange;
+      // eslint-disable-next-line no-console
+      console.log(`[weftcut/export] ${this.mediaId} re-driving range pts=[${aUs}..${bUs}]us after rebuild`);
+      void this.decodeRange(aUs, bUs).catch((e: unknown) => {
+        this.ring.fail(`[weftcut/export] ${this.mediaId} post-rebuild re-drive failed: ${String(e)}`);
+      });
+    }
+  }
+
+  /// Compositor's `setAnchorTime` reaches us here; export drives decoding via
+  /// `decodeRange`, so this is a no-op.
+  requestFrameAt(_tUs: number): Promise<void> {
+    return Promise.resolve();
+  }
+
+  /// Export composites synchronously; no first-frame repaint needed.
+  onFirstFrame(_cb: () => void): void {
+    // intentional no-op
+  }
+
+  /// Decode every packet needed to cover the presentation range [aUs, bUs].
+  /// Async: seeks to the GOP key at/before `aUs` (or continues from the
+  /// cursor when the range moves forward of the dispatch frontier), then
+  /// dispatches in DECODE order through the first key packet strictly after
+  /// `bUs` (inclusive) — so every frame with presentation PTS ≤ bUs, incl.
+  /// open-GOP B-frames referencing the next key, is fed — plus a bounded
+  /// REORDER_MARGIN lead-in past the stop key to push out the decoder's
+  /// withheld tail. The returned promise includes capacity waits: the worker
+  /// must consume via `ring.waitForPts` concurrently. Only EOS starts a flush;
+  /// ordinary range boundaries preserve the decoder's reference state.
+  /// Awaiting `getNextPacket` faults in uncached bytes natively.
+  decodeRange(aUs: number, bUs: number): Promise<void> {
+    const run = this.driveChain.then(() => this.driveRange(aUs, bUs));
+    this.driveChain = run.catch(() => {});
+    return run;
+  }
+
+  private async driveRange(aUs: number, bUs: number): Promise<void> {
+    if (this._disposed) return;
+    this.lastRange = { aUs, bUs };
+    this.rangeInFlight = true;
+    try {
+      await this.dispatchRange(aUs, bUs);
+    } finally {
+      this.rangeInFlight = false;
+    }
+  }
+
+  private async dispatchRange(aUs: number, bUs: number): Promise<void> {
+    this.retainFromUs = aUs;
+    this.ring.evictBefore(aUs);
+    if (!this.config || !this.decoder) await this.ensureReady();
+    if (!this.config || !this.decoder) return;
+    const packetSink = this.opened?.packetSink;
+    if (!packetSink) return;
+
+    // A rebuild (HW→SW downgrade / inactivity recovery) can land during any
+    // await below — the error callback fires as a queued task. The fresh
+    // decoder must be seeded from a key packet; continuing this dispatch would
+    // feed it its next delta (the synchronous "key frame required" throw).
+    // So every await is generation-checked and a moved generation restarts the
+    // range: the rebuild nulled the cursor, so the retry takes the key-seek
+    // path and re-feeds the fresh decoder. Same discipline as PacketPump.
+    restart: for (;;) {
+      // End-of-stream handling. A forward tail range was already fully fed by
+      // the range that hit EOS. The independently running consumer drains the
+      // final GOP across planning chunks; this request needs no more packets
+      // and does not need to wait for the floated flush to finish.
+      if (this.eosFrontierUs !== null) {
+        if (aUs >= this.eosFrontierUs) return;
+        // True backward jump (same-media clip reuse) into a drained/draining
+        // decoder. A re-seek must restart from a keyframe anyway, and the
+        // in-flight flush may be stalled on pool slots — rebuild instead of
+        // awaiting it; the superseded flush settles harmlessly (identity-guarded
+        // callbacks).
+        // eslint-disable-next-line no-console
+        console.log(
+          `[weftcut/export] ${this.mediaId} backward range pts=[${aUs}..${bUs}]us ` +
+            `across EOS frontier — rebuilding decoder`,
+        );
+        this.rebuildDecoder();
+      }
+      const gen = this.generation;
+
+      // Forward ranges (the export's normal march) continue from the cursor;
+      // only a true backward jump (aUs before the previous range — same-media
+      // clip reuse) re-seeks. The per-packet frontier `lastDispatchedPtsUs` must
+      // NOT drive this: the stop-after-key rule overshoots it to the next GOP's
+      // key, and misreading that as "backward" re-feeds the whole stream prefix
+      // behind the consumer (stale-frame corruption at GOP boundaries).
+      const forward = this.cursor !== null && aUs >= this.lastRangeAUs;
+      this.lastRangeAUs = aUs;
+
+      // Fully covered by a prior overshooting dispatch: every packet this range
+      // needs is already in the decoder/ring pipeline — feed nothing.
+      if (forward && bUs < this.coveredThroughUs) {
+        return;
+      }
+
+      let pkt: EncodedPacket | null;
+      if (forward) {
+        pkt = await packetSink.getNextPacket(this.cursor!);
+      } else {
+        pkt = await packetSink.getKeyPacket(this.toContainerPtsUs(aUs) / 1e6);
+        // `getKeyPacket` is null when `aUs` precedes the first key packet — a
+        // trimmed / edit-list source whose first frame PTS is past the requested
+        // time (e.g. ffmpeg `-ss` clips). Fall back to the track's first packet
+        // (always the opening keyframe) so the decode starts from the GOP head
+        // instead of feeding from nothing and wedging the export. Mirrors the
+        // same fallback in `probeSourceDecodable`.
+        if (!pkt) {
+          pkt = await packetSink.getFirstPacket();
+        }
+      }
+      if (this._disposed) return;
+      if (this.generation !== gen) continue;
+
+      // eslint-disable-next-line no-console
+      console.log(
+        `[weftcut/export] ${this.mediaId} decodeRange pts=[${aUs}..${bUs}]us ` +
+          `(start=${pkt ? this.clock.sourceUs(pkt.microsecondTimestamp) : "none"}us, ` +
+          `frontier=${this.lastDispatchedPtsUs}us)`,
+      );
+
+      let dispatched = 0;
+      // PTS of the stop key once dispatched. The loop then keeps feeding ONLY
+      // the packets that decode after the key but display before it (open-GOP
+      // leading B-frames) so "everything strictly below the key's PTS is fed"
+      // becomes an exact invariant — what `coveredThroughUs` claims.
+      let stopKeyPtsUs: number | null = null;
+      while (pkt) {
+        const ptsUs = this.clock.sourceUs(pkt.microsecondTimestamp);
+        if (stopKeyPtsUs !== null && ptsUs >= stopKeyPtsUs) break;
+        const admission = this.reserveDispatchMemory();
+        if (admission) await admission;
+        if (this._disposed) return;
+        if (this.generation !== gen) continue restart;
+        const prepared = this.clock.prepare(pkt);
+        this.pendingPackets++;
+        this.bufferStats.peakFrames = Math.max(this.bufferStats.peakFrames, this.heldFrames());
+        this.decoder.decode(prepared.chunk);
+        this.cursor = pkt;
+        this.lastDispatchedPtsUs = prepared.sourcePtsUs;
+        dispatched++;
+        this.dispatchedTotal++;
+        // Mark the first key strictly past bUs — that key begins the GOP after
+        // bUs, so everything with PTS ≤ bUs has been fed once its leading
+        // B-frames (if any) follow.
+        if (stopKeyPtsUs === null && pkt.type === "key" && ptsUs > bUs) {
+          stopKeyPtsUs = ptsUs;
+        }
+        pkt = await packetSink.getNextPacket(pkt);
+        if (this._disposed) return;
+        if (this.generation !== gen) continue restart;
+      }
+      // Lead-in past the stop key, on every lane: push the decoder's withheld
+      // reorder/pipelining tail out with real input (a mid-stream flush is the
+      // deadlock landmine — see the header). A zero-delay decoder just sees a
+      // few extra frames the ring already tolerates, and the next range
+      // continues from the cursor, so nothing is ever fed twice.
+      let extra = 0;
+      while (pkt && extra < REORDER_MARGIN) {
+        const admission = this.reserveDispatchMemory();
+        if (admission) await admission;
+        if (this._disposed) return;
+        if (this.generation !== gen) continue restart;
+        const prepared = this.clock.prepare(pkt);
+        this.pendingPackets++;
+        this.bufferStats.peakFrames = Math.max(this.bufferStats.peakFrames, this.heldFrames());
+        this.decoder.decode(prepared.chunk);
+        this.cursor = pkt;
+        this.lastDispatchedPtsUs = prepared.sourcePtsUs;
+        dispatched++;
+        this.dispatchedTotal++;
+        extra++;
+        pkt = await packetSink.getNextPacket(pkt);
+        if (this._disposed) return;
+        if (this.generation !== gen) continue restart;
+      }
+      if (stopKeyPtsUs !== null) {
+        this.coveredThroughUs = Math.max(this.coveredThroughUs, stopKeyPtsUs);
+      }
+      // eslint-disable-next-line no-console
+      console.log(
+        `[weftcut/export] ${this.mediaId} decodeRange dispatched ${dispatched} ` +
+          `(queue=${this.decoder.decodeQueueSize})`,
+      );
+
+      // End-of-stream discriminator: `getNextPacket` returned null (`pkt ===
+      // null`), NOT the key-past-bUs `break` (which leaves `pkt` holding that
+      // key). Either this range dispatched to exhaustion, or — `dispatched === 0`
+      // with a positioned cursor — a PREVIOUS range's stop-after-key break
+      // already consumed the stream's final packet and this range found nothing
+      // left. Both are true EOS: the final GOP's trailing frames stay parked in
+      // the decoder's reorder buffer until an explicit flush (the mid-stream
+      // drain mechanism — the next GOP key — can never arrive).
+      if (pkt === null && (dispatched > 0 || this.cursor !== null)) {
+        this.eosFrontierUs = aUs;
+        this.coveredThroughUs = Number.POSITIVE_INFINITY;
+        this.issueEosFlush();
+      }
+      return;
+    }
+  }
+
+  private toContainerPtsUs(sourceUs: number): number {
+    return this.clock.containerUs(sourceUs);
+  }
+
+  /// True EOS has no further input to drain the codec's trailing pictures.
+  /// Float the drain so later ranges can advance retention while the consumer
+  /// releases frames. Finality is published only after every output/copy lands.
+  /// A flushed decoder requires a keyframe: forward tail ranges skip dispatch;
+  /// a backward reuse rebuilds instead of waiting on the previous drain.
+  private issueEosFlush(): void {
+    const dec = this.decoder;
+    if (!dec) return;
+    this.ring.beginEosDrain();
+    // eslint-disable-next-line no-console
+    console.log(
+      `[weftcut/export] ${this.mediaId} EOS — flushing decoder reorder buffer ` +
+        `(queue=${dec.decodeQueueSize}, ring=${this.ring.size()})`,
+    );
+    void dec
+      .flush()
+      .then(() => this.copyChain)
+      .then(() => {
+        if (this.decoder !== dec) return; // superseded by rebuild/dispose
+        // Every frame the source will ever produce is now in the ring (or
+        // already consumed) — finalize so grid-overhang tail waits clamp to
+        // the last held frame instead of parking forever.
+        this.ring.finishEosDrain();
+        // eslint-disable-next-line no-console
+        console.log(
+          `[weftcut/export] ${this.mediaId} EOS flush drained ` +
+            `(output #${this.outputFrameCount}, ring=${this.ring.size()})`,
+        );
+      })
+      .catch((e: unknown) => {
+        if (this.decoder !== dec) return; // superseded by rebuild/dispose
+        const error = e instanceof Error ? e : new Error(String(e));
+        this.wakeCapacity(error);
+        this.ring.fail(error.message);
+        // eslint-disable-next-line no-console
+        console.warn(`[weftcut/export] ${this.mediaId} EOS flush errored:`, e);
+      });
+    this.cursor = null;
+    this.lastDispatchedPtsUs = Number.NEGATIVE_INFINITY;
+  }
+
+  evictBefore(cutoffUs: number): void {
+    this.retainFromUs = cutoffUs;
+    this.ring.evictBefore(cutoffUs);
+  }
+
+  private heldFrames(): number { return this.pendingPackets + this.pendingCopies + this.ring.residentFrames; }
+
+  private wakeCapacity(error?: Error): void {
+    if (error) this.capacityFailure = error;
+    if (this.capacityWaiters.size === 0) return;
+    const waiters = [...this.capacityWaiters];
+    this.capacityWaiters.clear();
+    for (const waiter of waiters) {
+      if (error) waiter.reject(error);
+      else waiter.resolve();
+    }
+  }
+
+  private async waitForCapacity(): Promise<void> {
+    const gen = this.generation;
+    const started = performance.now();
+    this.bufferStats.waits++;
+    try {
+      while (!this._disposed && this.generation === gen && this.heldFrames() + 1 > this.admittedFrames) {
+        if (this.capacityFailure) throw this.capacityFailure;
+        await new Promise<void>((resolve, reject) => this.capacityWaiters.add({ resolve, reject }));
+      }
+    } finally { this.bufferStats.waitMs += performance.now() - started; }
+  }
+
+  private reserveDispatchMemory(): Promise<void> | null {
+    if (this.heldFrames() + 1 <= this.admittedFrames) return null;
+    // The consumer runs concurrently with this producer, including across
+    // planning blocks. Frame release wakes it; no allocation/IPC on this path.
+    return this.waitForCapacity();
+  }
+
+  dispose(): void {
+    if (this._disposed) return;
+    this._disposed = true;
+    this.generation += 1;
+    this.wakeCapacity();
+    if (this.decoder) {
+      try {
+        this.decoder.close();
+      } catch {
+        // already closed
+      }
+      this.decoder = null;
+    }
+    this.ring.dispose();
+    this.opened?.dispose();
+    const releases = this.releaseResources ? [this.releaseResources] : [];
+    this.releaseResources = null;
+    // The copy chain owns VideoFrames even after the codec closes. Keep its
+    // credits until those frames close, including stale links after a rebuild.
+    if (this.pendingCopies) void this.copyChain.finally(() => releases.forEach(release => release()));
+    else releases.forEach(release => release());
+    this.opened = null;
+    this.config = null;
+    this.readyP = null;
+    this.cursor = null;
+    this.lastDispatchedPtsUs = Number.NEGATIVE_INFINITY;
+    this.lastRangeAUs = Number.NEGATIVE_INFINITY;
+    this.coveredThroughUs = Number.NEGATIVE_INFINITY;
+    this.outputFrameCount = 0;
+    this.downgraded = false;
+    this.eosFrontierUs = null;
+    this.copyChain = Promise.resolve();
+  }
+}
+
+/// Pool key for an export handle. Clips of one media whose timeline→source
+/// offset (`srcInUs - tStartUs`, the "phase") is EQUAL march through source
+/// time in lockstep — at any output time they want the SAME source PTS, so
+/// their per-chunk ranges coincide and one decoder + ring serves them all (a
+/// stacked copy costs no extra decode). Clips at a DIFFERENT phase want
+/// source times a constant gap apart: serving both from one ring would have
+/// to hold the whole gap's worth of frames (deadlocking the ~13-slot
+/// WebCodecs pool once the gap exceeds it), and their concurrent
+/// `decodeRange` calls would corrupt the shared cursor + evict each other's
+/// frames (the same-source overlap export wedge) — so each phase gets its
+/// own pipeline.
+export function exportHandleKey(
+  mediaId: string,
+  srcInUs: number,
+  tStartUs: number,
+  rate = 1,
+): string {
+  return rate === 1 ? `${mediaId}#${srcInUs - tStartUs}` : `${mediaId}#${srcInUs - tStartUs * rate}@${rate}`;
+}
+
+interface ExportSourceDiagnostic {
+  mediaId: string;
+  url: string;
+  dispatched: number;
+  native: boolean;
+  color: ExportColorDiag | null;
+  buffer: ExportSourceHandle['bufferStats'] | undefined;
+}
+
+export class ExportDecoderPool implements DecoderPool {
+  /// Values are the `ExportDecodeSession` contract — a runtime mix of the
+  /// WebCodecs `ExportSourceHandle` and the native `NativeExportSourceHandle`,
+  /// chosen per-acquire by `init.nativeExport`.
+  readonly handles = new Map<string, ExportDecodeSession>();
+  private completed = new Map<string, ExportSourceDiagnostic>();
+
+  private snapshot(h: ExportDecodeSession, old?: ExportSourceDiagnostic): ExportSourceDiagnostic {
+    const stats = h instanceof ExportSourceHandle ? h.bufferStats : undefined;
+    return { mediaId: h.mediaId, url: h.sourceUrl, dispatched: (old?.dispatched ?? 0) + h.dispatchedTotal,
+      native: h instanceof NativeExportSourceHandle, color: old?.color ?? h.firstFrameDiag,
+      buffer: stats ? { capacityFrames: stats.capacityFrames, peakFrames: Math.max(old?.buffer?.peakFrames ?? 0, stats.peakFrames),
+        waits: (old?.buffer?.waits ?? 0) + stats.waits, waitMs: (old?.buffer?.waitMs ?? 0) + stats.waitMs } : undefined };
+  }
+
+  /** Release previous chunks before new sources compete for working memory.
+   * A later reuse reopens its session; diagnostics retain only small records. */
+  retainOnly(keys: ReadonlySet<string>): void {
+    for (const key of this.handles.keys()) if (!keys.has(key)) this.release(key);
+  }
+
+  diagnostics() {
+    const all = new Map(this.completed);
+    for (const [key, h] of this.handles) {
+      const old = all.get(key);
+      all.set(key, this.snapshot(h, old));
+    }
+    const entries = [...all.values()];
+    return {
+      totalDispatched: entries.reduce((total, h) => total + h.dispatched, 0),
+      nativeHandles: entries.filter(h => h.native).length,
+      colorDiag: entries.find(h => h.color)?.color ?? null,
+      sources: entries.map(h => ({ mediaId: h.mediaId, url: h.url, ...(h.buffer ? { buffer: h.buffer } : {}) })),
+    };
+  }
+
+  /// Handles are keyed by `init.handleKey` — the export Worker and the
+  /// export-mode Compositor both pass `exportHandleKey(...)`, giving one
+  /// decode pipeline per (media, phase) group — falling back to `mediaId`
+  /// for callers that don't group. See `exportHandleKey` for why phase
+  /// separation is required.
+  acquire(init: SourceHandleInit): ExportDecodeSession {
+    const key = init.handleKey ?? init.mediaId;
+    let h = this.handles.get(key);
+    if (!h) {
+      // `nativeExport` (export-only, set by the routed 6a acquire) selects the
+      // native session over its own port; otherwise the WebCodecs proxy path.
+      h = init.nativeExport ? new NativeExportSourceHandle(init) : new ExportSourceHandle(init);
+      this.handles.set(key, h);
+    }
+    return h;
+  }
+
+  release(key: string): void {
+    const h = this.handles.get(key);
+    if (!h) return;
+    const old = this.completed.get(key);
+    this.completed.set(key, this.snapshot(h, old));
+    h.dispose();
+    this.handles.delete(key);
+  }
+
+  dispose(): void {
+    for (const h of this.handles.values()) h.dispose();
+    this.handles.clear();
+    this.completed.clear();
+  }
+}

@@ -1,0 +1,235 @@
+// apps/desktop/src/main/state/router.ts
+// Pure splitter: the TS actor is authoritative; this splits every renderer channel.
+// SAFETY INVARIANT (router.test.ts partition gate): every renderer channel is
+// classified into exactly one bucket, and no project-touching channel routes to
+// 'rust' (the curated PURE_NATIVE ∪ PERSISTENCE ∪ SLICE_INJECTED_READS ∪
+// DIRECT_NAPI_READS allowlist is read-only / config-store / pure-native). An
+// unclassified channel routes to {kind:'reject'} so the gate fails loud.
+import { PRODUCTION_OPS } from './commands'
+import { SAVE_STATUS_CHANNEL } from '../../shared/save-status'
+
+export type Route =
+  | { kind: 'exportJob' }
+  | { kind: 'command' }       // actor.command(channel, args)
+  | { kind: 'summary' }       // buildProjectSummary
+  | { kind: 'historyView' }   // actor.historyView(cap) — the whole edit stack, READ-only
+  | { kind: 'review' }        // Review baseline reads, approve all, revert all (ADR 0115)
+  | { kind: 'tacks' }         // the user's tack actions from the agent panel (ADR 0115) — never a project write
+  | { kind: 'projectSettings' } // actor.snapshot().settings
+  | { kind: 'saveStatus' }    // whether project.json is reaching disk (shared/save-status.ts) — READ-only
+  | { kind: 'open' } | { kind: 'saveAs' } | { kind: 'newWorkspace' } | { kind: 'save' } | { kind: 'close' }
+  | { kind: 'agentSessionEnd' } // end work locally; release only its owned lock
+  | { kind: 'agentSessionBegin' } // legacy local channel: request agent view only
+  | { kind: 'appSettings' }   // app-level prefs store, owned in TS main (config-dir)
+  | { kind: 'workspace' }     // app-level Dock arrangement document, owned in TS main (config-dir)
+  | { kind: 'viewState' }     // per-workspace view.json store, owned in TS main
+  | { kind: 'exportSettings' } // per-workspace export.json store, owned in TS main
+  | { kind: 'keybindings' }   // per-user keybinding overrides, owned in TS main (config-dir)
+  | { kind: 'recents' }       // recent-projects list + prefs, owned in TS main (config-dir)
+  | { kind: 'hybrid'; tool: string } // native-compute → TS-write
+  | { kind: 'clipCompute' }   // native clip read/compute over an actor-resolved slice
+  | { kind: 'audioFx' }       // audio-fx baker read/gate, served in main by the baker
+  | { kind: 'motif'; tool: string }  // TS Motif authoring/read/install
+  | { kind: 'reject'; reason: string }
+  | { kind: 'rust' }
+
+/** Hybrid Rust-compute → TS-write channels. install_motif rides the motif
+ *  route instead.
+ *
+ *  `drop_shot_markers` and `apply_shot_cuts` are hybrids by definition — Rust
+ *  scans and reduces the shot report, the TS actor writes the splits or the
+ *  markers — which is why they route here and not through an index.ts intercept
+ *  like the read-only shot channels. The first is the second at the detection
+ *  defaults in 'mark' mode; both are renderer-only, with no MCP tool.
+ *
+ *  `apply_subtitles` lays a pooled subtitle document, reached by a Subtitle item
+ *  dropped on the timeline; `synthesize_speech` is the write half of the
+ *  voiceover recipe, reached by the voiceover dialog. Classified here rather
+ *  than as an index.ts intercept because they ARE hybrids — Rust parses or
+ *  synthesizes, the actor commits — and an unclassified channel is rejected by
+ *  design.
+ *  Either caller lands the same single commit; the MCP path differs only in
+ *  wrapping the string result as a `ToolResult` text block (server.ts).
+ *
+ *  `mark_pauses` is the same split one capability over: Rust reads the
+ *  waveform peaks through `detect_pauses`, the TS actor lands one region
+ *  marker per pause in a single commit. Renderer-only for
+ *  `apply_shot_cuts`' reason — an agent already has the read tool and
+ *  `add_markers`.
+ *
+ *  `remove_pauses` is the one pause arm reachable from BOTH the Attribute
+ *  Panel's Pauses section and MCP: cutting the cores out and closing the gaps
+ *  is one recorded edit no sequence of advertised tools reproduces, so it
+ *  carries a tool of its own (`mcp/mutationTools.ts` `HYBRID_TOOLS`) and this
+ *  channel serves the very same arm. */
+export const HYBRID_CHANNELS: ReadonlySet<string> = new Set([
+  'import_media', 'drop_shot_markers', 'apply_shot_cuts', 'mark_pauses',
+  'remove_pauses', 'apply_subtitles', 'synthesize_speech',
+])
+
+/** Read-only channels whose Rust entry point is a direct napi method (or the
+ *  MCP resource path), not an `invoke` arm — so `index.ts` serves each from its
+ *  own intercept and the router is never consulted for them. They are
+ *  classified anyway, because the partition gate's value is a COMPLETE manifest:
+ *  a channel absent from it is a channel nobody checked. Routing to `rust`
+ *  records the property that matters — no actor write — and the fallthrough
+ *  refuses the channel by name rather than reaching project state.
+ *
+ *  `shot_floor_report_cached` is a disk probe that Rust guarantees never starts
+ *  a scan, which is what lets the review surface ask it on every selection
+ *  change. `shot_floor_sensitivity` and `shot_default_opts` are constant reads
+ *  off the addon, exposed so the review surface's threshold comes from the scan
+ *  that produced the candidates rather than from a renderer literal.
+ *
+ *  `attach_shot_stats` is a compute that spawns ffmpeg per unmeasured span, like
+ *  `analyze_shots_floor` — it writes to its own cache sidecar and never to the
+ *  actor, and only a deliberate press in the review surface reaches it.
+ *
+ *  `get_media_frame` and `get_media_description` are the two `media://` resource
+ *  reads the review surface pulls. Both are cache reads: the frame one extracts
+ *  on demand and caches per `(source, t)`, and the description one reports a
+ *  miss rather than spawning a model — `describe_clip` (a clip-compute channel)
+ *  is the only path that runs one. */
+export const DIRECT_NAPI_READS: ReadonlySet<string> = new Set([
+  'analyze_shots', 'analyze_shots_floor', 'shot_floor_report_cached',
+  'shot_floor_sensitivity', 'shot_default_opts', 'reduce_shot_report',
+  'attach_shot_stats', 'get_media_frame',
+  'get_media_description',
+])
+
+/** Native clip read/compute channels: no actor write, but the stateless Rust
+ *  handler needs the layer + its MediaItem injected, which only the actor can
+ *  resolve. Served in index.ts by `callClipComputeTool` — the SAME function the
+ *  MCP tool of the same name goes through, injection included, so the human and
+ *  the agent path cannot pick different engines or different slices.
+ *
+ *  A strict subset of `clip-slice-forward.ts`'s `CLIP_SLICE_TOOLS`: `analyze_clip`
+ *  stays agent-only, because the renderer's shot surfaces read the whole-source
+ *  report through `analyze_shots` instead. */
+export const CLIP_COMPUTE_CHANNELS: ReadonlySet<string> = new Set([
+  'detect_pauses', 'transcribe_clip', 'describe_clip',
+])
+
+/** The audio-fx baker's own channels, served in `index.ts` by the baker — the
+ *  sole holder of bake state, which is a derivation and never project state
+ *  (ADR 0063). All three are reads of that map or of the disk behind it:
+ *  `audio_fx_snapshot` for a boot-time or late subscriber, `ensure_export_audio_fx`
+ *  for the export gate (it flushes the debounce and reports what the mix is
+ *  waiting on), `audio_fx_reverify` for a consumer that found a ready artifact
+ *  evicted. None writes the project actor.
+ *
+ *  Their own route kind rather than a fold into `rust`, because the answer comes
+ *  from main and the four bake PRIMITIVES (`PURE_NATIVE` below) are what reach
+ *  Rust. */
+export const AUDIO_FX_CHANNELS: ReadonlySet<string> = new Set([
+  'audio_fx_snapshot', 'ensure_export_audio_fx', 'audio_fx_reverify',
+])
+
+/** Motif catalog-read + authoring + publication channels, served in TS by
+ *  the host's Motif dispatch. Renderer-only (never in MCP's `MOTIF_TOOLS`):
+ *  the user's own "Save to library" `publish_motif`, the approval card's
+ *  `list_motif_proposals` / `approve_motif_proposal` / `reject_motif_proposal`
+ *  (ADR 0046), the library card's `list_motif_versions` /
+ *  `restore_motif_version` (ADR 0172) and `delete_library_motif`, and
+ *  `update_project_motif`, the user's update of a project copy from the
+ *  library, and the trust card's `motif_trust_summary` / `trust_motif`: only
+ *  the user trusts a Motif (spec § Trust). The renderer never calls
+ *  `install_motif`, which proposes. */
+export const MOTIF_CHANNELS: ReadonlySet<string> = new Set(['list_motifs', 'read_motif', 'create_motif', 'update_motif_files', 'export_motif', 'delete_motif', 'publish_motif', 'list_motif_proposals', 'approve_motif_proposal', 'reject_motif_proposal', 'list_motif_versions', 'restore_motif_version', 'delete_library_motif', 'update_project_motif', 'motif_trust_summary', 'trust_motif'])
+
+/** Native read/compute handlers that receive their project state slice (a MediaItem
+ *  or the full Project) as an injected call argument — the TS host forwards it
+ *  before the rust dispatch. Safe on rust: they hold no resident state. */
+export const SLICE_INJECTED_READS: ReadonlySet<string> = new Set([
+  'export_project_audio_only', 'ensure_export_audio_conform', 'ensure_conform', 'ensure_full_proxy', 'generate_quick_proxy',
+  'get_media_thumbnail', 'get_waveform_peaks',
+])
+
+/** Native compute with NO project actor access.
+ *
+ *  The four audio-fx bake primitives (`measure_conform_rms`, `bake_audio_fx`,
+ *  `cancel_audio_fx`, `build_peaks_for_vconf`) belong here on the property that
+ *  matters — they take explicit paths and a finished ffmpeg graph, so they read
+ *  no project state at all (ADR 0063). Main's baker is their only caller; they
+ *  are classified anyway because this manifest's value is completeness, and a
+ *  channel nobody listed is a channel nobody checked. */
+export const PURE_NATIVE: ReadonlySet<string> = new Set([
+  'ping', 'mux_export', 'export_video_sink_start', 'export_video_sink_finish', 'export_video_sink_cancel',
+  'import_cancel', 'import_queue_list', 'report_audio_meter',
+  'measure_conform_rms', 'bake_audio_fx', 'cancel_audio_fx', 'build_peaks_for_vconf',
+])
+
+/** Backend stores (config-dir), not the project actor. */
+export const PERSISTENCE: ReadonlySet<string> = new Set([
+  'workspace_dir', 'agent_session_get', 'log_list', 'log_clear', 'log_emit', 'log_dir_path',
+])
+
+export function routeChannel(channel: string): Route {
+  if (EXPORT_JOB_CHANNELS.has(channel)) return {kind:'exportJob'}
+  if (PRODUCTION_OPS.has(channel)) return { kind: 'command' }
+  if (HYBRID_CHANNELS.has(channel)) return { kind: 'hybrid', tool: channel }
+  if (CLIP_COMPUTE_CHANNELS.has(channel)) return { kind: 'clipCompute' }
+  if (AUDIO_FX_CHANNELS.has(channel)) return { kind: 'audioFx' }
+  if (MOTIF_CHANNELS.has(channel)) return { kind: 'motif', tool: channel }
+  switch (channel) {
+    case 'project_summary': case 'project_publication': return { kind: 'summary' }
+    // A READ, not a command: it must never enter the undo stack or dirty the
+    // project. Its own kind rather than a fold into `summary` because the panel
+    // pulls the full stack on its own cadence, while the summary refetch runs on
+    // every edit whether the panel is open or not (spec decision 5).
+    case 'project_history_view': return { kind: 'historyView' }
+    case 'get_project_settings': return { kind: 'projectSettings' }
+    case SAVE_STATUS_CHANNEL: return { kind: 'saveStatus' }
+    // Review: two reads (the baseline view; what one activity's ops did),
+    // approve all and revert all, both checked against the view the user
+    // acted on. Approval folds the current state into the Review baseline; it
+    // changes nothing in the project and records nothing, so the history lock
+    // does not apply. Revert all restores the baseline as a recorded commit,
+    // under the lock like restore_checkpoint (ADR 0115).
+    case 'review_view':
+    case 'review_activity_view':
+    case 'review_approve_all':
+    case 'review_revert_all': return { kind: 'review' }
+    // The user's tack actions (resolve / dismiss / reopen / clear). Served by
+    // the TackStore beside agent activity, like the MCP tack verbs: not project
+    // content, so not a command, never recorded, not under the history lock.
+    case 'agent_tacks_set_status':
+    case 'agent_tacks_delete': return { kind: 'tacks' }
+    case 'project_open': return { kind: 'open' }
+    case 'project_save_as': return { kind: 'saveAs' }
+    case 'project_new_workspace': return { kind: 'newWorkspace' }
+    case 'project_save': return { kind: 'save' }
+    case 'project_close': return { kind: 'close' }
+    case 'agent_session_end': return { kind: 'agentSessionEnd' }
+    case 'agent_session_begin': return { kind: 'agentSessionBegin' }
+    case 'app_settings_get':
+    case 'app_settings_set': return { kind: 'appSettings' }
+    case 'workspace_get':
+    case 'workspace_set_current':
+    case 'workspace_set_active':
+    case 'workspace_save_baseline':
+    case 'workspace_create_profile':
+    case 'workspace_rename_profile':
+    case 'workspace_delete_profile': return { kind: 'workspace' }
+    case 'view_state_get':
+    case 'view_state_set': return { kind: 'viewState' }
+    case 'export_settings_get':
+    case 'export_settings_set': return { kind: 'exportSettings' }
+    case 'keybindings_get':
+    case 'keybindings_set':
+    case 'keybindings_reset_all':
+    case 'keybindings_export':
+    case 'keybindings_import': return { kind: 'keybindings' }
+    case 'recents_list':
+    case 'recents_remove':
+    case 'recents_get_reopen_on_launch':
+    case 'recents_set_reopen_on_launch':
+    case 'recents_most_recent':
+    case 'recents_last_new_project_parent': return { kind: 'recents' }
+  }
+  if (PURE_NATIVE.has(channel) || PERSISTENCE.has(channel) || SLICE_INJECTED_READS.has(channel) || DIRECT_NAPI_READS.has(channel))
+    return { kind: 'rust' }
+  return { kind: 'reject', reason: 'unclassified channel — classify in router.ts' }
+}
+
+export const EXPORT_JOB_CHANNELS: ReadonlySet<string> = new Set(["export_job_start","export_job_session","export_job_ready","export_job_detaching","export_job_update","export_job_publish","export_job_stills","export_job_status","export_job_cancel","export_job_retry","export_job_path_exists","export_job_suggest_name","project_open_state","project_startup_open"]);

@@ -1,0 +1,198 @@
+import { contentAtUs } from '../../layerTiming';
+// ImageOverlay layer. Raster image types (gif/png/jpeg/webp/avif) are offered to
+// the shared ImageDecoder cache first: a multi-frame source becomes an
+// *animated image* whose frame is chosen per-tick from composition time and
+// LOOPED to fill the (free) layer duration, rendered back at the source's
+// natural size (the cache caps frames at composition size). A single-frame
+// source is declined by the decoder, and unsupported types (bmp/tiff/svg) never
+// decode there, so both take the one-shot full-resolution createImageBitmap
+// path. The cache owns animated bitmaps; this sprite only wraps them in its own
+// Texture (mirrors MotifSprite ownership). See docs/render.md.
+
+import { type Container, Sprite, Texture } from "pixi.js";
+
+import { anchorPivot, textureExtent } from "../anchorPivot";
+import type { ResolvedImageOverlayView } from "../resolveView";
+import { UnbindingImageSource } from "../unbindOnDestroy";
+import { gifFrameIndexAt } from "./gifTiming";
+import type { StageableSprite } from "./StageableSprite";
+import {
+  naturalScale,
+  sharedAnimatedImageCache,
+  type DecodedAnimation,
+} from "./animatedImageCache";
+
+export interface ImageOverlaySpriteInit {
+  layerId: string;
+  mediaId: string;
+  /// Decode-time downscale cap (composition pixels). Frames are scaled to
+  /// min(original, cap) so a large GIF can't blow memory.
+  maxWidth: number;
+  maxHeight: number;
+}
+
+export class ImageOverlaySprite implements StageableSprite {
+  readonly sprite: Sprite;
+  readonly layerId: string;
+  readonly mediaId: string;
+  private readonly maxWidth: number;
+  private readonly maxHeight: number;
+  private source: UnbindingImageSource | null = null;
+  private texture: Texture | null = null;
+  /// Decoded animation (1+ frames) from the shared cache, or null when the
+  /// static fallback path is used. Cache-owned: never closed here.
+  private anim: DecodedAnimation | null = null;
+  /// Cache key held for `release` on dispose; null until/unless an acquire wins.
+  private animKey: string | null = null;
+  /// Last bound frame index (animated path) — skip rebind when unchanged.
+  private boundIndex = -1;
+  /// Reject async binds after dispose.
+  private disposed = false;
+
+  constructor(init: ImageOverlaySpriteInit) {
+    this.layerId = init.layerId;
+    this.mediaId = init.mediaId;
+    this.maxWidth = init.maxWidth;
+    this.maxHeight = init.maxHeight;
+    this.sprite = new Sprite(Texture.EMPTY);
+  }
+
+  get displayObject(): Container {
+    return this.sprite;
+  }
+
+  /// EMPTY until the first frame is decoded/bound; not staged before then
+  /// (PixiJS v8 batched renderer crashes on the EMPTY placeholder).
+  get stageReady(): boolean {
+    return this.sprite.texture !== Texture.EMPTY;
+  }
+
+  /// Load `assetUrl`. Tries the animated ImageDecoder cache first; on an
+  /// unsupported type / decode error falls back to a one-shot bitmap. Idempotent.
+  async loadFromAsset(assetUrl: string): Promise<void> {
+    if (this.anim || this.texture || this.disposed) return;
+    const key = `${this.mediaId}@${this.maxWidth}x${this.maxHeight}`;
+    try {
+      const anim = await sharedAnimatedImageCache.acquire(
+        key,
+        assetUrl,
+        this.maxWidth,
+        this.maxHeight,
+      );
+      if (this.disposed) {
+        sharedAnimatedImageCache.release(key);
+        return;
+      }
+      this.anim = anim;
+      this.animKey = key;
+      // First frame binds on the next update() (it knows tInLayerUs).
+      return;
+    } catch {
+      // Unsupported type / decode failure → static fallback below.
+    }
+    try {
+      const res = await fetch(assetUrl);
+      if (!res.ok) {
+        // eslint-disable-next-line no-console
+        console.error(`[weftcut/pixi] ImageOverlay ${this.layerId}: fetch ${assetUrl} → ${res.status}`);
+        return;
+      }
+      const blob = await res.blob();
+      const bitmap = await createImageBitmap(blob);
+      if (this.disposed) {
+        bitmap.close();
+        return;
+      }
+      this.bindBitmap(bitmap);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error(`[weftcut/pixi] ImageOverlay ${this.layerId}: load failed`, e);
+    }
+  }
+
+  /// Apply transform/opacity/fade and, for an animated source, bind the looped
+  /// frame for `tInLayerUs`. `tInLayerUs` is composition-time minus the layer's
+  /// start; `durationUs` is the layer's (free) span.
+  update(view: ResolvedImageOverlayView, tInLayerUs: number, durationUs: number): void {
+    if (this.disposed) return;
+    // Animated frames are decoded at most composition-sized, so the rendered
+    // scale carries the frame→source correction: layer transforms are authored
+    // against the source size.
+    const { kx, ky } = this.anim ? naturalScale(this.anim) : { kx: 1, ky: 1 };
+    const effScaleX = view.scale_x * kx;
+    const effScaleY = view.scale_y * ky;
+    this.sprite.scale.set(effScaleX, effScaleY);
+    // Position is the anchor in composition pixels (anchorPivot.ts).
+    const pivot = anchorPivot({
+      x: view.x,
+      y: view.y,
+      anchorX: view.anchor_x,
+      anchorY: view.anchor_y,
+      ...textureExtent(this.sprite.texture),
+    });
+    this.sprite.pivot.set(pivot.pivotX, pivot.pivotY);
+    this.sprite.position.set(pivot.posX, pivot.posY);
+    this.sprite.angle = view.rotation_deg;
+    let alpha = view.opacity;
+    if (view.fade_in_us > 0 && tInLayerUs < view.fade_in_us) {
+      alpha *= Math.max(0, tInLayerUs / view.fade_in_us);
+    }
+    if (view.fade_out_us > 0) {
+      const tUntilEndUs = durationUs - tInLayerUs;
+      if (tUntilEndUs < view.fade_out_us) {
+        alpha *= Math.max(0, tUntilEndUs / view.fade_out_us);
+      }
+    }
+    this.sprite.alpha = alpha;
+
+    if (this.anim) {
+      const idx = gifFrameIndexAt(contentAtUs(view, tInLayerUs), this.anim.durationsUs);
+      if (idx !== this.boundIndex) {
+        const bmp = this.anim.frames[idx];
+        if (bmp) {
+          this.bindBitmap(bmp);
+          this.boundIndex = idx;
+        }
+      }
+    }
+  }
+
+  /// Show `bitmap` through this sprite's OWN source/texture, created on the
+  /// first bind and re-pointed after: a WebGPU batch caches its group by
+  /// source identity, so a source per animated frame would leave a dead group
+  /// per frame. Never closes the bitmap (the static path's is GC'd, the
+  /// animated path's are cache-owned). Mirrors MotifSprite.bindRaster.
+  private bindBitmap(bitmap: ImageBitmap): void {
+    // An animation's frames share one size; a different size gets a new source.
+    if (this.source && this.source.width === bitmap.width && this.source.height === bitmap.height) {
+      this.source.resource = bitmap;
+      this.source.update(); // uploads the new pixels
+      return;
+    }
+    this.texture?.destroy(true);
+    this.source = new UnbindingImageSource({ resource: bitmap, width: bitmap.width, height: bitmap.height });
+    this.texture = new Texture({ source: this.source });
+    this.sprite.texture = this.texture;
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    const tex = this.texture;
+    this.sprite.destroy({ children: true });
+    if (tex && tex !== Texture.EMPTY) {
+      try {
+        tex.destroy(true);
+      } catch {
+        // ignore
+      }
+    }
+    this.texture = null;
+    this.source = null;
+    this.anim = null;
+    if (this.animKey) {
+      sharedAnimatedImageCache.release(this.animKey);
+      this.animKey = null;
+    }
+  }
+}

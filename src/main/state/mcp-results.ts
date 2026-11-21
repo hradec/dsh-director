@@ -1,0 +1,627 @@
+// apps/desktop/src/main/state/mcp-results.ts
+//
+// What a mutator ANSWERS with: the committed record(s), read back from the
+// snapshot the commit produced, so the caller learns where its edit landed
+// without a second round trip. A write that answered `content: []` or a bare
+// id would send an agent that had just placed a clip back to `project://tracks`
+// (tens of KB) to find out that the start snapped, that a paired audio layer
+// landed too, or which link it joined.
+//
+// The readers are PURE over two snapshots and the wire args: nothing here
+// touches the actor, and every reader can be driven from a unit test with two
+// hand-built projects. The same object goes out twice — as `structuredContent`
+// for clients that forward it, and serialized (sorted keys, compact) as the
+// text block, which is the part every client shows the model.
+//
+// `adjusted[]` names each numeric field whose applied value differs from the
+// requested one (today: the frame/sample-grid snap). The policy for what may be
+// adjusted silently and what must refuse lives with the mutations; this file
+// only reports the difference.
+import type { Composition, Layer, Project, Uuid } from './model'
+import { eachLayer } from './model'
+import type { HistoryOpRef, HistoryStatus } from './history'
+import { sortKeys } from './canonical'
+import { compositionSettings, localKeyTimes, mcpSettings } from './resource-views'
+import type { ToolResultJson } from './mcp-commands'
+import { effectParamDefault, effectParamSpecs } from '../../shared/effects/params'
+
+// ── Records ──────────────────────────────────────────────────────────────────
+
+/** A layer's ENVELOPE: where it sits and what it is, never its params — those
+ *  are `project://layers/{id}`'s, and a keyframed track can be kilobytes. */
+export interface LayerRecord {
+  layer_id: Uuid
+  track_id: Uuid
+  composition_id: Uuid
+  kind: string
+  label: string | null
+  t_start_us: number
+  t_end_us: number
+  src_in_us?: number
+  src_out_us?: number
+  enabled: boolean
+  locked: boolean
+  /** Text, Motif and ImageOverlay only: what the layer is for; null = untagged. */
+  graphic_role?: string | null
+  /** The link this layer is a member of, or null. What `move_layers` and
+   *  `trim_layer` fan out along, and what a transition refuses across. */
+  link_id: Uuid | null
+}
+
+function located(p: Project, id: Uuid): { comp: Composition; trackId: Uuid; layer: Layer } | null {
+  for (const { composition, track, layer } of eachLayer(p)) if (layer.id === id) return { comp: composition, trackId: track.id, layer }
+  return null
+}
+
+export function layerRecord(p: Project, id: Uuid): LayerRecord | null {
+  const hit = located(p, id)
+  if (!hit) return null
+  const { comp, trackId, layer } = hit
+  const params = layer.params as { kind: string; src_in_us?: number; src_out_us?: number; graphic_role?: string | null }
+  return {
+    layer_id: layer.id, track_id: trackId, composition_id: comp.id, kind: params.kind, label: layer.label,
+    t_start_us: layer.t_start_us, t_end_us: layer.t_end_us,
+    ...(typeof params.src_in_us === 'number' ? { src_in_us: params.src_in_us } : {}),
+    ...(typeof params.src_out_us === 'number' ? { src_out_us: params.src_out_us } : {}),
+    enabled: layer.enabled, locked: layer.locked,
+    ...(params.kind === 'Text' || params.kind === 'Motif' || params.kind === 'ImageOverlay' ? { graphic_role: params.graphic_role ?? null } : {}),
+    link_id: comp.links.find((l) => l.members.includes(layer.id))?.id ?? null,
+  }
+}
+
+/** Records for the ids that still exist, in input order; a missing id is
+ *  skipped rather than reported — a reader never refuses. */
+export function layerRecords(p: Project, ids: readonly Uuid[]): LayerRecord[] {
+  const out: LayerRecord[] = []
+  for (const id of ids) { const r = layerRecord(p, id); if (r) out.push(r) }
+  return out
+}
+
+export interface TrackRecord {
+  track_id: Uuid; composition_id: Uuid; label: string | null; role: string | null
+  /** Position in the composition's stack; 0 is the bottom. */
+  index: number
+  enabled: boolean; locked: boolean
+  /** How many layers it holds — 0 is the one a later delete prunes. */
+  layers: number
+}
+export function trackRecord(p: Project, id: Uuid): TrackRecord | null {
+  for (const c of Object.values(p.compositions)) {
+    const index = c.tracks.findIndex((t) => t.id === id)
+    if (index < 0) continue
+    const t = c.tracks[index]
+    return { track_id: t.id, composition_id: c.id, label: t.label, role: t.role, index, enabled: t.enabled, locked: t.locked, layers: t.layers.length }
+  }
+  return null
+}
+
+export interface MarkerRecord {
+  marker_id: Uuid; composition_id: Uuid; t_us: number; t_end_us: number | null
+  label: string; note: string; color: { r: number; g: number; b: number; a: number }
+  anchor: { layer: Uuid; src_us: number } | null
+}
+export function markerRecord(p: Project, id: Uuid): MarkerRecord | null {
+  for (const c of Object.values(p.compositions)) {
+    const m = c.markers.find((x) => x.id === id)
+    if (m) return { marker_id: m.id, composition_id: c.id, t_us: m.t_us, t_end_us: m.end_t_us, label: m.label, note: m.note, color: m.color, anchor: m.anchor }
+  }
+  return null
+}
+
+export interface TransitionRecord {
+  transition_id: Uuid; composition_id: Uuid; from_layer_id: Uuid; to_layer_id: Uuid
+  duration_us: number; extended_us: number; kind: string; direction?: string
+}
+export function transitionRecord(p: Project, id: Uuid): TransitionRecord | null {
+  for (const c of Object.values(p.compositions)) {
+    const t = c.transitions.find((x) => x.id === id)
+    if (!t) continue
+    return {
+      transition_id: t.id, composition_id: c.id, from_layer_id: t.from_layer, to_layer_id: t.to_layer,
+      duration_us: t.duration_us, extended_us: t.extended_us, kind: t.kind.kind,
+      ...('direction' in t.kind ? { direction: t.kind.direction } : {}),
+    }
+  }
+  return null
+}
+
+export interface LinkRecord { link_id: Uuid; composition_id: Uuid; members: Uuid[] }
+export function linkRecord(p: Project, id: Uuid): LinkRecord | null {
+  for (const c of Object.values(p.compositions)) {
+    const l = c.links.find((x) => x.id === id)
+    if (l) return { link_id: l.id, composition_id: c.id, members: [...l.members] }
+  }
+  return null
+}
+
+export interface EffectRecord { effect_id: Uuid; layer_id: Uuid; kind: string; enabled: boolean; index: number; params: Record<string, unknown> }
+export function effectRecord(p: Project, layerId: Uuid, effectId: Uuid): EffectRecord | null {
+  const hit = located(p, layerId)
+  if (!hit) return null
+  const index = hit.layer.effects.findIndex((e) => e.id === effectId)
+  if (index < 0) return null
+  const e = hit.layer.effects[index]
+  // The params as they take effect, in update_effect's write shape: a static
+  // param is its number, an unset one its catalog default (an unset region
+  // bound, which has none, stays absent), an animated one its track (keys
+  // layer-local: `local_t_us` on the wire).
+  const params: Record<string, unknown> = {}
+  for (const k of Object.keys(effectParamSpecs(e.kind) ?? {})) { const d = effectParamDefault(e.kind, k); if (d !== null) params[k] = d }
+  for (const [k, track] of Object.entries(e.params)) params[k] = track.mode === 'Static' ? track.value : localKeyTimes(track)
+  return { effect_id: e.id, layer_id: layerId, kind: e.kind, enabled: e.enabled, index, params }
+}
+
+export interface MediaRecord {
+  media_id: Uuid; kind: string; label: string | null; path: string
+  duration_us: number | null; width: number | null; height: number | null; has_audio: boolean
+}
+export function mediaRecord(p: Project, id: Uuid): MediaRecord | null {
+  const m = p.media_pool[id]
+  if (!m) return null
+  return {
+    media_id: m.id, kind: m.kind, label: m.label, path: m.path_abs,
+    duration_us: m.metadata.duration_us ?? null,
+    width: m.metadata.video?.width ?? null, height: m.metadata.video?.height ?? null,
+    has_audio: m.kind === 'Audio' || m.metadata.audio != null,
+  }
+}
+
+// ── Diffs between the two snapshots ─────────────────────────────────────────
+
+function layerIds(p: Project): Set<Uuid> {
+  const out = new Set<Uuid>()
+  for (const { layer } of eachLayer(p)) out.add(layer.id)
+  return out
+}
+export function newLayerIds(before: Project, after: Project): Uuid[] {
+  const was = layerIds(before)
+  return [...layerIds(after)].filter((id) => !was.has(id))
+}
+export function removedLayerIds(before: Project, after: Project): Uuid[] {
+  const is = layerIds(after)
+  return [...layerIds(before)].filter((id) => !is.has(id))
+}
+function trackIds(p: Project): Set<Uuid> {
+  return new Set(Object.values(p.compositions).flatMap((c) => c.tracks.map((t) => t.id)))
+}
+export function prunedTrackIds(before: Project, after: Project): Uuid[] {
+  const is = trackIds(after)
+  return [...trackIds(before)].filter((id) => !is.has(id))
+}
+/** Layers present in BOTH snapshots whose span or track changed, minus
+ *  `exclude` — the link siblings a move dragged along, everything a ripple
+ *  shifted, the incoming layer a transition placed. */
+export function movedLayers(before: Project, after: Project, exclude: ReadonlySet<Uuid> = new Set()): LayerRecord[] {
+  const out: LayerRecord[] = []
+  for (const { track, layer } of eachLayer(after)) {
+    if (exclude.has(layer.id)) continue
+    const prev = located(before, layer.id)
+    if (!prev) continue
+    if (prev.layer.t_start_us !== layer.t_start_us || prev.layer.t_end_us !== layer.t_end_us || prev.trackId !== track.id) {
+      const r = layerRecord(after, layer.id)
+      if (r) out.push(r)
+    }
+  }
+  return out
+}
+
+/** The link partners a split of `target` cut too, each with its segments in
+ *  timeline order — what `split_layer` and `auto_split_by_shot` answer as
+ *  `siblings`, so the next step (a ripple delete of one shot and its audio)
+ *  needs no read of the tracks. A partner's segments are the layers on its
+ *  track, inside its old span, that are it or did not exist before; a partner
+ *  the split left whole is not listed. A/V partners share a track, so the
+ *  target's own segments and other kinds are left out. */
+export function splitSiblings(before: Project, after: Project, target: Uuid, targetSegments: readonly Uuid[] = []): Array<{ layer_id: Uuid; segments: Uuid[] }> {
+  const own = new Set(targetSegments)
+  const was = located(before, target)
+  const link = was?.comp.links.find((l) => l.members.includes(target))
+  if (!was || !link) return []
+  const out: Array<{ layer_id: Uuid; segments: Uuid[] }> = []
+  for (const member of link.members) {
+    if (member === target) continue
+    const prev = located(before, member)
+    const track = prev && after.compositions[prev.comp.id]?.tracks.find((t) => t.id === prev.trackId)
+    if (!prev || !track) continue
+    const segments = track.layers
+      .filter((l) => !own.has(l.id) && l.params.kind === prev.layer.params.kind && (l.id === member || !located(before, l.id))
+        && l.t_start_us >= prev.layer.t_start_us && l.t_end_us <= prev.layer.t_end_us)
+      .sort((x, y) => x.t_start_us - y.t_start_us)
+      .map((l) => l.id)
+    if (segments.length !== 1 || segments[0] !== member) out.push({ layer_id: member, segments })
+  }
+  return out
+}
+
+/** Text layers on Caption-role tracks, project-wide — what `restyle_captions`
+ *  touches and what a caption import adds to. */
+export function captionCueCount(p: Project): number {
+  let n = 0
+  for (const { track, layer } of eachLayer(p)) if (track.role === 'Caption' && layer.params.kind === 'Text') n++
+  return n
+}
+
+// ── The adjusted[] slot ─────────────────────────────────────────────────────
+
+/** `reason` says what moved a number the caller did not choose. `'grid'`: a
+ *  time it sent landed on the layer's lattice (at most half a quantum) — the one
+ *  change a tool may make to a time it was sent; a start before 0 or a trim past
+ *  the other edge is refused before the write and never appears here.
+ *  `'content'`: a Motif's props shortened its content, so the layer's end (and
+ *  its source offset) followed; `requested` is then the value the layer had. */
+export interface Adjustment { field: string; requested: number; applied: number; reason: 'grid' | 'content' }
+/** Every (field, requested, applied) whose two numbers differ. A requested
+ *  value that is not a finite number was not a request for that field. */
+export function adjusted(pairs: ReadonlyArray<readonly [string, unknown, number | null | undefined]>, reason: Adjustment['reason'] = 'grid'): Adjustment[] {
+  const out: Adjustment[] = []
+  for (const [field, requested, applied] of pairs) {
+    if (typeof requested !== 'number' || !Number.isFinite(requested)) continue
+    if (typeof applied !== 'number') continue
+    if (requested !== applied) out.push({ field, requested, applied, reason })
+  }
+  return out
+}
+
+/** The one result shape a mutator returns: the record as `structuredContent`
+ *  and, for the clients that show only text, the same record serialized with
+ *  sorted keys — `toolJson`'s serialization, so the two never differ. */
+export function toolRecord(v: object): ToolResultJson {
+  return { content: [{ type: 'text', text: JSON.stringify(sortKeys(v)) }], structuredContent: v as Record<string, unknown> }
+}
+
+/** `result` with one more top-level field — the host's word about a call
+ *  that ran (the tack feedback, `affected_tacks`). A JSON-object record gets
+ *  it in place: in `structuredContent` when that is an object, and in the
+ *  first text block that parses as a JSON object. A result with no such text
+ *  (plain text, an array, an image) keeps its content and gains a trailing
+ *  text block `{"<key>": …}`; its `structuredContent`, if any and not an
+ *  object, is left alone. Anything that is not a tool result comes back as is. */
+export function appendToolResultField<T>(result: T, key: string, value: unknown): T {
+  if (result === null || typeof result !== 'object') return result
+  const r = result as { content?: unknown; structuredContent?: unknown }
+  if (!Array.isArray(r.content)) return result
+  const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v)
+  const content = [...r.content] as Array<{ type?: string; text?: string }>
+  let placed = false
+  for (let i = 0; i < content.length && !placed; i++) {
+    const block = content[i]!
+    if (block.type !== 'text' || typeof block.text !== 'string' || !block.text.trimStart().startsWith('{')) continue
+    let parsed: unknown
+    try { parsed = JSON.parse(block.text) } catch { continue }
+    if (!isRecord(parsed)) continue
+    content[i] = { ...block, text: JSON.stringify({ ...parsed, [key]: value }) }
+    placed = true
+  }
+  if (!placed) content.push({ type: 'text', text: JSON.stringify({ [key]: value }) })
+  const out: Record<string, unknown> = { ...r, content }
+  if (isRecord(r.structuredContent)) out.structuredContent = { ...r.structuredContent, [key]: value }
+  return out as T
+}
+
+// ── Per-tool readers for the table-exec tools ───────────────────────────────
+
+export interface ResultCtx {
+  /** The wire args, as the agent sent them (snake_case MCP names). */
+  args: Record<string, unknown>
+  /** What the dispatch arm returned (an id, `{left,right}`, null …). */
+  value: unknown
+  before: Project
+  after: Project
+  history: HistoryStatus
+  /** The history cursor the call started from. */
+  cursorBefore: number
+  /** The op at an absolute stack index, or null outside the stack. */
+  entryAt: (index: number) => HistoryOpRef | null
+}
+export type ResultReader = (ctx: ResultCtx) => Record<string, unknown>
+
+const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+const obj = (v: unknown): Record<string, unknown> => (v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
+
+const layerOf = ({ args, after }: ResultCtx, key = 'layer_id'): Record<string, unknown> => ({ ...(layerRecord(after, str(args[key])) ?? { layer_id: str(args[key]) }) })
+const trackOf = ({ after }: ResultCtx, id: string): Record<string, unknown> => ({ ...(trackRecord(after, id) ?? { track_id: id }) })
+const historyOf = ({ history }: ResultCtx): Record<string, unknown> => ({ cursor: history.cursor, len: history.len, can_undo: history.can_undo, can_redo: history.can_redo })
+
+/** Top-level keys whose value differs between two records, sorted. */
+function changedKeys(before: object, after: object): string[] {
+  const b = before as Record<string, unknown>
+  const a = after as Record<string, unknown>
+  return [...new Set([...Object.keys(b), ...Object.keys(a)])]
+    .filter((k) => JSON.stringify(sortKeys(b[k] ?? null)) !== JSON.stringify(sortKeys(a[k] ?? null)))
+    .sort()
+}
+
+/** Every table-exec mutator, keyed by MCP tool name. A tool absent here answers
+ *  `content: []`, which `mcp.tool-table` refuses for a table-exec mutator — a
+ *  new tool cannot land without saying what it committed. */
+export const MCP_RESULT_READERS: Record<string, ResultReader> = {
+  // The planner's edits, the pitch policy as written, and the link partners
+  // of the targets that were not among them — a retimed video whose dialogue
+  // stayed at its old rate drifts out of sync, and the agent should not have
+  // to read the links to find out.
+  retime_layers: (c) => {
+    const v = obj(c.value)
+    const ids = strs(c.args.layer_ids)
+    const named = new Set(ids)
+    const partners = new Set<string>()
+    if (c.args.target !== undefined && c.args.target !== null) for (const id of ids) {
+      const comp = located(c.after, id)?.comp
+      for (const m of comp?.links.find((l) => l.members.includes(id))?.members ?? []) if (!named.has(m)) partners.add(m)
+    }
+    return {
+      layers: v.layers ?? [],
+      ...(typeof c.args.preserve_pitch === 'boolean' ? { preserve_pitch: { value: c.args.preserve_pitch, layer_ids: v.pitched ?? [] } } : {}),
+      unretimed_partners: [...partners],
+    }
+  },
+  // ── layers ──
+  set_position: (c) => {
+    const params = located(c.after, str(c.args.layer_id))?.layer.params
+    return { ...layerOf(c), ...(params && 'transform' in params ? { position: localKeyTimes(params.transform.position) } : {}) }
+  },
+  translate_position: (c) => {
+    const params = located(c.after, str(c.args.layer_id))?.layer.params
+    return { ...layerOf(c), ...(params && 'transform' in params ? { position: localKeyTimes(params.transform.position) } : {}) }
+  },
+  // Each patched field as committed (`authoredValue` quantizes on the way in),
+  // and the scale pair with its link whenever the patch touched scale — a
+  // linked write sets the axis the caller did not send. A Motif whose props
+  // shortened its content pulls the layer's end (and its source offset) in;
+  // the record says so, since the caller sent neither.
+  update_layer_params: (c) => {
+    const id = str(c.args.layer_id)
+    const prev = located(c.before, id)
+    const next = located(c.after, id)
+    const patch = obj(c.args.patch)
+    const scaled = 'scale_x' in patch || 'scale_y' in patch || 'scale_linked' in patch
+    const keys = [...Object.keys(patch).filter((k) => k !== 'kind'), ...(scaled ? ['scale_x', 'scale_y', 'scale_linked'] : [])]
+    const rec = { ...layerOf(c), ...(next ? { params: Object.fromEntries([...new Set(keys)].map((k) => [k, committedParam(next.layer, k)])) } : {}) }
+    if (!prev || !next || next.layer.params.kind !== 'Motif') return rec
+    const pairs: Array<readonly [string, unknown, number]> = [['t_end_us', prev.layer.t_end_us, next.layer.t_end_us]]
+    if (patch.src_in_us === undefined) pairs.push(['src_in_us', (prev.layer.params as { src_in_us: number }).src_in_us, (next.layer.params as { src_in_us: number }).src_in_us])
+    return { ...rec, adjusted: adjusted(pairs, 'content') }
+  },
+  restack_layer: (c) => layerOf(c),
+  rename_layer: (c) => layerOf(c),
+  // `layers` is the set as it moved, seed first, each with `adjusted` against
+  // where the request put it (the seed's delta from its own start); `rippled`
+  // what an insert shifted to close the span behind and open the room.
+  move_layers: (c) => {
+    const v = c.value as { moved: Uuid[]; rippled: Uuid[]; spawned_track: Uuid | null; delta_us: number }
+    const seed = located(c.before, v.moved[0] ?? '')
+    const requested = typeof c.args.t_start_us === 'number' && seed ? c.args.t_start_us - seed.layer.t_start_us
+      : typeof c.args.delta_us === 'number' ? c.args.delta_us : 0
+    return {
+      layers: v.moved.map((id) => {
+        const prev = located(c.before, id)
+        const now = located(c.after, id)
+        return { ...(layerRecord(c.after, id) ?? { layer_id: id }), adjusted: prev ? adjusted([['t_start_us', prev.layer.t_start_us + requested, now?.layer.t_start_us]]) : [] }
+      }),
+      rippled: layerRecords(c.after, v.rippled),
+      ...(v.spawned_track ? { track: trackOf(c, v.spawned_track) } : {}),
+      pruned_tracks: prunedTrackIds(c.before, c.after),
+    }
+  },
+  trim_layer: (c) => {
+    const rec = layerOf(c)
+    const field = c.args.edge === 'out' ? 't_end_us' : 't_start_us'
+    return {
+      ...rec,
+      siblings: movedLayers(c.before, c.after, new Set([str(c.args.layer_id)])),
+      adjusted: adjusted([[field, c.args.new_t_us, rec[field] as number]]),
+    }
+  },
+  set_layer_flags: (c) => ({ layers: layerRecords(c.after, strs(c.args.layer_ids)) }),
+  paste_layers: (c) => {
+    const clones = (obj(c.value).clones ?? []) as Array<{ source: string; clone: string }>
+    const records = layerRecords(c.after, clones.map((x) => x.clone))
+    const groups = c.args.unique === true ? clones.flatMap(({ clone }) => {
+      const params = located(c.after, clone)?.layer.params
+      return params?.kind === 'CompositionRef' ? [{ layer_id: clone, composition_id: params.composition }] : []
+    }) : null
+    return { clones, layers: records, ...(groups ? { groups } : {}), adjusted: adjusted([['t_start_us', c.args.t_start_us, records[0]?.t_start_us]]) }
+  },
+  delete_layers: (c) => {
+    const ids = strs(c.args.layer_ids)
+    const ripple = c.args.ripple === true
+    return {
+      deleted: ids, ripple,
+      pruned_tracks: prunedTrackIds(c.before, c.after),
+      moved: ripple ? movedLayers(c.before, c.after, new Set(ids)) : [],
+    }
+  },
+  // `moved` is every layer the sweep re-timed, each with where it landed and
+  // `adjusted` for its own grid snap: the set has no single applied delta,
+  // since a frame-grid member and a sample-grid member land different
+  // distances from one request.
+  shift_layers: (c) => {
+    const v = c.value as { moved: Uuid[]; delta_us: number }
+    const requested = typeof c.args.delta_us === 'number' ? c.args.delta_us : v.delta_us
+    return {
+      moved: v.moved.map((id) => {
+        const prev = located(c.before, id)
+        const now = located(c.after, id)
+        return { ...(layerRecord(c.after, id) ?? { layer_id: id }), adjusted: prev ? adjusted([['t_start_us', prev.layer.t_start_us + requested, now?.layer.t_start_us]]) : [] }
+      }),
+      delta_us: requested,
+    }
+  },
+  // ── tracks ──
+  add_track: (c) => trackOf(c, str(c.value)),
+  delete_track: (c) => {
+    const id = str(c.args.track_id)
+    const was = Object.values(c.before.compositions).flatMap((comp) => comp.tracks).find((t) => t.id === id)
+    return { track_id: id, deleted_layers: was ? was.layers.map((l) => l.id) : [] }
+  },
+  rename_track: (c) => trackOf(c, str(c.args.track_id)),
+  move_track: (c) => trackOf(c, str(c.args.track_id)),
+  set_track_flags: (c) => trackOf(c, str(c.args.track_id)),
+  // ── links ──
+  create_link: (c) => ({ ...(linkRecord(c.after, str(c.value)) ?? { link_id: str(c.value) }) }),
+  delete_link: (c) => {
+    const id = str(c.args.link_id)
+    return { link_id: id, members_released: linkRecord(c.before, id)?.members ?? [] }
+  },
+  // ── groups ──
+  create_group: (c) => {
+    const v = obj(c.value)
+    return { ...v, layer: layerRecord(c.after, str(v.layer_id)) }
+  },
+  add_group_members: (c) => ({
+    group_layer_id: str(c.args.group_layer_id),
+    layers: layerRecords(c.after, strs(c.args.layer_ids)),
+    pruned_tracks: prunedTrackIds(c.before, c.after),
+  }),
+  move_layers_to_composition: (c) => {
+    const records = layerRecords(c.after, strs(c.args.layer_ids))
+    const anchor = records.find((r) => r.layer_id === str(c.args.anchor_layer_id))
+    return {
+      to_composition_id: str(c.args.to_composition_id), layers: records,
+      pruned_tracks: prunedTrackIds(c.before, c.after),
+      adjusted: adjusted([['t_start_us', c.args.anchor_t_start_us, anchor?.t_start_us]]),
+    }
+  },
+  ungroup_layer: (c) => ({
+    layer_id: str(c.args.layer_id),
+    layers: layerRecords(c.after, newLayerIds(c.before, c.after)),
+    composition_removed: Object.keys(c.before.compositions).filter((id) => !(id in c.after.compositions)),
+  }),
+  rename_composition: (c) => ({ composition_id: str(c.args.composition_id), label: c.after.compositions[str(c.args.composition_id)]?.label ?? null }),
+  delete_composition: (c) => ({ composition_id: str(c.args.composition_id) }),
+  // ── effects ──
+  add_effect: (c) => ({ ...(effectRecord(c.after, str(c.args.layer_id), str(c.value)) ?? { effect_id: str(c.value), layer_id: str(c.args.layer_id) }) }),
+  update_effect: (c) => ({ ...(effectRecord(c.after, str(c.args.layer_id), str(c.args.effect_id)) ?? { effect_id: str(c.args.effect_id), layer_id: str(c.args.layer_id) }) }),
+  move_effect: (c) => ({ ...(effectRecord(c.after, str(c.args.layer_id), str(c.args.effect_id)) ?? { effect_id: str(c.args.effect_id), layer_id: str(c.args.layer_id) }) }),
+  delete_effect: (c) => ({
+    effect_id: str(c.args.effect_id), layer_id: str(c.args.layer_id),
+    effects: located(c.after, str(c.args.layer_id))?.layer.effects.length ?? 0,
+  }),
+  // ── transitions ──
+  add_transition: (c) => {
+    const rec = transitionRecord(c.after, str(c.value)) ?? { transition_id: str(c.value) }
+    return { ...rec, moved: movedLayers(c.before, c.after), adjusted: adjusted([['duration_us', c.args.duration_us, (rec as TransitionRecord).duration_us]]) }
+  },
+  update_transition: (c) => {
+    const rec = transitionRecord(c.after, str(c.args.transition_id)) ?? { transition_id: str(c.args.transition_id) }
+    return { ...rec, moved: movedLayers(c.before, c.after), adjusted: adjusted([['duration_us', c.args.duration_us, (rec as TransitionRecord).duration_us]]) }
+  },
+  delete_transition: (c) => {
+    const was = transitionRecord(c.before, str(c.args.transition_id))
+    return {
+      transition_id: str(c.args.transition_id),
+      ...(was ? { from_layer_id: was.from_layer_id, to_layer_id: was.to_layer_id } : {}),
+      moved: movedLayers(c.before, c.after),
+    }
+  },
+  // ── composition / settings ──
+  update_composition: (c) => {
+    const id = str(c.args.composition_id) || c.after.root_id
+    const comp = c.after.compositions[id]
+    return comp ? compositionSettings(comp) : { composition_id: id }
+  },
+  // `changed` is what separates "set to what it already was" from a write that
+  // landed: both succeed (a caller stating the state it wants is not at fault),
+  // but only one of them changed anything.
+  set_project_settings: (c) => ({ settings: mcpSettings(c.after.settings), changed: changedKeys(c.before.settings, c.after.settings) }),
+  // ── markers ──
+  update_marker: (c) => {
+    const rec = markerRecord(c.after, str(c.args.marker_id)) ?? { marker_id: str(c.args.marker_id) }
+    const patch = obj(c.args.patch)
+    return { ...rec, adjusted: adjusted([['t_us', patch.t_us, (rec as MarkerRecord).t_us], ['t_end_us', patch.end_t_us, (rec as MarkerRecord).t_end_us]]) }
+  },
+  delete_marker: (c) => ({ marker_id: str(c.args.marker_id) }),
+  set_marker_anchor: (c) => ({ ...(markerRecord(c.after, str(c.args.marker_id)) ?? { marker_id: str(c.args.marker_id) }) }),
+  // ── media ──
+  delete_media: (c) => ({ media_id: str(c.args.media_id), deleted_layers: removedLayerIds(c.before, c.after), pruned_tracks: prunedTrackIds(c.before, c.after) }),
+  // ── history ──
+  // The op the cursor stepped over, by name: without it an agent learns only
+  // that a number moved, and has to read the history back to find out what it
+  // just reverted.
+  undo: (c) => ({ ...historyOf(c), undone: c.entryAt(c.cursorBefore) }),
+  redo: (c) => ({ ...historyOf(c), redone: c.entryAt(c.history.cursor) }),
+  jump_to: (c) => ({ ...historyOf(c), at: c.entryAt(c.history.cursor) }),
+  // ── captions / roles ──
+  restyle_captions: (c) => ({ captions: captionCueCount(c.after), restyled: typeof c.value === 'number' ? c.value : 0 }),
+  merge_captions: (c) => {
+    const v = c.value as { layer: Uuid; removed: Uuid[] }
+    const kept = located(c.after, v.layer)
+    return {
+      layer_id: v.layer, track_id: kept?.trackId ?? null,
+      t_start_us: kept?.layer.t_start_us ?? null, t_end_us: kept?.layer.t_end_us ?? null,
+      content: kept && kept.layer.params.kind === 'Text' ? kept.layer.params.content : null,
+      merged: v.removed.length + 1, removed: v.removed,
+    }
+  },
+  set_role_gain: (c) => ({ role: str(c.args.role), ...(c.after.audio_roles[str(c.args.role)] ?? {}) }),
+  set_role_flags: (c) => ({ role: str(c.args.role), ...(c.after.audio_roles[str(c.args.role)] ?? {}) }),
+}
+
+/** One `update_layer_params` field as the layer now stores it: a transform or
+ *  envelope track as its static value (the write is static), anything else as
+ *  stored. Position reads its XY track; a Path-mode layer refuses x/y first. */
+function committedParam(layer: Layer, key: string): unknown {
+  const p = layer.params as unknown as Record<string, unknown> & { transform?: Record<string, unknown> & { position: { mode: string; x?: unknown; y?: unknown } } }
+  const t = p.transform
+  const raw = t && (key === 'x' || key === 'y') ? t.position[key]
+    : t && key in t ? t[key]
+    : p[key]
+  const track = raw as { mode?: unknown; value?: unknown } | null | undefined
+  return track !== null && typeof track === 'object' && track.mode === 'Static' && 'value' in track ? track.value : raw ?? null
+}
+
+// ── Helpers for the dedicated arms in actor.mcpCall ─────────────────────────
+
+interface AnimatedLike { mode: string; value: unknown; extrapolate?: unknown }
+interface KeyLike { id: string; t_us: number; value: unknown }
+const keysOf = (t: AnimatedLike): KeyLike[] => (t.mode === 'Keyframed' && Array.isArray(t.value) ? (t.value as KeyLike[]) : [])
+
+/** A param track's summary after a keyframe edit — mode, how many keys, the
+ *  ids (so the next `update_keyframe` needs no `get_param_track`), or the held
+ *  value once Static. */
+export function paramTrackResult(layerId: Uuid, paramKey: string, read: { tStartUs: number; track: AnimatedLike }): Record<string, unknown> {
+  const keys = keysOf(read.track)
+  return {
+    layer_id: layerId, param_key: paramKey, mode: read.track.mode,
+    ...(read.track.mode === 'Keyframed'
+      ? { keyframes: keys.length, keyframe_ids: keys.map((k) => k.id), extrapolate: read.track.extrapolate ?? null }
+      : { value: read.track.value }),
+  }
+}
+
+/** `set_param_track`'s answer: the track as committed — every key with its
+ *  minted id and its snapped timeline time — or the static value. */
+export function committedTrackResult(layerId: Uuid, paramKey: string, read: { tStartUs: number; track: AnimatedLike }): Record<string, unknown> {
+  const keys = keysOf(read.track)
+  return {
+    layer_id: layerId, param_key: paramKey, mode: read.track.mode,
+    ...(read.track.mode === 'Keyframed'
+      ? { keyframes: keys.map((k) => ({ keyframe_id: k.id, t_us: k.t_us + read.tStartUs, value: k.value })), extrapolate: read.track.extrapolate ?? null }
+      : { value: read.track.value }),
+  }
+}
+
+/** One key's record, timeline-absolute and layer-local. */
+export function keyframeRecord(layerId: Uuid, paramKey: string, tStartUs: number, key: KeyLike, keyframes: number): Record<string, unknown> {
+  return { layer_id: layerId, param_key: paramKey, keyframe_id: key.id, t_us: key.t_us + tStartUs, local_t_us: key.t_us, value: key.value, keyframes }
+}
+
+/** `set_keyframe`'s answer: the key it inserted (the one id that is new) or
+ *  updated in place (the key nearest the requested time), with `adjusted`
+ *  when the grid moved it. */
+export function setKeyframeResult(layerId: Uuid, paramKey: string, beforeTrack: AnimatedLike, read: { tStartUs: number; track: AnimatedLike }, requestedTUs: unknown): Record<string, unknown> {
+  const was = new Set(keysOf(beforeTrack).map((k) => k.id))
+  const keys = keysOf(read.track)
+  const requested = typeof requestedTUs === 'number' ? requestedTUs : Number.NaN
+  const key = keys.find((k) => !was.has(k.id))
+    ?? [...keys].sort((x, y) => Math.abs(x.t_us + read.tStartUs - requested) - Math.abs(y.t_us + read.tStartUs - requested))[0]
+  if (!key) return paramTrackResult(layerId, paramKey, read)
+  return { ...keyframeRecord(layerId, paramKey, read.tStartUs, key, keys.length), adjusted: adjusted([['t_us', requestedTUs, key.t_us + read.tStartUs]]) }
+}
+
+/** `update_keyframe`'s answer: the key by id, as it now reads. */
+export function keyframeByIdResult(layerId: Uuid, paramKey: string, keyframeId: string, read: { tStartUs: number; track: AnimatedLike }): Record<string, unknown> {
+  const keys = keysOf(read.track)
+  const key = keys.find((k) => k.id === keyframeId)
+  return key ? keyframeRecord(layerId, paramKey, read.tStartUs, key, keys.length) : paramTrackResult(layerId, paramKey, read)
+}

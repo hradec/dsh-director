@@ -1,0 +1,217 @@
+// Neutral decode-contract module: the surface the Compositor composites
+// through (DecodeSession) plus the two role interfaces. Owns no
+// implementation — every import below is `import type` (erased), so the
+// session <-> ExportDecoderPool reference (ExportDecodeSession.ring) is not
+// a runtime cycle.
+import type { DecodedFrame } from "./decodedFrame";
+import type { SourceColor } from "./ffprobeColorSpace";
+import type { HandoffTimingSummary } from "./transports/handoffTimings";
+import type { ExportColorDiag, ExportFrameStore } from "./ExportDecoderPool";
+
+export interface SourceHandleInit {
+  exportFrameWindow?: number | undefined;
+  /// Per-clip identity. The preview pool keys decoder + ring instances
+  /// by this so that overlapping clips of the same source don't share
+  /// (and thrash) a single decoder. The export pool keys by `handleKey`
+  /// instead and ignores this.
+  layerId: string;
+  /// Optional pool-key override. The EXPORT pool keys handles by this when
+  /// present — the export Worker and the export-mode Compositor both pass
+  /// the shared `exportHandleKey(mediaId, srcInUs, tStartUs)` so clips of
+  /// one media that march through source time in lockstep share one decode
+  /// pipeline while clips at a different timeline→source offset get their
+  /// own. The preview pool keys by `layerId` and ignores it.
+  handleKey?: string;
+  mediaId: string;
+  /// Stable clip identity when an overlap swap uses synthetic pool keys.
+  hardwareEvidenceIdentity?: { layerId: string; mediaId: string };
+  /// `weftcut-media://` URL of the decode target the WebCodecs path opens —
+  /// preview's resolved target, or the export master proxy in export mode.
+  proxyAssetUrl: string;
+  /// The media's resolved colour (`resolveSourceColor`), applied to ANY decode
+  /// target for this media: the original trivially, and proxies too (a proxy
+  /// preserves the source's colorimetry; the proxy recipe asserts the tags
+  /// outright). The WebCodecs pools layer the decode target's own colr tag
+  /// over it (`withDefaultColorSpace`); the native lanes use it as is. The
+  /// preview pool carries it onto the shared `SourceMedia` (per-mediaId) so the
+  /// once-per-source config build at `SourceMedia.ensureReady` tags the decode.
+  sourceColor: SourceColor;
+  /// Export-only: copy >8-bit decoder output to CPU planes (TenBitFrame)
+  /// instead of holding VideoFrames. Implies the 10-bit export lane.
+  tenBitLane?: boolean;
+  /// Export-only: configure the decoder prefer-software up front. For Hi10P
+  /// this skips a doomed HW attempt (no HW path exists); for AV1-10 it is a
+  /// CORRECTNESS requirement — the HW decoder succeeds but emits opaque
+  /// format=null frames with no copyTo, so the error-fallback never fires.
+  preferSoftware?: boolean;
+  /// Import-time container start PTS for the ORIGINAL file. Timeline/duration
+  /// normalization uses this from metadata; the decoder derives its offset from
+  /// the opened decode target's first packet instead (re-encoded proxies start
+  /// at PTS 0). Kept as a fallback when the target has no packets.
+  sourceStartPtsUs?: number | null;
+  /// The ORIGINAL file path for an `engine: 'ffmpeg'` handle to decode
+  /// directly (bypasses the shared, proxy-backed `SourceMedia` entirely).
+  /// Ignored by the WebCodecs path, which decodes `proxyAssetUrl` instead.
+  sourcePath?: string;
+  /// Bench-only: native pool size (slot count) for an `engine: 'ffmpeg'`
+  /// handle. `decodeBench.ts` varies this to sweep pipeline depth; the
+  /// product default (3) applies when unset — production handles never set
+  /// it. Ignored by the WebCodecs path.
+  poolSize?: number;
+  /// Resolved engine (collapsed decode-engine model, `resolveDecodeEngine`).
+  /// Export ignores it. Absent ⇒ falls through to the WebCodecs default.
+  engine?: import("./decodeEngine").DecodeEngine;
+  /// Source codec/pixFmt — `FfmpegSource` needs them for lane selection.
+  codec?: string | null;
+  pixFmt?: string | null;
+  /// Media dimensions — threaded into `FfmpegSource`'s HW-probe classKey
+  /// resolution class (see `FfmpegSourceInit.width`/`height`).
+  width?: number | null;
+  height?: number | null;
+  /// FFmpeg native-decode component DLLs loaded on this machine. Gates the
+  /// FFmpeg HW lane (`FfmpegSource`/`pickInitialLane`).
+  componentAvailable?: boolean;
+  /// Bench-only lane pin, forwarded to `FfmpegSource`.
+  forceLane?: import("./decodeEngine").FfmpegLane;
+  /// Export-only: route this handle through the native `NativeExportSourceHandle`
+  /// (decode the ORIGINAL in a main-process native session over its own port)
+  /// instead of WebCodecs on the proxy. When present the export pool builds a
+  /// `NativeExportSourceHandle`; the WebCodecs path never reads it.
+  /// `sourcePath` is the absolute ORIGINAL file path (the napi opens a filesystem
+  /// path, not a `weftcut-media://` asset URL); `outFormat` is the CPU transport
+  /// format from the routing table (exportDecodeRouting.ts); `window` bounds
+  /// the frames the session has in flight.
+  nativeExport?: {
+    sourcePath: string;
+    outFormat: import("../exportDecodeRouting").ExportTransportFormat;
+    window: number;
+  };
+}
+
+/// Minimal frame-by-PTS surface the Compositor reads through. Implemented by
+/// `FrameRing` (preview) and `ExportFrameStore` (export).
+export interface FrameStore {
+  /// Select the frame exactly as the compositor will present it, retaining the
+  /// PTS/duration that are otherwise lost for ImageBitmap-backed frames.
+  selectFrame(tUs: number): FrameSelection | null;
+  frameAt(tUs: number): DecodedFrame | null;
+  containsPts(tUs: number): boolean;
+  /// PTS (µs) of the earliest cached frame, or null if empty.
+  firstPtsUs(): number | null;
+  /// PTS (µs) of the latest cached frame, or null if empty.
+  lastPtsUs(): number | null;
+  /// Number of cached entries, for the dev `PerfHUD`.
+  size(): number;
+  /// Cumulative frame-fate accounting — where each offered frame went and how
+  /// each selection resolved (see `FrameRing`'s `FrameRingFate`). Honestly
+  /// optional in the same sense as `DecodeSession`'s trailing members: only
+  /// preview's `FrameRing` has a retention WINDOW that can lose a frame, so
+  /// only it can account for one. Export pre-stages frames against explicit
+  /// targets and evicts on the consumer's cutoff, so the same counters there
+  /// would measure nothing.
+  readonly fate?: import("./FrameRing").FrameRingFate;
+}
+
+export interface FrameSelection {
+  frame: DecodedFrame;
+  ptsUs: number;
+  durationUs: number;
+}
+
+/// The surface the Compositor composites through (the minimal decode contract).
+/// requestFrameAt/onFirstFrame stay here: a synchronous, pre-staged source
+/// (export) satisfies them as documented no-ops (Null Object). The trailing
+/// members are honestly optional — an engine that cannot provide a value simply
+/// omits the method (WebCodecs has decodeQueueSize, FfmpegSource does not;
+/// onFatalError is FfmpegSource-only: WebCodecs rebuilds its decoder after an
+/// error and reports nothing when it gives up).
+export interface PreviewDecodeDevice {
+  kind: 'hardware' | 'software' | 'browser';
+  backend: string;
+  /** Explicit device identity when the decoder supplies one, otherwise unknown. */
+  device: string | null;
+}
+
+export interface DecodeSession {
+  readonly mediaId: string;
+  readonly ring: FrameStore;
+  readonly disposed: boolean;
+  currentDecodeDevice?(): PreviewDecodeDevice | null;
+  isCapacityBlocked?(): boolean;
+  ensureReady(): Promise<void>;
+  dispose(): void;
+  /// Preview nudges the decoder's lookahead each tick; export no-ops (frames
+  /// are pre-staged by its own driver).
+  requestFrameAt(tUs: number): Promise<void>;
+  /// Preview repaints on the first decoded frame; export no-ops (its composite
+  /// runs synchronously).
+  onFirstFrame(cb: () => void): void;
+  /// Dev `PerfHUD` diagnostics — best-effort, engine-varying.
+  decodeQueueSize?(): number;
+  decodedFrameCount?(): number;
+  isDowngraded?(): boolean;
+  /// WebCodecs only: decoder outputs awaiting `createImageBitmap`. Each one
+  /// holds an OPEN `VideoFrame`, so it pins a slot in the ~13-entry hardware
+  /// decode pool ADR 0004 describes — and overrunning that pool stalls the
+  /// decoder silently. `decodeQueueSize` caps the INPUT side; nothing caps this
+  /// output side, which makes it the missing half of "is the decoder starved or
+  /// is it blocked on its own pool?". `peak` is monotonic over the handle's
+  /// life (a peak is not a rate, so it cannot be diffed across two samples).
+  conversionBacklog?(): { inFlight: number; peak: number };
+  /// Diagnostics: hardware-lane preload handoff timings (PerfHUD). Absent on
+  /// sessions with no preload stage.
+  handoffTimings?(): HandoffTimingSummary | null;
+  isLookaheadFull?(): boolean;
+  /// Terminal ffmpeg-engine failure (after in-place HW→SW fallback also fails).
+  /// FfmpegSource-only; the Compositor wires it to `markFfmpegUnusable`.
+  onFatalError?(cb: (reason: string) => void): void;
+}
+
+/// Names preview's role. Structurally equal to `DecodeSession` under this bite;
+/// its job is intent + being the type the preview implementers declare, so a
+/// future preview-only divergence has a home.
+export type PreviewDecodeSession = DecodeSession;
+
+/// Export's extension: a named, compiler-checked contract for the driving
+/// surface the export Worker uses. `ring` narrows to `ExportFrameStore` (adds
+/// `waitForPts` / `isReadyFor` / `fail`).
+export interface ExportDecodeSession extends DecodeSession {
+  readonly ring: ExportFrameStore;
+  /// Start ordered production. May remain pending on frame capacity: callers
+  /// must consume concurrently, including across planning blocks, and route
+  /// rejection to ring.fail. The adapter must eventually make every target
+  /// final via an exact/later PTS, completeRange, EOS, or fail.
+  decodeRange(aUs: number, bUs: number): Promise<void>;
+  /// Release entries older than the greatest presentation PTS at/below the
+  /// cutoff. The immediate lower neighbour is retained so a quantized PTS gap
+  /// can never force the compositor to select a future frame.
+  evictBefore(cutoffUs: number): void;
+  /// Cumulative decode-work counter — packets fed (WebCodecs) or frames
+  /// received (native). Aggregated into the export `done` perf payload as the
+  /// re-seek-redundancy signal. Both concrete handles expose it as a field.
+  dispatchedTotal: number;
+  /// The decode target this handle actually opened — the original's asset URL
+  /// or a proxy path. Surfaced in the perf payload so the E2E harness can see
+  /// when the readiness gate route-corrected an export onto a lossy proxy.
+  readonly sourceUrl: string;
+  /// Color diagnostic captured off the FIRST decoded frame (config vs stamped
+  /// colorSpace + format), forwarded in the perf payload for the E2E harness.
+  firstFrameDiag: ExportColorDiag | null;
+}
+
+/// Pool surface used by the Compositor. Concrete pools may expose extra surface
+/// (preview's idle sweeper, export's `handles` map) but the Compositor needs
+/// only these.
+export interface DecoderPool {
+  acquire(init: SourceHandleInit): DecodeSession;
+  release(key: string): void;
+  dispose(): void;
+  /// Preview-only: adopt a new playback-resolution divisor (1 | 2 | 4).
+  /// Honestly optional — the EXPORT pool must never downscale (a half-res
+  /// export would be silent data loss), so it simply omits the method.
+  setPlaybackScaleDiv?(div: number): void;
+  /// Preview-only decode ownership hint. Keys name the current active clips
+  /// plus the bounded upcoming cut window; the pool may reclaim only retained
+  /// native sessions when main reports transient admission pressure.
+  setPriorityKeys?(keys: readonly string[]): boolean | Promise<boolean>;
+}

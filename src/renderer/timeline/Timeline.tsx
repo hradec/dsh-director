@@ -1,0 +1,2196 @@
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useTranslation } from "react-i18next";
+import {
+  addMediaLayer,
+  addTransition,
+  dropShotMarkers,
+  linksCreate,
+  linksDissolve,
+  groupsRename,
+  moveLayer,
+  removeTransition,
+  separateAudioToNewTrack,
+  setLayersEnabled,
+  splitLayerLinked,
+  updateLayer,
+  updateLayerParamTrack,
+  updateLayerParamTracks,
+  updateParamTracksMulti,
+  updateTransition,
+  type LinkSummary,
+  type KeybindingsMap,
+  type LayerSummary,
+  type MediaSummary,
+  type TrackSummary,
+  type TransitionDirection,
+  type TransitionSummary,
+} from "../ipc";
+import { type MediaReadiness } from "../panels/mediaReadiness";
+import { findPanelLayer } from "../panels/panelLayer";
+import { scaleFanOutFor, type ParamTrack } from "../keyframe/descriptors";
+import { fanOutEntries } from "../keyframe/fanOut";
+import { formatTimecode, snapFrameRound, timeUsAtFrame } from "../frames";
+import { retimeGroupsOf, translateSelection } from "../keyframe/batchRetime";
+import {
+  useDisplayMode,
+  useFollowPlayheadEnabled,
+  useTailSnapEnabled,
+  useTailSnapStrengthPx,
+} from "../settings/appSettingsStore";
+import { useShortcuts, type OverrideMap } from "../shortcuts/useShortcuts";
+import { ACTION_DEFS } from "../shortcuts/defs";
+import { useCommandProvider } from "../commands/registry";
+import { exportReviewCommands, exportReviewShortcuts } from "../commands/exportReview";
+import {
+  NUDGE_MS,
+  NUDGE_SAMPLE,
+  nudgedStartUs,
+  resyncStartUs,
+  slippableAudioLayers,
+  type SlipLayer,
+} from "./audioSlip";
+import { deriveAudioSyncOffsets, setAudioSyncOffsets } from "./audioSyncOffsetStore";
+import {
+  disarmRegionSelect,
+  useArmedRegionSelect,
+} from "./audioRegionArmStore";
+import {
+  canToggleLinkSelection,
+  enclosingLink,
+  linkFanoutActive,
+  linkToggleState,
+} from "./linkEligibility";
+import { useLinkOverride } from "../state/linkOverrideStore";
+import {
+  canDeselectAll,
+  canSelectAll,
+  deselectAll,
+  selectAllLayers,
+} from "./selectionCommands";
+import { requestPrebake } from "../render/motifs/prebakeIntents";
+import {
+  DROP_STRIP_SEAM_OVERLAP_PX,
+  headerColumnPx,
+  RULER_HEIGHT_PX,
+  trackHeightPx,
+  computeTimelineExtent,
+  indexLinks,
+  indexLinkTabs,
+  trackKeyframeProperties,
+  visualOrderedTracks,
+  type MeasuredTrackRow,
+} from "./geometry";
+import { useUiScale } from "../settings/layoutTheme";
+import {
+  marqueeHitClips,
+  marqueeHitKeyframes,
+  resolveMarqueeSelection,
+  type MeasuredSubLaneRow,
+} from "./marquee";
+import type { MarqueeBox, MarqueeKind } from "./marqueeStore";
+import { DropStrip, DropStripHeader, DropStripSeam } from "./DropStrip";
+import { MarkerLane, MarkerLaneHeader } from "./MarkerLane";
+import { ReviewLane, ReviewLaneHeader } from "./ReviewLane";
+import { registerTimelineSurface } from "./timelineSurfaces";
+import { TimelineFixedRow } from "./TimelineFixedRow";
+import { TimelinePlayhead } from "./TimelinePlayhead";
+import { TimelineRuler } from "./TimelineRuler";
+import { TrackHeader } from "./TrackHeader";
+import { useTrackReorder } from "./hooks/useTrackReorder";
+import { canReorderTrack } from "./trackReorder";
+import { trackDisplayName } from "../lib/trackName";
+import { TrackLane } from "./TrackLane";
+import type { MediaDragPayload, MediaDropPlan } from "./mediaDrag";
+import {
+  KeyframeLane,
+  KeyframeLaneHeaders,
+  type RegisterSubLaneEl,
+} from "./KeyframeLane";
+import {
+  useAnchorPath,
+  useFocusedCompositionId,
+} from "../state/compositionAnchorStore";
+import { handCaretToEditor } from "../menu/Menu";
+import { LayerContextMenu } from "./LayerContextMenu";
+import { ForeignDragGhost } from "./ForeignDragGhost";
+import { MarqueeOverlay } from "./MarqueeOverlay";
+import { beginGroupRename, beginLayerRename } from "./renameStore";
+import {
+  MarqueeAnchorContext,
+  beginMarquee,
+  type BackgroundPress,
+  type MarqueeAnchor,
+} from "./hooks/useMarqueeAnchor";
+import { useTimelineView } from "./hooks/useTimelineView";
+import { useFollowPlayhead } from "./hooks/useFollowPlayhead";
+import { useWheelScroll } from "./hooks/useWheelScroll";
+import { useHeightDrag } from "./hooks/useHeightDrag";
+import { usePointerGesture } from "../hooks/usePointerGesture";
+import { useModKeyReading, type ModifierFlags } from "../modKeyReading";
+import { useLayerDrag } from "./hooks/useLayerDrag";
+import { LayerDragTrimMonitor } from "./LayerDragTrimMonitor";
+import { useIsLayerDragging } from "./layerDragStore";
+import { layerIsReadOnly } from "../state/layerEditability";
+import { resolveTimelineTimeSnap } from "./snapping";
+import { TimelineSnapGuide } from "./TimelineSnapGuide";
+import { TimeMarkOverlay } from "./TimeMarkOverlay";
+import { TimelineBladeMark } from "./TimelineBladeMark";
+import { bladeCutLayerIds } from "./bladeCut";
+import {
+  localClockUsOf,
+  playheadClockUs,
+  rootUsOf,
+  seekLocalUs,
+  useAnchorFrame,
+} from "../state/playheadProjection";
+import {
+  useRangeInUs,
+  useRangeOutUs,
+  useRangeReveal,
+} from "../state/rangeStore";
+import { setTimelineScrollLeftPx } from "../state/timelineScrollStore";
+import {
+  registerScrollToTime,
+  revealTrackInPlace,
+} from "../state/navigation";
+import { useProjectStore } from "../state/projectStore";
+import { addGroupLayerIn, addTrackIn, applySubtitlesIn } from "../ipc/compositionScoped";
+import {
+  clearLayerSelection,
+  clearTransitionSelection,
+  currentSelection,
+  layerIdsOf,
+  primaryLayerIdOf,
+  setGapSelection,
+  setLayerSelection,
+  setTransitionSelection,
+  toggleLayerSelection,
+  usePrimaryLayerId,
+  useSelectedGap,
+  useSelectedLayerIds,
+  useSelectedTransitionId,
+} from "../state/selectionStore";
+import { gapAt } from "../ripple/gap";
+import { GapContextMenu } from "./GapContextMenu";
+import {
+  clearKeyframeSelection,
+  getSelectedKeyframes,
+  hasKeyframeSelection,
+  setKeyframeSelection,
+} from "../keyframe/selectionStore";
+import {
+  KeyframeBatchContext,
+  batchParamTrackEntries,
+  expandScaleFanOut,
+  type KeyframeBatch,
+  type KeyframeBatchCommit,
+  type KeyframeBatchFold,
+  type KeyframeEntriesCommit,
+} from "./keyframeBatch";
+import { resolveAccelerator } from "../shortcuts/match";
+import {
+  subSelectionDeleteKey,
+  subSelectionDeleteYields,
+} from "./subSelectionDelete";
+import { useEffectiveBindings } from "../shortcuts/bindings-context";
+import { logMutationFailure } from "../errors/tryMutate";
+import {
+  CUT_CLICK_TOLERANCE_PX,
+  defaultTransitionDurationUs,
+  findCutNear,
+  type TrackTransitionChip,
+  type TransitionCut,
+  type TransitionKindName,
+  type TransitionResizeArgs,
+  type TransitionUpdateArgs,
+} from "./transitions";
+import { TransitionChipMenu } from "./TransitionChipMenu";
+import { ReviewFocusExit } from "./ReviewMarks";
+import { useAgentActivity } from "../agent/activityStore";
+import { useReviewConsumer } from "../agent/reviewStore";
+import { focusRevealScrollLeft, useFocusPaint } from "../agent/reviewFocus";
+
+interface TimelineProps {
+  /// The composition this timeline renders — its Panel's own instance, never
+  /// the focused one (ADR 0053). `null` is the unbound row the Dock builds
+  /// before the first summary names a root, and reads as the root.
+  compositionId: string | null;
+  tracks: TrackSummary[];
+  /// `docs/features.md#links`. Empty array when no links exist.
+  links: LinkSummary[];
+  /// Transitions between same-track adjacent visual layers, rendered as
+  /// chips over the incoming layer's head. Optional — older snapshots and
+  /// test fixtures omit the field; absent means empty.
+  transitions?: TransitionSummary[];
+  durationUs: number;
+  /// (`docs/data-model.md`): when set, this hidden track is
+  /// included in the AB-mode ordered list at its natural accretion
+  /// slot. Cleared by the App when the user selects a layer on a
+  /// different track, presses Esc, or the Playhead Panel dispatches a new
+  /// reveal.
+  revealedTrackId?: string | null;
+  /// User-overridden keybindings, threaded through from App for the
+  /// timeline-scoped `toggleLinkSelected` action. Missing entries fall back
+  /// to `ACTION_DEFS` defaults.
+  keybindings: KeybindingsMap;
+  /// Composition fps for frame-grid snapping of seek / drag / scrub
+  /// targets. UI snaps eagerly so the ghost matches the actor's
+  /// commit-side snap; actor remains the authoritative enforcement.
+  fpsNum: number;
+  fpsDen: number;
+  /// True while the Blade tool is armed (`toolStore.ts`; `C` selects it).
+  /// Layer clicks then split at the click point instead of selecting, and
+  /// the cursor turns into a razor. Exit by selecting the Selection tool
+  /// (`V`) or pressing Esc (handled here).
+  bladeMode: boolean;
+  /// Snapshot of the current media pool — used by `onMediaDrop` to
+  /// validate readiness before lowering the drop to `addMediaLayer`.
+  media: MediaSummary[];
+  /// Same capability verdict as the media pool; independent of copy progress.
+  readinessOf: (id: string) => MediaReadiness;
+  visible?: boolean;
+  editingLocked?: boolean;
+  onExitBlade: () => void;
+  /// Park the film at this ROOT moment. A Panel scrubs on its own clock, so it
+  /// projects up before calling (`state/playheadProjection.ts`); a composition
+  /// with no root time never reaches here at all.
+  onSeek: (tUs: number) => void;
+  onMutated: () => Promise<void>;
+}
+
+
+const EMPTY_TRANSITIONS: TransitionSummary[] = [];
+
+/// How far off the panel surface one level of nesting moves the timeline's empty
+/// space, and how many levels are worth showing. Capped because the tint has to
+/// stay quieter than the clips drawn on it — past three steps it starts reading
+/// as a selected region rather than as a place.
+const GROUP_TINT_STEP_PCT = 6;
+const MAX_GROUP_TINT_STEPS = 3;
+
+export const Timeline = memo(function Timeline({
+  compositionId,
+  tracks,
+  links,
+  transitions = EMPTY_TRANSITIONS,
+  durationUs,
+  revealedTrackId,
+  keybindings,
+  fpsNum,
+  fpsDen,
+  bladeMode,
+  media,
+  readinessOf,
+  visible = true,
+  editingLocked = false,
+  onExitBlade,
+  onSeek,
+  onMutated,
+}: TimelineProps) {
+  const { t } = useTranslation();
+  useUiScale(); // header column and row heights follow the layout theme
+  // The Review overlay's clip marks and ghosts read the Review view; a visible
+  // timeline under the overlay keeps it fresh (ADR 0115: computed only while a
+  // review surface shows). The leaves read their own slice of it.
+  const reviewOverlay = useAgentActivity((s) => s.reviewOverlay);
+  useReviewConsumer(visible && reviewOverlay);
+  const headerColPx = headerColumnPx();
+  // Right-click context-menu state. `null` when closed; otherwise
+  // anchors the menu at the cursor and stores the target layer id.
+  // `cut` is non-null when the click landed within the tolerance band of a
+  // hard cut between same-track adjacent visual layers — the menu then
+  // offers the "Add transition" section.
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    layerId: string;
+    layerKind: string;
+    cut: TransitionCut | null;
+  } | null>(null);
+  // Transition-chip context-menu state — the chip counterpart of
+  // `contextMenu`, holding the full TransitionSummary so the menu can render
+  // current kind/direction/duration checkmarks without a re-lookup.
+  const [chipMenu, setChipMenu] = useState<{
+    x: number;
+    y: number;
+    transition: TransitionSummary;
+  } | null>(null);
+  // The gap's context menu — the third right-click surface. It carries no
+  // target of its own: the right-click selected the gap first, and the menu's
+  // one row acts on the selection.
+  const [gapMenu, setGapMenu] = useState<{ x: number; y: number } | null>(null);
+  const primaryLayerId = usePrimaryLayerId();
+  const selectedLayerIds = useSelectedLayerIds();
+  const selectedGap = useSelectedGap();
+  const selectedTransitionId = useSelectedTransitionId();
+  const [bladePreview, setBladePreview] = useState<{
+    layerId: string;
+    atUs: number;
+    snapped: boolean;
+  } | null>(null);
+  // The clip and pointer x the blade mark was last resolved for, so a Mod
+  // change with the pointer still can resolve it again. `bladeHovering` mounts
+  // the key listeners for exactly that span.
+  const bladeHoverRef = useRef<{ layer: LayerSummary; clientX: number } | null>(null);
+  const [bladeHovering, setBladeHovering] = useState(false);
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+
+  const {
+    pxPerSec,
+    trackHeights,
+    setTrackHeights,
+    trackHeightsRef,
+    expandedTracks,
+    toggleExpanded,
+    viewportWidthPx,
+    zoomBySteps,
+  } = useTimelineView({ compositionId, rootRef, eventRef: shellRef, tracks, durationUs });
+
+  // Publish this Panel's surface so a clip drag that wanders out of it can name
+  // the composition it wandered into (`timelineSurfaces.ts`). Only while on
+  // screen: a tab behind another still holds a rect, and one that overlapped a
+  // visible neighbour would make an ordinary in-Panel drag look like a crossing.
+  useEffect(() => {
+    const el = shellRef.current;
+    if (compositionId === null || !visible || el === null) return;
+    return registerTimelineSurface(compositionId, el);
+  }, [compositionId, visible]);
+
+  // The unmodified wheel's axis. Separate from `useTimelineView`'s listener on
+  // the same node because the two gestures are separate concerns and neither
+  // reads the other's state; they stay disjoint by keying on modifiers
+  // (Ctrl/Alt zoom, bare/Shift scroll), not on listener order.
+  useWheelScroll(rootRef, shellRef);
+
+  // Horizontal scroll-to-time for palette jumps.
+  // pxPerSec is React state; the registered closure reads it through a ref
+  // so registration happens once per mount.
+  const pxPerSecForScrollRef = useRef(pxPerSec);
+  useLayoutEffect(() => {
+    pxPerSecForScrollRef.current = pxPerSec;
+  }, [pxPerSec]);
+  useEffect(
+    () =>
+      registerScrollToTime((tUs) => {
+        const root = rootRef.current;
+        if (!root) return;
+        // ROOT time in: the caller parks the film, and this Panel scrolls to
+        // wherever that moment sits on its own axis.
+        const x =
+          (localClockUsOf(compositionId, tUs) / 1_000_000) *
+          pxPerSecForScrollRef.current;
+        const viewport = root.clientWidth - headerColumnPx();
+        // Center the target time in the lane area (the first headerColumnPx()
+        // of the viewport is the sticky track-header column).
+        root.scrollLeft = Math.max(0, x - viewport / 2);
+        // Publish now rather than waiting for the scroll event's rAF, so the
+        // ruler's tick window lands with the jump instead of one frame later.
+        setTimelineScrollLeftPx(compositionId, root.scrollLeft);
+      }),
+    [compositionId],
+  );
+
+  // The review focus (ADR 0115): selecting a tack or change in the agent panel
+  // or on the Review lane brings its range into this Panel's view when it lies
+  // on this composition — by scrolling only. Never a seek: the playhead is the
+  // user's observation point, and the panel's Locate is the verb that moves it;
+  // nor a composition switch, which is Locate's too. Per select (a fresh focus
+  // object), not per tack movement, so a range the agent's edits drag along
+  // does not pull the view after it. A store subscription and not a read, so a
+  // focus change costs this whole tree no render.
+  useEffect(() => {
+    if (!visible) return;
+    return useFocusPaint.subscribe((s, prev) => {
+      const root = rootRef.current;
+      if (s.focus === prev.focus || s.focus === null || !root) return;
+      const here = compositionId ?? useProjectStore.getState().summary?.root_id ?? null;
+      const mine = s.reveal.filter((w) => w.compositionId === here);
+      if (mine.length === 0) return;
+      const pxPerUs = pxPerSecForScrollRef.current / 1_000_000;
+      const next = focusRevealScrollLeft(
+        {
+          startPx: Math.min(...mine.map((w) => w.startUs)) * pxPerUs,
+          endPx: Math.max(...mine.map((w) => w.endUs)) * pxPerUs,
+        },
+        { scrollLeftPx: root.scrollLeft, viewportPx: root.clientWidth - headerColumnPx() },
+      );
+      if (next === null) return;
+      root.scrollLeft = next;
+      setTimelineScrollLeftPx(compositionId, root.scrollLeft);
+    });
+  }, [visible, compositionId]);
+
+  // Publish horizontal scroll for the ruler's tick window. Deliberately NOT
+  // React state here: this component is the whole timeline tree, and a
+  // per-wheel-event re-render of it is the regression the memory ratchet
+  // guards (see state/timelineScrollStore.ts). rAF-coalesced so a scroll
+  // burst collapses to one store write per frame.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    let raf = 0;
+    const publish = () => {
+      raf = 0;
+      setTimelineScrollLeftPx(compositionId, root.scrollLeft);
+    };
+    const onScroll = () => {
+      if (raf === 0) raf = requestAnimationFrame(publish);
+    };
+    // Seed: a remount (dock panel switch) starts at scrollLeft 0 without
+    // firing a scroll event.
+    setTimelineScrollLeftPx(compositionId, root.scrollLeft);
+    root.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      if (raf !== 0) cancelAnimationFrame(raf);
+      root.removeEventListener("scroll", onScroll);
+    };
+  }, [compositionId]);
+
+  // Cursor-anchored zoom re-writes `scrollLeft` in a layout effect inside
+  // `useTimelineView`, which is registered BEFORE this one — so by the time this
+  // runs the re-anchored offset is final, and publishing it here (rather than
+  // waiting for the scroll event's rAF) is what keeps the ruler's window from
+  // painting the pre-zoom region for one frame.
+  useLayoutEffect(() => {
+    if (rootRef.current) {
+      setTimelineScrollLeftPx(compositionId, rootRef.current.scrollLeft);
+    }
+  }, [compositionId, pxPerSec]);
+
+  const { totalSec, widthPx } = computeTimelineExtent({
+    durationUs,
+    pxPerSec,
+    viewportWidthPx,
+  });
+
+  // Page the view to keep the playhead visible (app-level pref, default on).
+  // Also gated on `visible`, like the playhead line itself: a timeline behind
+  // another dock tab has nothing to keep in view.
+  const followEnabled = useFollowPlayheadEnabled();
+  // Resolved once here and handed to every per-frame reader below: resolving an
+  // anchor frame walks the summary, which is exactly what must not happen once
+  // per composition frame, once per open Panel.
+  const anchorFrame = useAnchorFrame(compositionId);
+  const { setScrubbing: setFollowScrubbing } = useFollowPlayhead({
+    compositionId,
+    anchorFrame,
+    rootRef,
+    pxPerSec,
+    viewportWidthPx,
+    contentWidthPx: widthPx,
+    enabled: followEnabled && visible,
+  });
+
+  const linkByLayerId = useMemo(() => indexLinks(links), [links]);
+
+  // The derived A/V sync offset (R2-D7). Published to a store rather than threaded as
+  // a prop so only the badged clip re-renders; `setAudioSyncOffsets` no-ops when the
+  // map is unchanged, so an unrelated project update costs nothing.
+  useLayoutEffect(() => {
+    setAudioSyncOffsets(
+      deriveAudioSyncOffsets(
+        tracks.flatMap((t) => t.layers),
+        links,
+      ),
+    );
+  }, [tracks, links]);
+
+  // A/B-roll display mode comes from the app-level settings store
+  // (`docs/data-model.md`). The store hydrates on app mount via
+  // `wireAppSettingsStream`. Atomic selector — never include the rest of
+  // the settings struct in a single selector (feedback_zustand_composite_
+  // selector).
+  const displayMode = useDisplayMode();
+  const tailSnapEnabled = useTailSnapEnabled();
+  const tailSnapStrengthPx = useTailSnapStrengthPx();
+
+  const orderedTracks = useMemo(() => {
+    const all = visualOrderedTracks(tracks);
+    if (displayMode === "AllTracks") return all;
+    // A/B Roll filter: keep role-stamped tracks. Inline-reveal lets one
+    // additional hidden track survive the filter at its natural
+    // accretion slot — the visualOrderedTracks output already has the
+    // slot computed, so we just need to keep that row alongside the
+    // role-stamped ones.
+    return all.filter(
+      ({ track }) =>
+        track.role !== null || track.id === (revealedTrackId ?? null),
+    );
+  }, [tracks, displayMode, revealedTrackId]);
+
+  const visibleSnapTracks = useMemo(
+    () => orderedTracks.map(({ track }) => track),
+    [orderedTracks],
+  );
+  // Each link's anchor member and what it draws there. Built from the RENDERED
+  // lanes, so the hidden-member count follows the display filter and the
+  // inline reveal with no rule of its own.
+  const linkTabByLayerId = useMemo(
+    () => indexLinkTabs(links, visibleSnapTracks, tracks),
+    [links, visibleSnapTracks, tracks],
+  );
+  const mediaDropSnap = useMemo(
+    () => ({
+      visibleTracks: visibleSnapTracks,
+      links,
+      linkByLayerId,
+      enabled: tailSnapEnabled,
+      strengthPx: tailSnapStrengthPx,
+    }),
+    [
+      linkByLayerId,
+      links,
+      tailSnapEnabled,
+      tailSnapStrengthPx,
+      visibleSnapTracks,
+    ],
+  );
+
+  /// Map a click event on a layer chip to the resulting selection set.
+  /// `docs/features.md#links`: plain click on a linked layer selects the
+  /// whole link; `Alt+click` selects only the clicked layer (escape
+  /// path), and so does every click while the link override is on
+  /// (`linkFanoutActive`); `Shift+click` TOGGLES the clicked layer (with its
+  /// whole link if any) in and out of the current selection.
+  ///
+  /// Returns whether the clicked layer is selected afterwards — `false` only
+  /// for a Shift+click that removed it. `LayerBlock` needs that answer because
+  /// it seeds a drag from the same pointerdown, and a clip the user just
+  /// deselected must not be the one that moves.
+  const selectFromClick = useCallback(
+    (
+      layerId: string,
+      e: { altKey: boolean; shiftKey: boolean; metaKey: boolean },
+    ): boolean => {
+      const gid = linkByLayerId.get(layerId);
+      const memberSet = (): Set<string> => {
+        if (!gid || !linkFanoutActive(e)) return new Set([layerId]);
+        const g = links.find((x) => x.id === gid);
+        return new Set(g?.layer_ids ?? [layerId]);
+      };
+      const members = memberSet();
+      if (e.shiftKey) return toggleLayerSelection(layerId, members);
+      setLayerSelection(layerId, members);
+      return true;
+    },
+    [linkByLayerId, links],
+  );
+
+  /// Handler for the link toggle (`ACTION_DEFS.toggleLinkSelected` owns the
+  /// key and the why). It reads state via refs to avoid the stale-closure trap
+  /// of multi-key chord dispatch.
+  const selectedLayerIdsRef = useRef(selectedLayerIds);
+  const linkByLayerIdRef = useRef(linkByLayerId);
+  const linksRef = useRef(links);
+  const onMutatedRef = useRef(onMutated);
+  useLayoutEffect(() => {
+    selectedLayerIdsRef.current = selectedLayerIds;
+    linkByLayerIdRef.current = linkByLayerId;
+    linksRef.current = links;
+    onMutatedRef.current = onMutated;
+  }, [selectedLayerIds, linkByLayerId, links, onMutated]);
+
+  const shortcutOverrides = useMemo<OverrideMap>(
+    () => keybindings as OverrideMap,
+    [keybindings],
+  );
+  // Every handler below is named so the search-palette command provider can
+  // reference the exact same function objects the shortcut dispatcher uses.
+
+  /// Select All over the RENDERED tracks, not the project's (`selectAllLayers`
+  /// carries the why). `visibleSnapTracks` is already the display-filtered,
+  /// reveal-aware list the lanes are drawn from, so the selection this builds is
+  /// exactly what the user can see. Closes over the latest render rather than a
+  /// ref: `useShortcuts` re-reads its handler map every render, and the rendered
+  /// track list is a prop-derived memo, so there is no chord-dispatch staleness
+  /// to dodge here. Deselect All takes no input at all, so the module function
+  /// IS the handler.
+  const handleSelectAll = useCallback(
+    () => selectAllLayers(visibleSnapTracks),
+    [visibleSnapTracks],
+  );
+
+  /// One key, two directions (`linkEligibility.ts` decides which): a selection
+  /// inside one link dissolves that link; two or more unlinked layers become
+  /// one. A mixed selection is a no-op here, the same silence the strip's
+  /// disabled button shows.
+  const handleToggleLinkSelected = useCallback(async () => {
+    const sel = selectedLayerIdsRef.current;
+    const currentLinks = linksRef.current;
+    try {
+      const enclosing = enclosingLink(sel, currentLinks);
+      if (enclosing) {
+        await linksDissolve(enclosing.id);
+      } else if (linkToggleState(sel, currentLinks) === "link") {
+        await linksCreate(Array.from(sel), false);
+      } else {
+        return;
+      }
+      await onMutatedRef.current();
+    } catch (err) {
+      logMutationFailure(err, "Link / Unlink layers");
+    }
+  }, []);
+
+  // ── Sub-frame audio slip (ADR 0038) ────────────────────────────────────────
+  // Why keys are the authoring surface at all: see the ADR 0038 note on
+  // `ACTION_DEFS.nudgeBack`.
+  //
+  // `escapeLink: true` on every one of them: the whole point is to move the audio
+  // WITHOUT its video partner. That is also what creates the implicit sync offset
+  // R2-D7 surfaces as the clip badge — there is no field to write.
+  const layersByIdRef = useRef(new Map<string, LayerSummary>());
+  const trackOfLayerRef = useRef(new Map<string, string>());
+  useLayoutEffect(() => {
+    const byId = new Map<string, LayerSummary>();
+    const trackOf = new Map<string, string>();
+    for (const t of tracks) {
+      for (const l of t.layers) {
+        byId.set(l.id, l);
+        trackOf.set(l.id, t.id);
+      }
+    }
+    layersByIdRef.current = byId;
+    trackOfLayerRef.current = trackOf;
+  }, [tracks]);
+
+  /// Move every selected audio layer to `nextStart(layer)`, or skip it when that
+  /// resolves to null / no movement. One `move_layer` per layer, then one refresh.
+  const slipSelectedAudio = useCallback(
+    async (nextStart: (l: SlipLayer, members: SlipLayer[]) => number | null) => {
+      const byId = layersByIdRef.current;
+      const targets = slippableAudioLayers(selectedLayerIdsRef.current, [...byId.values()]);
+      if (targets.length === 0) return;
+      let moved = false;
+      for (const audio of targets) {
+        const gid = linkByLayerIdRef.current.get(audio.id);
+        const members = gid
+          ? (linksRef.current.find((g) => g.id === gid)?.layer_ids ?? [])
+              .map((id) => byId.get(id))
+              .filter((l): l is LayerSummary => l !== undefined)
+          : [];
+        const next = nextStart(audio, members);
+        if (next === null || next === audio.t_start_us) continue;
+        const trackId = trackOfLayerRef.current.get(audio.id);
+        if (trackId === undefined) continue;
+        try {
+          await moveLayer(audio.id, trackId, next, true);
+          moved = true;
+        } catch (err) {
+          logMutationFailure(err, "Slip audio");
+        }
+      }
+      if (moved) await onMutatedRef.current();
+    },
+    [],
+  );
+
+  /// The keyframe half of the nudge: the selection translates by whole frames,
+  /// under the same walls and the same pass/replace rule a group drag obeys.
+  ///
+  /// An effect event rather than a callback because the batch commit it lands
+  /// through is declared with the rest of the keyframe wiring further down, and
+  /// a dependency array naming it would read the binding before its
+  /// initializer runs.
+  const nudgeKeyframes = useEffectEvent((frames: number) => {
+    const { entries } = translateSelection(
+      retimeGroupsOf({ selected: getSelectedKeyframes(), tracks }),
+      timeUsAtFrame(frames, fpsNum, fpsDen),
+      { num: fpsNum, den: fpsDen },
+    );
+    if (entries.length > 0) commitKeyframeEntries(entries);
+  });
+
+  /// Alt+Arrow dispatches on which selection is armed, keyframes first — the
+  /// precedence Delete already has. With no keyframe selection it is the
+  /// sub-frame audio slip, unchanged, which is why the two tiers carry both a
+  /// frame count and a sample count.
+  const nudge = useCallback(
+    (frames: number, samples: number) => () => {
+      if (hasKeyframeSelection()) {
+        nudgeKeyframes(frames);
+        return;
+      }
+      void slipSelectedAudio((l) => nudgedStartUs(l, samples));
+    },
+    [slipSelectedAudio],
+  );
+  const handleNudgeBack = useMemo(() => nudge(-1, -NUDGE_SAMPLE), [nudge]);
+  const handleNudgeForward = useMemo(() => nudge(1, NUDGE_SAMPLE), [nudge]);
+  const handleNudgeLargeBack = useMemo(() => nudge(-10, -NUDGE_MS), [nudge]);
+  const handleNudgeLargeForward = useMemo(() => nudge(10, NUDGE_MS), [nudge]);
+  const handleResyncAudioToVideo = useCallback(
+    () => void slipSelectedAudio((l, members) => resyncStartUs(l, members)),
+    [slipSelectedAudio],
+  );
+
+  // ── Keyboard zoom, anchored on the playhead ────────────────────────────────
+  // Read at press time rather than subscribed: the playhead moves once per
+  // composition frame and this component is the whole timeline tree, so a
+  // subscription here would re-render all of it during playback (the regression
+  // `state/timelineScrollStore.ts` guards). A one-off read is also the only
+  // correct one — the anchor is where the playhead is when the key goes down.
+  // Projected: the anchor is a position on THIS Panel's axis, so it is the
+  // moment as this composition reads it, not as the film does.
+  const handleZoomTimelineIn = useCallback(
+    () => zoomBySteps(1, playheadClockUs(compositionId)),
+    [compositionId, zoomBySteps],
+  );
+  const handleZoomTimelineOut = useCallback(
+    () => zoomBySteps(-1, playheadClockUs(compositionId)),
+    [compositionId, zoomBySteps],
+  );
+
+  // `useShortcuts` binds one `window` listener per instance, so N mounted
+  // timeline Panels are N listeners that all pass the same
+  // `scope: "timeline"` test — the region name is a kind, and every timeline
+  // Panel is that kind. Unscoped, the handlers below would each run once per
+  // open Panel: both timelines would zoom, and `toggleLinkSelected` would fire
+  // twice and undo itself. Only the Panel holding the keyboard answers, which
+  // is what ADR 0041's `scope` means once a kind instantiates (ADR 0053).
+  //
+  // `disabled` is read at dispatch time, so this gate costs a re-render per
+  // focus change — a user gesture — and nothing per keystroke.
+  const focusedCompositionId = useFocusedCompositionId();
+  const rootCompositionId = useProjectStore((s) => s.summary?.root_id ?? null);
+  // The unbound row the Dock builds before a summary names a root shows the
+  // root, the same reading `compositionOrRoot` gives it.
+  const isFocusedTimeline =
+    (compositionId ?? rootCompositionId) ===
+    (focusedCompositionId ?? rootCompositionId);
+
+  useShortcuts({
+    disabled: !isFocusedTimeline,
+    overrides: shortcutOverrides,
+    handlers: exportReviewShortcuts({
+      selectAll: handleSelectAll,
+      deselectAll,
+      toggleLinkSelected: handleToggleLinkSelected,
+      nudgeBack: handleNudgeBack,
+      nudgeForward: handleNudgeForward,
+      nudgeLargeBack: handleNudgeLargeBack,
+      nudgeLargeForward: handleNudgeLargeForward,
+      resyncAudioToVideo: handleResyncAudioToVideo,
+      zoomTimelineIn: handleZoomTimelineIn,
+      zoomTimelineOut: handleZoomTimelineOut,
+    }, editingLocked),
+  });
+
+  // Gated on the same predicate as the shortcuts above, for the ADR 0053 reason
+  // stated there and one more that is specific to the registry: these ten ids
+  // are one namespace, so two open timeline Panels hand `listCommands()` the
+  // same ten twice. It keeps whichever Panel mounted FIRST, which is not
+  // necessarily the one holding the keyboard — so ungated, the palette's
+  // Select All and Ctrl+A would act on DIFFERENT timelines, and every lookup
+  // would log the collision (25 of them per Quick Actions strip render).
+  useCommandProvider(() => exportReviewCommands([
+    // Timeline's provider rather than App's catalogue, which is also why neither
+    // appears in the Edit menu: a menu-bar row backed by this provider would
+    // vanish whenever the Timeline Panel is closed
+    // (`menu/contextMenuCommands.test.ts` states the rule). The keyboard is the
+    // primary surface for both — and it is timeline-scoped anyway — with the
+    // palette carrying discoverability.
+    {
+      id: "selectAll",
+      actionId: "selectAll",
+      labelKey: ACTION_DEFS.selectAll.labelKey,
+      enabled: canSelectAll,
+      run: handleSelectAll,
+    },
+    {
+      id: "deselectAll",
+      actionId: "deselectAll",
+      labelKey: ACTION_DEFS.deselectAll.labelKey,
+      enabled: canDeselectAll,
+      run: deselectAll,
+    },
+    {
+      id: "toggleLinkSelected",
+      actionId: "toggleLinkSelected",
+      labelKey: ACTION_DEFS.toggleLinkSelected.labelKey,
+      // Live store reads, not this render's `selectedLayerIds`: the predicate
+      // is evaluated inside `listCommands()` by whichever surface is drawing
+      // the row (the Quick Actions strip, the palette, a context menu), and a
+      // value captured when Timeline last rendered would freeze. Same rule
+      // `appCommands.ts` states for `clearRange`.
+      enabled: canToggleLinkSelection,
+      run: handleToggleLinkSelected,
+    },
+    {
+      id: "nudgeBack",
+      actionId: "nudgeBack",
+      labelKey: ACTION_DEFS.nudgeBack.labelKey,
+      run: handleNudgeBack,
+    },
+    {
+      id: "nudgeForward",
+      actionId: "nudgeForward",
+      labelKey: ACTION_DEFS.nudgeForward.labelKey,
+      run: handleNudgeForward,
+    },
+    {
+      id: "nudgeLargeBack",
+      actionId: "nudgeLargeBack",
+      labelKey: ACTION_DEFS.nudgeLargeBack.labelKey,
+      run: handleNudgeLargeBack,
+    },
+    {
+      id: "nudgeLargeForward",
+      actionId: "nudgeLargeForward",
+      labelKey: ACTION_DEFS.nudgeLargeForward.labelKey,
+      run: handleNudgeLargeForward,
+    },
+    {
+      id: "resyncAudioToVideo",
+      actionId: "resyncAudioToVideo",
+      labelKey: ACTION_DEFS.resyncAudioToVideo.labelKey,
+      run: handleResyncAudioToVideo,
+    },
+    {
+      id: "zoomTimelineIn",
+      actionId: "zoomTimelineIn",
+      labelKey: ACTION_DEFS.zoomTimelineIn.labelKey,
+      run: handleZoomTimelineIn,
+    },
+    {
+      id: "zoomTimelineOut",
+      actionId: "zoomTimelineOut",
+      labelKey: ACTION_DEFS.zoomTimelineOut.labelKey,
+      run: handleZoomTimelineOut,
+    },
+  ], editingLocked), { enabled: isFocusedTimeline });
+
+  // Live lane-element registry. The drag hit-test measures these nodes rather
+  // than recomputing row offsets from track heights — a row's on-screen extent
+  // includes chrome that arithmetic misses (see `trackIdAtClientY`).
+  const laneElsRef = useRef(new Map<string, HTMLElement>());
+  const registerLaneEl = useCallback((trackId: string, el: HTMLElement | null) => {
+    if (el) laneElsRef.current.set(trackId, el);
+    else laneElsRef.current.delete(trackId);
+  }, []);
+  // The keyframe half of the registry above, one entry per rendered sub-lane
+  // row. Held apart because these rows are not lanes and nothing but the
+  // marquee reads them; the key is `(trackId, paramKey)` because one row draws
+  // one property across every layer on its track.
+  const subLaneElsRef = useRef(
+    new Map<
+      string,
+      { trackId: string; paramKey: string; expanded: boolean; el: HTMLElement }
+    >(),
+  );
+  const registerSubLaneEl = useCallback<RegisterSubLaneEl>(
+    (trackId, paramKey, expanded, el) => {
+      const key = `${trackId}|${paramKey}`;
+      if (el) subLaneElsRef.current.set(key, { trackId, paramKey, expanded, el });
+      else subLaneElsRef.current.delete(key);
+    },
+    [],
+  );
+  // The drop strip's row, measured by the same hit-test. Held apart from the
+  // registry above because that registry maps TRACK ids to lanes and the strip is
+  // not a track — no consumer of it should have to know about a row that is not
+  // one (see `useLayerDrag`'s `dropStripEl`).
+  const dropStripElRef = useRef<HTMLDivElement | null>(null);
+
+  const trackReorder = useTrackReorder({
+    tracks: visibleSnapTracks,
+    enabled: displayMode === "AllTracks" && visible,
+    viewportRef: rootRef,
+    revealedTrackId,
+    onMutated,
+  });
+
+  const { heightDrag, beginHeightDrag } = useHeightDrag({
+    trackHeightsRef,
+    setTrackHeights,
+  });
+
+  // A spawned lane carries no role, so the A/B Roll filter above would hide the clip
+  // that just landed on it. Route it through the existing inline-reveal (R.7)
+  // rather than a second visibility rule. Held as state because the reveal
+  // registry validates against `projectStore`, which refreshes on its own
+  // `project:changed` subscription and can still be one fetch behind the commit.
+  const [spawnRevealTrackId, setSpawnRevealTrackId] = useState<string | null>(
+    null,
+  );
+  useEffect(() => {
+    const trackId = spawnRevealTrackId;
+    if (trackId === null) return;
+    const attempt = () => {
+      if (!revealTrackInPlace(trackId)) return false;
+      setSpawnRevealTrackId(null);
+      return true;
+    };
+    if (attempt()) return;
+    return useProjectStore.subscribe(() => void attempt());
+  }, [spawnRevealTrackId]);
+  // Both spawn paths — a media-pool drop and an existing-clip raise — end here,
+  // so the visibility rule has one home.
+  const revealSpawnedTrack = useCallback(
+    (trackId: string) => {
+      if (displayMode !== "AllTracks") setSpawnRevealTrackId(trackId);
+      else trackReorder.reveal(trackId);
+    },
+    [displayMode, trackReorder.reveal],
+  );
+
+  // The gesture itself lives in `layerDragStore`, not here: one `useState` on
+  // this root would re-render every lane, sub-lane and chip per pointermove.
+  // This root subscribes to the one bit it draws.
+  const isLayerDragging = useIsLayerDragging(compositionId);
+  // The sample-region one-shot, armed from a denoise card. Two bits reach this
+  // root: the cursor that says only the target clip will take the press, and
+  // the Escape / press-elsewhere paths that spend the arm. The gesture itself
+  // belongs to the clip block (`LayerBlock` → `useAudioRegionDrag`), and this
+  // subscription flips twice per arm, not at event rate.
+  const armedRegion = useArmedRegionSelect();
+  const { setDrag, pendingPlacements, pendingLayerById, dragLayerById } =
+    useLayerDrag({
+      compositionId,
+      tracks,
+      links,
+      transitions,
+      linkByLayerId,
+      orderedTracks,
+      laneEls: laneElsRef,
+      trackViewportRef: rootRef,
+      dropStripEl: dropStripElRef,
+      pxPerSec,
+      fpsNum,
+      fpsDen,
+      tailSnapEnabled,
+      tailSnapStrengthPx,
+      onLaneSpawned: revealSpawnedTrack,
+      onMutated,
+    });
+
+  // -------- Media drop, seek, render --------
+
+  // Every commit here names THIS Panel's composition, so the clip lands in the
+  // timeline it was released on. Nothing focuses that timeline: the drop is a
+  // local act, and stealing the keyboard would take the inspector and — while
+  // the preview follows focus — the picture along with it (ADR 0053 decision 4).
+  const onMediaDrop = useCallback(
+    async (
+      // null = the drop strip: no lane exists yet, so one is created first.
+      track: TrackSummary | null,
+      payload: MediaDragPayload,
+      plan: MediaDropPlan,
+    ) => {
+      // No kind gate on the lane: tracks are kind-agnostic, so any placed media
+      // kind drops on any track. The one thing routed elsewhere is a subtitle
+      // document, which is not placed at all — see below. Overlap is the main-process
+      // state layer's rule (`main/state/validate.ts`), pre-checked for the ghost
+      // by the placement policy.
+      //
+      // A composition drop takes the same route with no readiness gate: what it
+      // places is already in the project, so there is no import to wait for and
+      // nothing to be missing. The one thing it can be refused for — containing
+      // itself — the drop target has already greyed out.
+      if (payload.source === "composition") {
+        try {
+          const trackId =
+            track !== null ? track.id : await addTrackIn(compositionId);
+          await addGroupLayerIn({
+            compositionId,
+            sourceCompositionId: payload.compositionId,
+            trackId,
+            tStartUs: plan.rawStartUs,
+          });
+          if (track === null) revealSpawnedTrack(trackId);
+          await onMutated();
+        } catch (err) {
+          logMutationFailure(err, "Group drop");
+        }
+        return;
+      }
+      const m = media.find((mm) => mm.id === payload.mediaId);
+      if (!m) {
+        console.warn(
+          `media drop rejected: ${payload.mediaId} not found in current summary`,
+        );
+        return;
+      }
+      const readiness = readinessOf(m.id);
+      if (!readiness.ready) {
+        console.warn(
+          `media drop rejected: ${payload.mediaId} is ${readiness.reason}`,
+        );
+        return;
+      }
+      // A subtitle document takes only the drop TIME: its cues pack onto the
+      // caption tracks, whichever lane — or the strip — it was released over.
+      if (payload.kind === "Subtitle") {
+        try {
+          await applySubtitlesIn({ compositionId, mediaId: payload.mediaId, tStartUs: plan.rawStartUs });
+          await onMutated();
+        } catch (err) {
+          logMutationFailure(err, "Subtitle drop");
+        }
+        return;
+      }
+      try {
+        // Spawn-then-place is TWO commits, matching what the layer-adding
+        // commands already do when their reverse scan finds no free lane
+        // (`main/state/actor.ts`, add_color_layer): the track add gets its own
+        // op_id, then the layer add gets a second one.
+        //
+        // Deliberately unlike raising an EXISTING clip, which is one entry via
+        // `move_layers_to_new_track`. There, undo has to give a pruned SOURCE
+        // lane back, so two entries would let one undo leave the clip stranded on
+        // a lane that no longer belongs to it. A fresh import empties nothing, so
+        // the first undo removes the layer and the second removes the lane —
+        // each step reversing exactly what it did.
+        const trackId = track !== null ? track.id : await addTrackIn(compositionId);
+        await addMediaLayer(trackId, payload.mediaId, plan.rawStartUs);
+        if (track === null) revealSpawnedTrack(trackId);
+        await onMutated();
+      } catch (err) {
+        logMutationFailure(err, "Media drop");
+      }
+    },
+    [
+      compositionId,
+      readinessOf,
+      media,
+      onMutated,
+      revealSpawnedTrack,
+    ],
+  );
+
+  // Context-menu open handler. Captures cursor position + target layer;
+  // triggered by LayerBlock's onContextMenu (right-click). Also hit-tests
+  // the click against the cuts on the layer's track: within
+  // CUT_CLICK_TOLERANCE_PX of a seam between same-track adjacent visual
+  // layers both long enough for the default duration (the kernel's
+  // eligibility), the menu grows the "Add transition" section. A locked track
+  // offers no cuts — the add would refuse TrackLocked, and prevention beats a
+  // status-bar refusal (#18).
+  const onContextMenu = useCallback(
+    (
+      e: React.MouseEvent,
+      layerId: string,
+      layerKind: string,
+    ) => {
+      // Right-click SELECTS, the way it does in Premiere, Resolve and FCP —
+      // and the way `onLayerPointerDown` deliberately does not (it takes
+      // `e.button === 0` only, because a right-press must not arm a drag).
+      // The menu's registry rows act on the selection, so without this a
+      // "Delete" chosen from one clip's menu could delete a different one.
+      //
+      // Change membership only OUTSIDE the current selection: right-clicking
+      // inside a multi-selection keeps it, so "select four clips, right-click
+      // one, Delete" behaves the way it reads. Modifier semantics are the
+      // click path's (`selectFromClick`): plain takes the whole link,
+      // `Alt` escapes it, `Shift` toggles — and the guard below is what keeps
+      // the toggle one-directional here, since a right-click on an
+      // already-selected clip never reaches it. A right-click that DESELECTED
+      // its own target and then opened a menu acting on the selection would be
+      // the worst reading of this gesture.
+      if (!selectedLayerIds.has(layerId)) selectFromClick(layerId, e);
+      // Keep the batch intact, but make single-clip commands and their gates
+      // resolve the clip under the cursor (also the inspector/shot target).
+      else setLayerSelection(layerId, selectedLayerIds);
+      let cut: TransitionCut | null = null;
+      const canvas = canvasRef.current;
+      const track = tracks.find((candidate) =>
+        candidate.layers.some((l) => l.id === layerId),
+      );
+      if (canvas && track && !track.locked && pxPerSec > 0) {
+        const rect = canvas.getBoundingClientRect();
+        const xUs = ((e.clientX - rect.left) / pxPerSec) * 1_000_000;
+        const toleranceUs = (CUT_CLICK_TOLERANCE_PX / pxPerSec) * 1_000_000;
+        cut = findCutNear(
+          track.layers,
+          xUs,
+          toleranceUs,
+          defaultTransitionDurationUs(fpsNum, fpsDen),
+        );
+      }
+      setContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        layerId,
+        layerKind,
+        cut,
+      });
+    },
+    [tracks, pxPerSec, fpsNum, fpsDen, selectedLayerIds, selectFromClick],
+  );
+
+  // Create a transition at a cut (context-menu action). Default duration is
+  // the hardcoded 1 s snapped DOWN to whole comp frames; no placement arg, so
+  // the add takes the overlap default (the incoming layer moves left,
+  // ADR 0048). The refusals the eligibility gate cannot prevent (participants
+  // sharing a link, a moved sibling crossing t = 0) surface through the
+  // status bar / log (errors/formatCommandError.ts owns the copy). NO silent
+  // clamping.
+  const onAddTransition = useCallback(
+    async (
+      cut: TransitionCut,
+      kind: TransitionKindName,
+      direction?: TransitionDirection,
+    ) => {
+      setContextMenu(null);
+      try {
+        await addTransition({
+          fromLayerId: cut.fromLayerId,
+          toLayerId: cut.toLayerId,
+          durationUs: defaultTransitionDurationUs(fpsNum, fpsDen),
+          kind,
+          ...(direction !== undefined ? { direction } : {}),
+        });
+        await onMutated();
+      } catch (err) {
+        logMutationFailure(err, "Add transition");
+      }
+    },
+    [fpsNum, fpsDen, onMutated],
+  );
+
+  // Chip context menu (right-click on a transition chip). The chip has
+  // already selected itself; the menu's update commits ride the same
+  // `updateTransition` wrapper as the inspector, and delete matches the
+  // Delete-key path below (remove + clear selection).
+  const onChipContextMenu = useCallback(
+    (e: React.MouseEvent, chip: TrackTransitionChip) => {
+      setChipMenu({ x: e.clientX, y: e.clientY, transition: chip.transition });
+    },
+    [],
+  );
+
+  const onChipMenuUpdate = useCallback(
+    async (args: TransitionUpdateArgs) => {
+      setChipMenu(null);
+      try {
+        await updateTransition(args);
+        await onMutated();
+      } catch (err) {
+        logMutationFailure(err, "Update transition");
+      }
+    },
+    [onMutated],
+  );
+
+  // Chip edge-drag commit (spec D6): the chip assembled the exact
+  // (durationUs, extendedUs) pair for the dragged edge; this only lowers the
+  // ONE pointerup patch. A backend refusal (e.g. B's move landing on an
+  // occupied span) surfaces through the status log, never a silent clamp.
+  const onChipResize = useCallback(
+    async (args: TransitionResizeArgs) => {
+      try {
+        await updateTransition(args);
+        await onMutated();
+      } catch (err) {
+        logMutationFailure(err, "Resize transition");
+      }
+    },
+    [onMutated],
+  );
+
+  const onChipMenuDelete = useCallback(
+    async (transitionId: string) => {
+      setChipMenu(null);
+      try {
+        await removeTransition(transitionId);
+        clearTransitionSelection();
+        await onMutated();
+      } catch (err) {
+        logMutationFailure(err, "Remove transition");
+      }
+    },
+    [onMutated],
+  );
+
+  // Delete/Backspace removes the selected transition chip, and `Shift` with
+  // either does the same — a ripple has no span to close over a chip, so the
+  // stronger key degrades to this one (`subSelectionDeleteKey`). Capture phase +
+  // stopImmediatePropagation preempts the app-level `deleteSelected` and
+  // `rippleDeleteSelected`, which know nothing about chips; armed only while a
+  // chip is selected, and never while typing in a field or while another panel
+  // owns the keyboard (`subSelectionDeleteYields`).
+  useEffect(() => {
+    if (selectedTransitionId === null) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (!subSelectionDeleteKey(ev)) return;
+      if (subSelectionDeleteYields(ev.target)) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      void (async () => {
+        try {
+          await removeTransition(selectedTransitionId);
+          clearTransitionSelection();
+          await onMutatedRef.current();
+        } catch (err) {
+          logMutationFailure(err, "Remove transition");
+        }
+      })();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [selectedTransitionId]);
+
+  const onCommitLabel = useCallback(
+    async (layerId: string, label: string) => {
+      try {
+        await updateLayer(layerId, { label });
+        await onMutated();
+      } catch (e) {
+        logMutationFailure(e, "Rename layer");
+      }
+    },
+    [onMutated],
+  );
+
+  /// A Group's COMPOSITION name, from the clip's inline editor. Blank clears it
+  /// back to the derived `Group N`, which is a Group's ordinary unnamed state.
+  const onCommitGroupLabel = useCallback(
+    async (compositionId: string, label: string | null) => {
+      try {
+        await groupsRename(compositionId, label);
+        await onMutated();
+      } catch (e) {
+        logMutationFailure(e, "Rename group");
+      }
+    },
+    [onMutated],
+  );
+
+  const onCommitParamTrack = useCallback(
+    async (layerId: string, paramKey: string, track: ParamTrack) => {
+      try {
+        // Every timeline keyframe edit (value field, diamond drag, easing
+        // menu, curve editor, navigator) funnels through here. A scale write
+        // on a LINKED layer fans out to both axes in one batch — otherwise
+        // the result-based invariant would read the single-axis write as
+        // divergence and silently unlink the layer.
+        const layer = findPanelLayer(tracks, layerId);
+        const fanOut = scaleFanOutFor(paramKey, layer?.params ?? null);
+        if (fanOut) {
+          await updateLayerParamTracks(layerId, fanOutEntries(fanOut, track));
+        } else {
+          await updateLayerParamTrack(layerId, paramKey, track);
+        }
+        await onMutated();
+      } catch (e) {
+        logMutationFailure(e, "Edit keyframes");
+      }
+    },
+    [onMutated, tracks],
+  );
+
+  // Every MULTI-key keyframe operation folds the selection into one entry per
+  // (layerId, paramKey) (`keyframeBatch.ts`); the menus preview an armed row
+  // through this fold alone, and commit through the commit below.
+  const foldKeyframeBatch = useCallback<KeyframeBatchFold>(
+    (edit) => {
+      const selected = getSelectedKeyframes();
+      if (selected.some(key => layerIsReadOnly(tracks, key.layerId))) return [];
+      return batchParamTrackEntries({ selected, tracks, edit });
+    },
+    [tracks],
+  );
+
+  // The commit every keyframe gesture lands through: the whole set goes as
+  // `updateParamTracksMulti` rather than the per-layer batch — a swept
+  // selection spans layers and N layers must still cost ONE undo entry.
+  //
+  // Precomputed entries rather than a fold, because the retime gestures compute
+  // a whole next track per group from measured pointer travel and have nothing
+  // for a fold to apply (`keyframe/batchRetime.ts`).
+  const commitKeyframeEntries = useCallback<KeyframeEntriesCommit>(
+    (entries) => {
+      const expanded = expandScaleFanOut(entries, (id) => findPanelLayer(tracks, id));
+      if (expanded.length === 0 || expanded.some(([id]) => layerIsReadOnly(tracks, id))) return;
+      void (async () => {
+        try {
+          await updateParamTracksMulti(expanded);
+          await onMutated();
+        } catch (e) {
+          logMutationFailure(e, "Edit keyframes");
+        }
+      })();
+    },
+    [onMutated, tracks],
+  );
+  const commitKeyframeBatch = useCallback<KeyframeBatchCommit>(
+    (edit) => commitKeyframeEntries(foldKeyframeBatch(edit)),
+    [commitKeyframeEntries, foldKeyframeBatch],
+  );
+  const keyframeBatch = useMemo<KeyframeBatch>(
+    () => ({
+      commit: commitKeyframeBatch,
+      commitEntries: commitKeyframeEntries,
+      fold: foldKeyframeBatch,
+      tracks,
+      fps: { num: fpsNum, den: fpsDen },
+    }),
+    [commitKeyframeBatch, commitKeyframeEntries, foldKeyframeBatch, tracks, fpsNum, fpsDen],
+  );
+
+  const onRename = useCallback((layerId: string) => {
+    setContextMenu(null);
+    // The menu would otherwise take the caret back as it unmounts, and the
+    // editor commits on blur — see `contextMenuFinalFocus`.
+    handCaretToEditor();
+    beginLayerRename(layerId);
+  }, []);
+
+  /// The Group clip's OTHER rename: the composition's name rather than this
+  /// clip's label. Resolved from the live snapshot because the menu carries only
+  /// the layer's id and kind, and the target is the composition behind it.
+  const onRenameGroup = useCallback(
+    (layerId: string) => {
+      setContextMenu(null);
+      for (const track of tracks) {
+        for (const layer of track.layers) {
+          if (layer.id !== layerId) continue;
+          if (layer.params.kind !== "CompositionRef") return;
+          handCaretToEditor();
+          beginGroupRename(layer.params.composition_id);
+          return;
+        }
+      }
+    },
+    [tracks],
+  );
+
+  /// The menu hands over the selection plus any active link siblings;
+  /// `set_layers_enabled` records the whole batch as ONE
+  /// history row (`docs/features.md#links`).
+  const onToggleEnabled = useCallback(
+    async (layerIds: string[], enabled: boolean) => {
+      setContextMenu(null);
+      try {
+        await setLayersEnabled(layerIds, enabled);
+        await onMutated();
+      } catch (e) {
+        logMutationFailure(e, "Toggle layer");
+      }
+    },
+    [onMutated],
+  );
+
+  // Close the context menus when the timeline scrolls under them — the
+  // popups are anchored to fixed cursor coordinates, so they would float
+  // detached over moving content. Outside-click and Escape closing belong
+  // to Base UI.
+  useEffect(() => {
+    if (!contextMenu && !chipMenu && !gapMenu) return;
+    const viewport = rootRef.current;
+    if (!viewport) return;
+    const { scrollLeft, scrollTop } = viewport;
+    const onScroll = () => {
+      // A locator/native focus can scroll a clip into view before its context
+      // menu opens, then deliver the queued scroll event after this effect.
+      // Only movement since opening detaches the menu from its subject.
+      if (viewport.scrollLeft === scrollLeft && viewport.scrollTop === scrollTop) return;
+      setContextMenu(null);
+      setChipMenu(null);
+      setGapMenu(null);
+    };
+    viewport.addEventListener("scroll", onScroll);
+    return () => viewport.removeEventListener("scroll", onScroll);
+  }, [contextMenu, chipMenu, gapMenu]);
+
+  /// Right-click on lane background. Resolves the press to the gap
+  /// under it through the one gap rule; over trailing space, an empty lane or a
+  /// locked lane there is no gap and no menu — nothing else lives on lane
+  /// background to offer. Selects first, as the clip and chip menus do, so the
+  /// one row acts on the gap it visibly targets.
+  const onGapContextMenu = useCallback(
+    (e: React.MouseEvent, trackId: string) => {
+      const canvas = canvasRef.current;
+      const track = tracks.find((candidate) => candidate.id === trackId);
+      if (canvas === null || track === undefined || track.locked || pxPerSec <= 0) {
+        return;
+      }
+      const rect = canvas.getBoundingClientRect();
+      const gap = gapAt(track.layers, ((e.clientX - rect.left) / pxPerSec) * 1_000_000);
+      if (gap === null) return;
+      e.preventDefault();
+      setGapSelection(track.id, gap.s, gap.e);
+      clearKeyframeSelection();
+      setGapMenu({ x: e.clientX, y: e.clientY });
+    },
+    [pxPerSec, tracks],
+  );
+
+  const onSeparateAudio = useCallback(
+    async (layerId: string) => {
+      setContextMenu(null);
+      try {
+        await separateAudioToNewTrack(layerId);
+        await onMutated();
+      } catch (err) {
+        logMutationFailure(err, "Separate audio");
+      }
+    },
+    [onMutated],
+  );
+
+  const onPrebakeNow = useCallback((layerId: string) => {
+    setContextMenu(null);
+    requestPrebake(layerId);
+  }, []);
+
+  /// Shot detection is an inline whole-source scan with no progress surface, so
+  /// the menu closes immediately and the markers appear when it lands — the
+  /// same shape as the media pool's "Analyze shots", and warm after it (both
+  /// read one VSHOT-cached report). `onMutated` is what makes the new markers
+  /// visible: the write goes through the actor, not this component's state.
+  const onMarkShotCuts = useCallback(
+    async (layerId: string) => {
+      setContextMenu(null);
+      try {
+        await dropShotMarkers(layerId);
+        await onMutated();
+      } catch (err) {
+        logMutationFailure(err, "Mark shot cuts");
+      }
+    },
+    [onMutated],
+  );
+
+  /// A scrub reads px on THIS Panel's axis, so the time it produces is this
+  /// composition's and is reverse-projected into the one moment before it
+  /// leaves. A composition with no root time has nothing to project into: its
+  /// Panel parks on an axis of its own and the film stays where it is.
+  const seekFromClientX = useCallback(
+    (clientX: number) => {
+      if (!canvasRef.current) return;
+      const rect = canvasRef.current.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const rawUs = Math.max(0, Math.round((x / pxPerSec) * 1_000_000));
+      const localUs = snapFrameRound(rawUs, fpsNum, fpsDen);
+      const rootUs = rootUsOf(compositionId, localUs);
+      if (rootUs === null) {
+        seekLocalUs(compositionId, localUs);
+        return;
+      }
+      onSeek(rootUs);
+    },
+    [compositionId, onSeek, pxPerSec, fpsNum, fpsDen],
+  );
+
+  const bladeCutTimeFromClientX = useCallback(
+    (layer: LayerSummary, clientX: number, snapSuspended = false): { atUs: number; boundaryUs: number | null } | null => {
+      if (!canvasRef.current) return null;
+      const rect = canvasRef.current.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const rawUs = Math.max(0, Math.round((x / pxPerSec) * 1_000_000));
+      const frameUs = snapFrameRound(rawUs, fpsNum, fpsDen);
+      const snapResult = resolveTimelineTimeSnap({
+        timeUs: frameUs,
+        layerId: layer.id,
+        // Escaped under the link override: the split then cuts this layer
+        // alone, so its siblings' edges are snap targets again.
+        escapeLink: !linkFanoutActive(),
+        visibleTracks: visibleSnapTracks,
+        links,
+        linkByLayerId,
+        // Event-time read: the playhead is a snap TARGET here, so the value
+        // at the moment of the mouse event is the correct one — no reactive
+        // subscription needed. Projected, because it is offered alongside layer
+        // boundaries on this Panel's own axis.
+        currentTimeUs: playheadClockUs(compositionId),
+        fpsNum,
+        fpsDen,
+        pxPerSec,
+        enabled: tailSnapEnabled && !snapSuspended,
+        strengthPx: tailSnapStrengthPx,
+        isValidSnap: (boundaryUs) =>
+          boundaryUs > layer.t_start_us && boundaryUs < layer.t_end_us,
+      });
+      const atUs = snapResult.timeUs;
+      return atUs > layer.t_start_us && atUs < layer.t_end_us
+        ? { atUs, boundaryUs: snapResult.boundaryUs } : null;
+    },
+    [
+      compositionId,
+      fpsNum,
+      fpsDen,
+      linkByLayerId,
+      links,
+      pxPerSec,
+      tailSnapEnabled,
+      tailSnapStrengthPx,
+      visibleSnapTracks,
+    ],
+  );
+
+  const showBladePreview = useCallback(
+    (layer: LayerSummary | null, clientX: number | undefined, snapSuspended: boolean) => {
+      const snapResult = bladeMode && layer && clientX !== undefined
+        ? bladeCutTimeFromClientX(layer, clientX, snapSuspended) : null;
+      setBladePreview(snapResult === null || !layer ? null : {
+        layerId: layer.id, atUs: snapResult.atUs, snapped: snapResult.boundaryUs !== null,
+      });
+    },
+    [bladeCutTimeFromClientX, bladeMode],
+  );
+
+  const bladeModKey = useModKeyReading(bladeHovering, (held) => {
+    const hover = bladeHoverRef.current;
+    if (hover !== null) showBladePreview(hover.layer, hover.clientX, held);
+  });
+
+  const setBladeHover = useCallback(
+    (hover: { layer: LayerSummary; clientX: number } | null) => {
+      bladeHoverRef.current = hover;
+      setBladeHovering(hover !== null);
+    },
+    [],
+  );
+
+  const updateBladePreview = useCallback(
+    (layer: LayerSummary | null, clientX?: number, mods?: ModifierFlags) => {
+      setBladeHover(layer !== null && clientX !== undefined ? { layer, clientX } : null);
+      showBladePreview(layer, clientX, mods ? bladeModKey.observe(mods) : false);
+    },
+    [bladeModKey, setBladeHover, showBladePreview],
+  );
+
+  useEffect(() => {
+    if (bladeMode) return;
+    setBladePreview(null);
+    setBladeHover(null);
+  }, [bladeMode, setBladeHover]);
+
+  // Subscribed, not read at event time: flipping the override while hovering
+  // changes what the click would cut, and the blade mark must say so.
+  const linkOverride = useLinkOverride();
+  const bladeCutIds = useMemo(
+    () => bladePreview === null ? [] :
+      bladeCutLayerIds(bladePreview.layerId, bladePreview.atUs, tracks, links, !linkOverride),
+    [bladePreview, links, linkOverride, tracks],
+  );
+
+  // Blade-tool click handler: convert clientX → frame-snapped composition
+  // timestamp and ask the actor to split the layer at that point. Reject
+  // only when the snapped point lands exactly on a layer edge — the
+  // actor would refuse that anyway, and a frame-precise editor needs
+  // frame-precise cuts. After a split the user stays in blade mode
+  // (NLE convention); press `C` or `Esc` to exit.
+  const splitFromClientX = useCallback(
+    async (layer: LayerSummary, clientX: number, mods: ModifierFlags) => {
+      // Mod as the blade mark showed it while one is shown on this clip, so the
+      // cut lands where the mark stood; a click with no mark yet reads its own.
+      const snapSuspended = bladeHoverRef.current?.layer.id === layer.id
+        ? bladeModKey.held() : bladeModKey.observe(mods);
+      const snapResult = bladeCutTimeFromClientX(layer, clientX, snapSuspended);
+      if (snapResult === null) return;
+      const atUs = snapResult.atUs;
+      setBladePreview(null);
+      // The hovered clip is about to be two: the next pointermove names which.
+      setBladeHover(null);
+      try {
+        // Link-aware, as `splitAtPlayhead` sends it; escaped only under the
+        // link override.
+        await splitLayerLinked(layer.id, atUs, !linkFanoutActive());
+        await onMutated();
+      } catch (err) {
+        logMutationFailure(err, "Blade split");
+      }
+    },
+    [bladeCutTimeFromClientX, bladeModKey, onMutated, setBladeHover],
+  );
+
+  // Esc disarms the sample-region one-shot. Its own effect rather than a branch
+  // of the blade handler below: the two modes are independent, and this one is
+  // armed from the inspector, so a timeline that never entered blade mode still
+  // has to answer for it. Window level, and mounted only while armed.
+  useEffect(() => {
+    if (armedRegion === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      disarmRegionSelect();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [armedRegion]);
+
+  // Esc exits blade mode. Bound at the window level so it fires regardless
+  // of focus, and attached only while blade mode is on.
+  const onExitBladeEvent = useEffectEvent(onExitBlade);
+  useEffect(() => {
+    if (!bladeMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onExitBladeEvent();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [bladeMode]);
+
+  // Ruler-only seek: the time ruler is the SOLE surface that moves the
+  // playhead. Begins a drag-scrub from the ruler's pointerdown. Decoupled
+  // from selection — seeking never clears the selected clip.
+  const beginScrubGesture = usePointerGesture();
+  const beginRulerScrub = useCallback(
+    (event: React.PointerEvent) => {
+      // Hold the view still for the length of the drag: the user is aiming at a
+      // point they can see, and a follow-page mid-gesture would move the target
+      // out from under the pointer (see `useFollowPlayhead`).
+      beginScrubGesture(event.pointerId, {
+        move: (ev) => seekFromClientX(ev.clientX),
+        release: () => setFollowScrubbing(false),
+        cancel: () => setFollowScrubbing(false),
+      });
+      setFollowScrubbing(true);
+      seekFromClientX(event.clientX);
+    },
+    [seekFromClientX, setFollowScrubbing, beginScrubGesture],
+  );
+
+  // The primary at pointerdown, which `resolveMarqueeSelection` needs on every
+  // move to keep a surviving primary. It lives on this side of the gesture's
+  // seam together with the rest of the snapshot: the SHAPE of a selection is
+  // what `useMarqueeAnchor` deliberately does not know, so it holds only the
+  // opaque restore thunk `takeMarqueeSnapshot` hands back.
+  const marqueeSnapshotPrimaryRef = useRef<string | null>(null);
+  const takeMarqueeSnapshot = useCallback((): (() => void) => {
+    const snapshot = currentSelection();
+    const keyframes = getSelectedKeyframes();
+    const primary = primaryLayerIdOf(snapshot);
+    marqueeSnapshotPrimaryRef.current = primary;
+    return () => {
+      // The timeline's own kinds only. A pool selection the box displaced is
+      // not put back — the marquee never reached into the pool to begin with.
+      if (snapshot.kind === "transition") {
+        setTransitionSelection(snapshot.id);
+      } else if (snapshot.kind === "gap") {
+        setGapSelection(snapshot.trackId, snapshot.s, snapshot.e);
+      } else {
+        setLayerSelection(primary, layerIdsOf(snapshot));
+      }
+      // A non-empty clip box clears the keyframe selection below, so a cancel
+      // that left it cleared would not be a cancel.
+      setKeyframeSelection(keyframes);
+    };
+  }, []);
+
+  /// The rendered lanes' vertical bands, in the BOX's coordinate space.
+  /// `getBoundingClientRect` answers in client coordinates while the box is
+  /// canvas-relative (`marqueeStore.ts`), hence the subtraction. x needs no
+  /// such conversion: `marqueeHitClips` derives a chip's x from `t_start_us ×
+  /// pxPerSec`, which is canvas-relative already — x = 0 IS the canvas's left
+  /// edge, at t = 0.
+  ///
+  /// Walks `orderedTracks` rather than the registry, so only rendered lanes
+  /// count and the A/B Roll display filter is honoured structurally. Measured
+  /// per pointer event and cached nowhere, which is also what absorbs a
+  /// mid-gesture project mutation (an MCP agent commit, an undo) on the next
+  /// move — there is no cache, so do not add a generation guard.
+  const measureMarqueeRows = useCallback((): MeasuredTrackRow[] => {
+    const canvas = canvasRef.current;
+    if (canvas === null) return [];
+    const canvasTop = canvas.getBoundingClientRect().top;
+    const rows: MeasuredTrackRow[] = [];
+    for (const { track } of orderedTracks) {
+      const el = laneElsRef.current.get(track.id);
+      if (el === undefined) continue;
+      const rect = el.getBoundingClientRect();
+      rows.push({
+        trackId: track.id,
+        top: rect.top - canvasTop,
+        bottom: rect.bottom - canvasTop,
+      });
+    }
+    return rows;
+  }, [orderedTracks]);
+
+  /// The rendered sub-lane rows, in the box's coordinate space — the keyframe
+  /// twin of `measureMarqueeRows`, converted and re-measured per event for the
+  /// same reasons. Sorted top-to-bottom so the hit order reads down the screen
+  /// instead of following the registry's mount order.
+  const measureMarqueeSubLaneRows = useCallback((): MeasuredSubLaneRow[] => {
+    const canvas = canvasRef.current;
+    if (canvas === null) return [];
+    const canvasTop = canvas.getBoundingClientRect().top;
+    const rows: MeasuredSubLaneRow[] = [];
+    for (const entry of subLaneElsRef.current.values()) {
+      const rect = entry.el.getBoundingClientRect();
+      rows.push({
+        trackId: entry.trackId,
+        paramKey: entry.paramKey,
+        expanded: entry.expanded,
+        top: rect.top - canvasTop,
+        bottom: rect.bottom - canvasTop,
+      });
+    }
+    rows.sort((a, b) => a.top - b.top);
+    return rows;
+  }, []);
+
+  const onMarqueeBox = useCallback(
+    (box: MarqueeBox, kind: MarqueeKind) => {
+      if (kind === "keyframe") {
+        // Selection and nothing else: no seek, no focus move. Those stay on the
+        // single-click path (`KeyframeLane`'s `selectKeyframe` +
+        // `setKeyframeFocus` + `transportSeek` triple). The layer selection is
+        // left standing too — the sub-selection model already gives keyframes
+        // Delete priority, so a clip selection is not a conflict in this
+        // direction the way it is in the other.
+        setKeyframeSelection(
+          marqueeHitKeyframes({
+            box,
+            rows: measureMarqueeSubLaneRows(),
+            tracks,
+            pxPerSec,
+          }),
+        );
+        return;
+      }
+      const { ids, primary } = resolveMarqueeSelection({
+        snapshotPrimary: marqueeSnapshotPrimaryRef.current,
+        hit: marqueeHitClips({
+          box,
+          rows: measureMarqueeRows(),
+          tracks,
+          pxPerSec,
+        }),
+        linkByLayerId,
+        links,
+        mode: "replace",
+        linkFanout: linkFanoutActive(),
+      });
+      setLayerSelection(primary, ids);
+      // So the Delete that follows reaches the clips just swept: `deleteSelected`
+      // takes the keyframe selection whenever one stands, and a stale one would
+      // eat this Delete. The chip's own pointerdown clears it for the same
+      // reason.
+      if (ids.length > 0) clearKeyframeSelection();
+    },
+    [
+      linkByLayerId,
+      links,
+      measureMarqueeRows,
+      measureMarqueeSubLaneRows,
+      pxPerSec,
+      tracks,
+    ],
+  );
+
+  /// A press that never became a box — the timeline's background click, and the
+  /// only path that clears a selection from the background. Per kind, because
+  /// the two populations' blank space is not the same blank space: blank
+  /// sub-lane space drops keyframes and leaves the clip selection, so the
+  /// Attribute panel stays on the clip being inspected. That is a strict
+  /// narrowing — the state it leaves was already reachable by selecting a
+  /// keyframe and then clicking a lane.
+  ///
+  /// On a LANE, blank space between two clips is a gap, and the click selects it
+  /// (docs/features.md#ripple-delete) — Premiere's and Resolve's gesture,
+  /// with no modifier. Only a press that resolves to a gap through the one gap
+  /// rule selects: trailing
+  /// space, an empty lane and the track background all still clear.
+  /// A locked lane's blank space clears too, for `marqueeHitClips`'s reason —
+  /// its gap can never close (its own downstream clip would have to move), so
+  /// selecting it would arm a Delete the actor always refuses. The keyframe
+  /// selection is dropped with the gap for the sweep's reason: Delete takes the
+  /// keys first, and a stale key selection would eat the closing.
+  const onMarqueeBackgroundClick = useCallback(
+    (kind: MarqueeKind, press: BackgroundPress) => {
+      if (kind === "keyframe") {
+        clearKeyframeSelection();
+        return;
+      }
+      if (press.trackId !== null && pxPerSec > 0) {
+        const track = tracks.find((candidate) => candidate.id === press.trackId);
+        if (track !== undefined && !track.locked) {
+          const gap = gapAt(track.layers, (press.canvasX / pxPerSec) * 1_000_000);
+          if (gap !== null) {
+            setGapSelection(track.id, gap.s, gap.e);
+            clearKeyframeSelection();
+            return;
+          }
+        }
+      }
+      clearLayerSelection();
+    },
+    [pxPerSec, tracks],
+  );
+
+  // How deep THIS Panel's composition sits, and the background that says so.
+  // Read here rather than in a child because the tint belongs to the timeline's
+  // own empty space — the band below the last lane included, which is part of
+  // this scroll container.
+  const depth = useAnchorPath(compositionId).length;
+  const insideGroup = depth > 0;
+  const tintPct = GROUP_TINT_STEP_PCT * Math.min(depth, MAX_GROUP_TINT_STEPS);
+  const groupDepthTint = `color-mix(in srgb, var(--card) ${100 - tintPct}%, var(--foreground))`;
+
+  // Memoized: the provider hands this to every anchor surface, so a fresh
+  // object would re-render every anchor on every Timeline render.
+  const marqueeAnchor = useMemo<MarqueeAnchor>(
+    () => ({
+      canvasRef,
+      scrollRootRef: rootRef,
+      onBox: onMarqueeBox,
+      takeSnapshot: takeMarqueeSnapshot,
+      onBackgroundClick: onMarqueeBackgroundClick,
+    }),
+    [onMarqueeBackgroundClick, onMarqueeBox, takeMarqueeSnapshot],
+  );
+
+  const dropSeamIntoLanePx =
+    orderedTracks.length > 0 ? DROP_STRIP_SEAM_OVERLAP_PX : 0;
+  const firstTrackHasLinkBadge = orderedTracks[0]?.track.layers.some(
+    (layer) => (linkTabByLayerId.get(layer.id)?.hidden.length ?? 0) > 0,
+  ) ?? false;
+
+  return (
+    <MarqueeAnchorContext.Provider value={marqueeAnchor}>
+      <KeyframeBatchContext.Provider value={keyframeBatch}>
+        <div
+          ref={shellRef}
+          data-testid="timeline-layout"
+          className={`relative grid min-h-0 min-w-0 w-full flex-1 grid-rows-[auto_auto_auto_auto_minmax(0,1fr)] overflow-hidden ${insideGroup ? "" : "bg-card"}`}
+          // One step off the panel surface for every depth below the root, capped so
+          // a deep nest cannot walk the background into the foreground. Resolve tints
+          // a compound clip's timeline the same way, and it is the one signal that
+          // reads without leaving the timeline: the tab says which composition this
+          // is, the tint says how deep it sits, and neither can be scrolled past.
+          //
+          style={insideGroup ? { backgroundColor: groupDepthTint } : undefined}
+        >
+          {/* Renders nothing. A leaf so the trim preview's per-frame seek stays a
+          leaf subscription — read here, it would re-render every lane. */}
+          <LayerDragTrimMonitor
+            compositionId={compositionId}
+            fpsNum={fpsNum}
+            fpsDen={fpsDen}
+          />
+          <TimelineFixedRow compositionId={compositionId} widthPx={widthPx}
+            header={<div data-testid="timeline-ruler-corner" className="border-b border-border-soft bg-card"
+              style={{ height: RULER_HEIGHT_PX }} />}>
+            <TimelineRuler
+              compositionId={compositionId} pxPerSec={pxPerSec} totalSec={totalSec}
+              widthPx={widthPx} viewportWidthPx={viewportWidthPx}
+              fpsNum={fpsNum} fpsDen={fpsDen} onScrub={beginRulerScrub}
+            />
+          </TimelineFixedRow>
+          <TimelineFixedRow compositionId={compositionId} widthPx={widthPx} inert={editingLocked} header={<MarkerLaneHeader />}>
+            <MarkerLane compositionId={compositionId} pxPerSec={pxPerSec} widthPx={widthPx}
+              viewportWidthPx={viewportWidthPx} fpsNum={fpsNum} fpsDen={fpsDen} />
+          </TimelineFixedRow>
+          {/* Under the marker lane (or the ruler, with markers hidden): agent
+              review material sits below the user's marks, above the tracks. */}
+          <TimelineFixedRow compositionId={compositionId} widthPx={widthPx} header={<ReviewLaneHeader />}>
+            <ReviewLane compositionId={compositionId} pxPerSec={pxPerSec} widthPx={widthPx}
+              viewportWidthPx={viewportWidthPx} fpsNum={fpsNum} fpsDen={fpsDen} />
+          </TimelineFixedRow>
+          <TimelineFixedRow compositionId={compositionId} widthPx={widthPx} inert={editingLocked} header={<DropStripHeader />}>
+            <DropStrip elRef={dropStripElRef} compositionId={compositionId} pxPerSec={pxPerSec}
+              fpsNum={fpsNum} fpsDen={fpsDen} mediaDropSnap={mediaDropSnap}
+              pendingPlacements={pendingPlacements} pendingLayerById={pendingLayerById} onMediaDrop={onMediaDrop} />
+          </TimelineFixedRow>
+          <div ref={rootRef} data-testid="timeline-track-viewport"
+            className={`scrollbar-hidden relative isolate min-h-0 overflow-auto ${isLayerDragging || trackReorder.drag ? "cursor-grabbing select-none" : ""} ${heightDrag ? "cursor-ns-resize select-none" : ""} ${bladeMode ? "timeline-root-blade" : ""}`}
+            style={armedRegion !== null ? { cursor: "not-allowed" } : undefined}
+            // Capture phase, because the clip blocks stop every press they take: the
+            // one press that must NOT spend the arm is a press on the armed clip, and
+            // only a handler that runs before the block's own can tell the two apart.
+            // Nothing else about the press changes — it goes on to be handled
+            // normally.
+            onPointerDownCapture={
+              armedRegion === null
+                ? undefined
+                : (e) => {
+                  const block = (e.target as Element | null)?.closest?.(
+                    "[data-layer-id]",
+                  );
+                  if (
+                    block?.getAttribute("data-layer-id") !== armedRegion.layerId
+                  ) {
+                    disarmRegionSelect();
+                  }
+                }
+            }
+          >
+            <div inert={editingLocked} ref={(el) => { trackReorder.containerRef.current = el; }} className="relative flex min-h-full flex-col" style={{ width: headerColPx + widthPx }}>
+              <DropStripSeam intoLanePx={dropSeamIntoLanePx} />
+              {/* Reserve the first lane's upward link badge inside the viewport.
+                  Carry the sticky header through this gap so scrolled badges
+                  cannot paint or receive clicks behind the header column. */}
+              {firstTrackHasLinkBadge && (
+                <div className="grid h-3 shrink-0" style={{ gridTemplateColumns: `${headerColPx}px ${widthPx}px` }}>
+                  <div className="sticky left-0 z-10 border-r border-border bg-card" />
+                </div>
+              )}
+              {/*
+              Data model: `tracks[0]` is the bottom of the z-stack, `tracks[last]`
+              is the top (see `docs/data-model.md`). `visualOrderedTracks`
+              reverses that exactly, including ordinary tracks reordered between
+              or below the A/B references. There is no role or kind bucketing.
+            */}
+              {orderedTracks.map(({ track }, index) => (
+                <div key={track.id} data-testid="timeline-track-row" data-track-id={track.id}
+                  data-reordering={trackReorder.drag?.id === track.id || undefined}
+                  ref={(el) => trackReorder.setRow(track.id, index, el)}
+                  className="relative grid shrink-0" style={{ gridTemplateColumns: `${headerColPx}px ${widthPx}px` }}>
+                  {trackReorder.drag?.id === track.id && (
+                    <div className="pointer-events-none absolute inset-0 z-20 border border-primary bg-primary/10">
+                      <span className="sticky left-1 rounded bg-primary px-2 text-[length:var(--font-size-micro)] text-primary-foreground" role="status">
+                        {t("timeline.track_move_dragging", { name: trackDisplayName(track, tracks, t), count: track.layers.length })}
+                      </span>
+                    </div>
+                  )}
+                  {(trackReorder.indicatorGap === index || (index === orderedTracks.length - 1 && trackReorder.indicatorGap === orderedTracks.length)) && (
+                    <div data-testid="track-reorder-indicator"
+                      className={`pointer-events-none absolute inset-x-0 z-30 border-t-2 border-primary ${trackReorder.indicatorGap === index ? "top-0" : "bottom-0"}`}>
+                      <span className="sticky left-1 rounded bg-primary px-2 text-[length:var(--font-size-micro)] text-primary-foreground">
+                        {t(trackReorder.indicatorGap === index ? "timeline.track_move_above" : "timeline.track_move_below", { name: trackDisplayName(track, tracks, t) })}
+                      </span>
+                    </div>
+                  )}
+                  <div className="sticky left-0 z-10 border-r border-border bg-card">
+                    <TrackHeader compositionId={compositionId} track={track}
+                      ordering={displayMode === "AllTracks" ? {
+                        disabled: !canReorderTrack(track),
+                        canMoveUp: index > 0,
+                        canMoveDown: index < orderedTracks.length - 1,
+                        onDragStart: (e) => { if (canReorderTrack(track)) trackReorder.startDrag(index, e); },
+                        onMove: (move) => trackReorder.move(track.id, move),
+                      } : undefined}
+                      height={trackHeightPx(trackHeights[track.id])}
+                      isRevealed={displayMode === "AbRoll" && track.id === (revealedTrackId ?? null)}
+                      isExpanded={expandedTracks.has(track.id)}
+                      hasKeyframes={trackKeyframeProperties(track).length > 0}
+                      onToggleExpand={() => toggleExpanded(track.id)} onMutated={onMutated} />
+                  </div>
+                  <TrackLane
+                    track={track}
+                    compositionId={compositionId}
+                    registerLaneEl={registerLaneEl}
+                    pxPerSec={pxPerSec}
+                    height={trackHeightPx(trackHeights[track.id])}
+                    isExpanded={expandedTracks.has(track.id)}
+                    selectedLayerId={primaryLayerId}
+                    selectedLayerIds={selectedLayerIds}
+                    selectedGap={
+                      selectedGap !== null && selectedGap.trackId === track.id
+                        ? selectedGap
+                        : null
+                    }
+                    transitions={transitions}
+                    selectedTransitionId={selectedTransitionId}
+                    linkByLayerId={linkByLayerId}
+                    linkTabByLayerId={linkTabByLayerId}
+                    pendingPlacements={pendingPlacements}
+                    pendingLayerById={pendingLayerById}
+                    dragLayerById={dragLayerById}
+                    bladeMode={bladeMode}
+                    onBladeSplit={splitFromClientX}
+                    onBladePreview={updateBladePreview}
+                    onSelectFromClick={selectFromClick}
+                    onDragStart={(state) => setDrag(state)}
+                    onContextMenu={onContextMenu}
+                    onChipContextMenu={onChipContextMenu}
+                    onGapContextMenu={onGapContextMenu}
+                    onChipResize={(args) => void onChipResize(args)}
+                    onCommitLabel={onCommitLabel}
+                    onCommitGroupLabel={onCommitGroupLabel}
+                    onMediaDrop={onMediaDrop}
+                    isRevealed={displayMode === "AbRoll" && track.id === (revealedTrackId ?? null)}
+                    isResizing={heightDrag?.trackId === track.id}
+                    onHeightDragStart={beginHeightDrag(track.id)}
+                    fpsNum={fpsNum}
+                    fpsDen={fpsDen}
+                    mediaDropSnap={mediaDropSnap}
+                  />
+                  {expandedTracks.has(track.id) && (
+                    <>
+                      <div className="sticky left-0 z-10 border-r border-border bg-card">
+                        <KeyframeLaneHeaders track={track} compositionId={compositionId}
+                          fpsNum={fpsNum} fpsDen={fpsDen} visible={visible} onCommitParamTrack={onCommitParamTrack} />
+                      </div>
+                      <div>
+                        <KeyframeLane track={track} pxPerSec={pxPerSec}
+                          registerSubLaneEl={registerSubLaneEl} onCommitParamTrack={onCommitParamTrack} />
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+              <div className="grid min-h-4 flex-1" style={{ gridTemplateColumns: `${headerColPx}px ${widthPx}px` }}>
+                <div data-testid="timeline-track-header-background" className="sticky left-0 z-10 border-r border-border bg-card" />
+                <ReviewFocusExit />
+                <div data-testid="timeline-track-background" onPointerDown={(e) => beginMarquee(marqueeAnchor, "clip", e)}>
+                  {orderedTracks.length === 0 && <EmptyHint mode={displayMode} />}
+                </div>
+              </div>
+              <div ref={canvasRef} data-testid="timeline-canvas" className="pointer-events-none absolute inset-y-0"
+                style={{ left: headerColPx, width: widthPx }}>
+                <OutOfRangeDim pxPerSec={pxPerSec} />
+                {/* Draws only while a clip from ANOTHER Panel is over this one.
+                A leaf, so following the pointer costs this Panel one render
+                and nothing below it. */}
+                <ForeignDragGhost
+                  compositionId={compositionId}
+                  tracks={tracks}
+                  orderedTracks={orderedTracks}
+                  laneEls={laneElsRef}
+                  trackViewportRef={rootRef}
+                  dropStripEl={dropStripElRef}
+                  canvasRef={canvasRef}
+                  pxPerSec={pxPerSec}
+                  fpsNum={fpsNum}
+                  fpsDen={fpsDen}
+                  snapTracks={visibleSnapTracks}
+                  links={links}
+                  linkByLayerId={linkByLayerId}
+                  tailSnapEnabled={tailSnapEnabled}
+                  tailSnapStrengthPx={tailSnapStrengthPx}
+                />
+                <MarqueeOverlay />
+              </div>
+            </div>
+          </div>
+          {/* Paint order: the transient marks over the playhead they may sit on. */}
+          <TimeMarkOverlay compositionId={compositionId} visible={visible}>
+            <TimelinePlayhead compositionId={compositionId} anchorFrame={anchorFrame}
+              pxPerSec={pxPerSec} fpsNum={fpsNum} fpsDen={fpsDen} visible={visible} />
+            <TimelineSnapGuide compositionId={compositionId} pxPerSec={pxPerSec} />
+            {bladePreview && (
+              <TimelineBladeMark
+                atUs={bladePreview.atUs}
+                snapped={bladePreview.snapped}
+                cutLayerIds={bladeCutIds}
+                label={formatTimecode(bladePreview.atUs, fpsNum, fpsDen)}
+                pxPerSec={pxPerSec}
+                widthPx={widthPx}
+                trackViewportRef={rootRef}
+              />
+            )}
+          </TimeMarkOverlay>
+        </div>
+        {contextMenu && (
+          <LayerContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            layerId={contextMenu.layerId}
+            layerKind={contextMenu.layerKind}
+            tracks={tracks}
+            transitionCut={contextMenu.cut}
+            onClose={() => setContextMenu(null)}
+            onRename={onRename}
+            onRenameGroup={onRenameGroup}
+            onToggleEnabled={onToggleEnabled}
+            onSeparateAudio={onSeparateAudio}
+            onPrebakeNow={onPrebakeNow}
+            onMarkShotCuts={(id) => void onMarkShotCuts(id)}
+            onAddTransition={(cut, kind, direction) =>
+              void onAddTransition(cut, kind, direction)
+            }
+          />
+        )}
+        {chipMenu && (
+          <TransitionChipMenu
+            x={chipMenu.x}
+            y={chipMenu.y}
+            transition={chipMenu.transition}
+            fpsNum={fpsNum}
+            fpsDen={fpsDen}
+            onClose={() => setChipMenu(null)}
+            onUpdate={(args) => void onChipMenuUpdate(args)}
+            onDelete={(id) => void onChipMenuDelete(id)}
+          />
+        )}
+        {gapMenu && (
+          <GapContextMenu
+            x={gapMenu.x}
+            y={gapMenu.y}
+            onClose={() => setGapMenu(null)}
+          />
+        )}
+      </KeyframeBatchContext.Provider>
+    </MarqueeAnchorContext.Provider>
+  );
+});
+
+/**
+ * Washes out everything outside the marked in/out span — but only for a beat
+ * after the range changes, then fades away. The standing record of the range
+ * lives elsewhere — see `RangeCap` in TimelineRuler.tsx for the permanent-mark
+ * vs transient-wash split.
+ *
+ * `z-[4]` clears every LayerBlock (max `z-[3]`). The Time marks draw in their
+ * own overlay above the track viewport, so none of them reads as out-of-range.
+ * The node stays mounted at zero opacity so the fade is a CSS transition
+ * rather than a pop; `pointer-events-none` keeps it inert either way.
+ */
+function OutOfRangeDim({ pxPerSec }: { pxPerSec: number }) {
+  const inUs = useRangeInUs();
+  const outUs = useRangeOutUs();
+  const revealed = useRangeReveal();
+  if (inUs === null && outUs === null) return null;
+  // An unmarked side means "to the edge", matching `resolveMarkedRange`: one
+  // point alone is a complete instruction, not half a range — so that side
+  // simply renders no wash.
+  const inPx = inUs !== null ? (inUs / 1_000_000) * pxPerSec : 0;
+  const outPx = outUs !== null ? (outUs / 1_000_000) * pxPerSec : 0;
+  return (
+    <div
+      data-testid="timeline-out-of-range"
+      data-revealed={revealed ? "true" : "false"}
+      className={`pointer-events-none absolute inset-0 z-[4] transition-opacity duration-300 ${
+        revealed ? "opacity-100" : "opacity-0"
+      }`}
+      aria-hidden="true"
+    >
+      {inUs !== null && inPx > 0 && (
+        <div
+          className="absolute inset-y-0 left-0 bg-background/65"
+          style={{ width: inPx }}
+        />
+      )}
+      {/* Anchored `right-0` rather than sized `widthPx - outPx`: the canvas
+          carries `min-w-full`, so on a project shorter than the viewport it is
+          WIDER than `widthPx` and a computed width would stop short of its real
+          right edge, leaving an undimmed strip past the end of the project. */}
+      {outUs !== null && (
+        <div
+          className="absolute inset-y-0 right-0 bg-background/65"
+          style={{ left: outPx }}
+        />
+      )}
+    </div>
+  );
+}
+
+function EmptyHint({ mode }: { mode?: "AbRoll" | "AllTracks" }) {
+  const { t } = useTranslation();
+  // Rendered when the user is in A/B Roll but no track carries a role
+  // stamp; the user switches to All Tracks manually.
+  //
+  // The hint names the KEY, not the Quick Actions button: the strip is a Panel
+  // the user can close or drag away, whereas the binding is always live. Read
+  // through the bindings context so a remap can't make this text lie.
+  const binding = useEffectiveBindings("toggleDisplayMode");
+  const accelerator = binding ? resolveAccelerator(binding) : "";
+  const message =
+    mode === "AbRoll"
+      ? t("timeline.empty_ab_roll", {
+          key: accelerator,
+          defaultValue:
+            "No A/B-roll content here. Drop a clip on A roll or B roll, or press {{key}} to switch to All Tracks.",
+        })
+      : t("timeline.empty_placeholder");
+  return <div className="p-6 text-center text-xs text-muted-foreground">{message}</div>;
+}

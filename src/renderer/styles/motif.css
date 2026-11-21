@@ -1,0 +1,487 @@
+
+
+
+
+
+/* ============================================================ */
+/* Motif picker                      */
+/* ============================================================ */
+
+.motif-picker {
+  /* Wide enough to seat the preview pane alongside the picker list/form. */
+  width: min(var(--dialog-width-picker), calc(100vw - calc(32 * var(--ui-px))));
+  max-height: calc(100vh - calc(64 * var(--ui-px)));
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-modal);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The dialog's own header only: a card inside (a proposal's) has its own. */
+.motif-picker > header {
+  display: flex;
+  align-items: center;
+  padding: calc(12 * var(--ui-px)) calc(16 * var(--ui-px));
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.motif-picker > header h2 {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.motif-picker-body {
+  display: grid;
+  grid-template-columns: minmax(0, var(--picker-list-width)) minmax(0, 1fr);
+  gap: 0;
+  min-height: calc(360 * var(--ui-px));
+  max-height: calc(100vh - calc(160 * var(--ui-px)));
+}
+
+/* ---- Still previews ----------------------------------------------------- */
+
+/* Fixed 16:9 box that fills its parent's width; the component caps it with an
+   inline `max-width`, so it can never overflow a narrower container (the
+   280px card column, or the form pane in a narrow window). Checkerboard
+   backdrop shows transparent regions for lower-thirds / callout / logo-bug. */
+.motif-preview-host {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-soft);
+  background-color: var(--background);
+  background-image:
+    linear-gradient(45deg, var(--secondary) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--secondary) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--secondary) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--secondary) 75%);
+  background-size: 12px 12px; /* fixed-px: transparency checkerboard */
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0; /* fixed-px: checkerboard */
+  /* Input-transparent: the preview sits inside the card <button>; let clicks
+     and wheel events fall through to it and bubble to the scrollable list. */
+  pointer-events: none;
+}
+
+/* CDP-captured still at the motif's natural size; the browser contain-scales
+   and centers it, letterbox margins show the host checkerboard. */
+.motif-preview-host img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.motif-preview-large {
+  margin: calc(4 * var(--ui-px)) 0 calc(8 * var(--ui-px));
+}
+
+/* Muted canvas-size tag next to the "Preview" heading — marks the canvas-mode
+   box as the composition canvas. Undoes the h3's uppercase/bold styling. */
+.motif-preview-canvas-size {
+  margin-left: calc(8 * var(--ui-px));
+  color: var(--muted-foreground);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* Loading spinner shown in the preview box until the first frame is bound
+   (the harness mounts + rasters async). Replaces the brief blank/error flash
+   on first open. Centered over the host's checkerboard. */
+.motif-preview-loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(24 * var(--ui-px));
+  height: calc(24 * var(--ui-px));
+  margin: calc(-12 * var(--ui-px)) 0 0 calc(-12 * var(--ui-px));
+  border: 3px solid color-mix(in srgb, var(--muted-foreground) 25%, transparent);
+  border-top-color: var(--muted-foreground);
+  border-radius: 50%;
+  animation: motif-preview-spin 0.8s linear infinite;
+}
+
+@keyframes motif-preview-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Catalog column: management bar pinned above the scrolling card list.
+   `max-height` here (instead of relying on the parent body's clip) gives the
+   column a real bound — the body is `max-height`-capped too, but with grid
+   rows defaulting to `auto` the track sizes to content, so children inherit
+   no height bound on their own. */
+.motif-picker-catalog {
+  border-right: 1px solid var(--border-soft);
+  max-height: calc(100vh - calc(160 * var(--ui-px)));
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Media-pool-style bar: search claims the free width, the icon actions
+   (new / import) stay fixed at the trailing edge. */
+.motif-picker-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: calc(4 * var(--ui-px));
+  padding: calc(8 * var(--ui-px)) calc(8 * var(--ui-px)) calc(4 * var(--ui-px));
+}
+
+.motif-picker-bar .app-input-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.motif-picker-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: calc(8 * var(--ui-px));
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--ui-px));
+}
+
+.motif-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: calc(4 * var(--ui-px));
+  padding: calc(10 * var(--ui-px)) calc(12 * var(--ui-px));
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  text-align: left;
+}
+
+.motif-card:hover {
+  background: var(--hover-neutral);
+}
+
+.motif-card-select {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--ui-px));
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.motif-card-select:focus-visible {
+  outline: 2px solid var(--selection-border);
+  outline-offset: 3px;
+}
+
+.motif-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(6 * var(--ui-px));
+}
+.motif-card-footer .motif-card-meta { flex: 1 1 auto; }
+
+/* The panel's error and notice lines, above the catalog: the header's inset. */
+.motif-picker > .motif-picker-message {
+  margin: calc(8 * var(--ui-px)) calc(16 * var(--ui-px)) 0;
+}
+
+.motif-delete-dialog { width: min(var(--dialog-width-compact), 90vw); }
+
+/* An installed Motif's saved versions (MotifVersionHistory), newest first. */
+.motif-history-dialog { width: min(var(--dialog-width-compact), 90vw); }
+.motif-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: calc(320 * var(--ui-px));
+  overflow-y: auto;
+}
+.motif-history-row {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+  min-height: calc(32 * var(--ui-px));
+}
+.motif-history-row + .motif-history-row { border-top: 1px solid var(--border); }
+.motif-history-version { font-size: var(--font-size-body); }
+.motif-history-date {
+  flex: 1 1 auto;
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+}
+.motif-history-current {
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+}
+
+.motif-card-selected {
+  background: var(--selection-bg);
+  border-color: var(--selection-border);
+}
+
+/* Name + status badge on one row: name left (ellipsized), badge right. */
+.motif-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(6 * var(--ui-px));
+}
+
+.motif-card-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-label);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+/* One line: a narrow card ellipsizes it (its title holds the whole). */
+.motif-card-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+}
+
+/* One-off categorical badge palette — sanctioned literal (docs/ui-tokens.md).
+   Also reused by the property panel's Motif row. Library rows: built-in or
+   saved; project rows: what the row needs attention for (motifRows.ts),
+   red only for a Motif that cannot render, outlined amber for one that waits
+   on the user's Trust. */
+.motif-card-status { flex: none; font-size: var(--font-size-micro); padding: calc(1 * var(--ui-px)) calc(6 * var(--ui-px)); border-radius: var(--radius-card); }
+.motif-card-status.status-installed { background: #2a6; color: #fff; }
+.motif-card-status.status-builtin { background: #444; color: #ccc; }
+.motif-card-status.status-update_available { background: #2563eb; color: #fff; }
+.motif-card-status.status-modified { background: #b8860b; color: #fff; }
+.motif-card-status.status-project_only,
+.motif-card-status.status-in_sync { background: #444; color: #ccc; }
+.motif-card-status.status-missing,
+.motif-card-status.status-invalid { background: var(--destructive); color: #0a0c10; }
+.motif-card-status.status-untrusted { background: transparent; color: var(--warning); box-shadow: inset 0 0 0 1px var(--warning); }
+
+/* A group's heading in the catalog list: This project, Library. */
+.motif-picker-group {
+  margin: calc(8 * var(--ui-px)) calc(4 * var(--ui-px)) calc(2 * var(--ui-px));
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+.motif-picker-group:first-child { margin-top: 0; }
+
+/* An invalid package's error under the localized lead (MotifProblem). */
+.motif-problem-detail {
+  display: block;
+  margin-top: calc(2 * var(--ui-px));
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
+}
+
+.motif-save-dialog { width: min(var(--dialog-width-compact), 90vw); }
+
+.motif-picker-form {
+  padding: calc(8 * var(--ui-px)) calc(16 * var(--ui-px)) calc(16 * var(--ui-px));
+  /* Same reason as `.motif-picker-list` above — needs its own height cap
+     so its overflow-y scroll activates when props + large preview push the
+     form past the picker's visible area. */
+  max-height: calc(100vh - calc(160 * var(--ui-px)));
+  overflow-y: auto;
+}
+
+.motif-picker-form h3 {
+  margin: calc(12 * var(--ui-px)) 0 calc(6 * var(--ui-px));
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* A broken or untrusted row's pane leads with a title, not a section label. */
+.motif-picker-form .motif-picker-unavailable h3,
+.motif-picker-form .motif-trust h3 {
+  font-size: var(--font-size-label);
+  color: var(--foreground);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.motif-picker-field {
+  display: grid;
+  grid-template-columns: calc(110 * var(--ui-px)) 1fr;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+  margin-bottom: calc(8 * var(--ui-px));
+}
+
+.motif-picker-field > span {
+  font-size: var(--font-size-body);
+  color: var(--muted-foreground);
+}
+
+/* Prop fields only: the label IS the manifest's prop key (code, not copy),
+   so it reads in mono. Timing/track labels are translated UI copy and keep
+   the app font. */
+.motif-picker-field--code > span {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Use the standard .app-select skin (matches selects app-wide and pairs with
+ * .app-input like the Settings/Export forms); only force full width to fill
+ * the field's grid column. */
+.motif-picker-field .app-select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.motif-picker-color {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+}
+
+.motif-picker-color code {
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+}
+
+.motif-picker-hint {
+  margin: calc(4 * var(--ui-px)) 0 0;
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+}
+
+.motif-picker-actions {
+  margin-top: calc(16 * var(--ui-px));
+  display: flex;
+  justify-content: flex-end;
+  gap: calc(8 * var(--ui-px));
+}
+
+/* The trust card's static summary (TrustCard): a label column and the
+   findings, paths wrapping anywhere. */
+.motif-trust-summary {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: calc(4 * var(--ui-px)) calc(12 * var(--ui-px));
+  margin: calc(12 * var(--ui-px)) 0 0;
+  font-size: var(--font-size-caption);
+}
+.motif-trust-summary > div { display: contents; }
+.motif-trust-summary dt { color: var(--muted-foreground); }
+.motif-trust-summary dd { margin: 0; overflow-wrap: anywhere; }
+/* Trust sits under the findings it acts on, aligned with them, its hint
+   below: an inline pane action, not a dialog footer. */
+.motif-trust-actions {
+  display: flex;
+  margin-top: calc(12 * var(--ui-px));
+}
+.motif-trust .motif-picker-hint { margin-top: calc(8 * var(--ui-px)); }
+
+.motif-bake-dot {
+  position: absolute;
+  top: calc(4 * var(--ui-px));
+  right: calc(4 * var(--ui-px));
+  width: calc(8 * var(--ui-px));
+  height: calc(8 * var(--ui-px));
+  border-radius: 50%;
+  pointer-events: none;
+}
+.motif-bake-dot.is-warming { background: var(--warning); }
+.motif-bake-dot.is-preview_ready { border: 1.5px solid var(--success); }
+.motif-bake-dot.is-ready { background: var(--success); }
+.motif-bake-dot.is-error { background: var(--destructive); }
+.motif-bake-dot.is-baking {
+  background: transparent;
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  border-top-color: transparent;
+  animation: motif-bake-spin 0.8s linear infinite;
+}
+@keyframes motif-bake-spin { to { transform: rotate(360deg); } }
+
+.motif-bake-dot.is-queued { background: var(--muted-foreground); }
+.motif-bake-dot.is-paused, .motif-bake-dot.is-retrying { background: var(--warning); }
+
+/* An agent's proposed publication, waiting for the user (MotifProposalCard). */
+.motif-proposals {
+  --motif-proposal-pad: calc(10 * var(--ui-px));
+  display: flex;
+  flex-direction: column;
+  gap: calc(8 * var(--ui-px));
+  padding: calc(8 * var(--ui-px)) calc(16 * var(--ui-px)) 0;
+  margin-bottom: calc(12 * var(--ui-px));
+}
+/* Starts where the cards' content does: their padding and border in. */
+.motif-proposals > h3 {
+  margin: 0;
+  padding-inline: calc(var(--motif-proposal-pad) + 1px);
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+.motif-proposal-card {
+  display: flex;
+  flex-direction: column;
+  gap: calc(6 * var(--ui-px));
+  padding: var(--motif-proposal-pad);
+  border: 1px solid var(--border);
+  border-radius: calc(6 * var(--ui-px));
+}
+.motif-proposal-head {
+  display: flex;
+  align-items: baseline;
+  gap: calc(8 * var(--ui-px));
+}
+.motif-proposal-target,
+.motif-proposal-detail {
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+}
+
+/* A package's change against the library (MotifDiffLines), in the proposal
+   card and the Save to library confirm: a small section label over its
+   lines. */
+.motif-diff {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--ui-px));
+  margin: calc(4 * var(--ui-px)) 0 calc(8 * var(--ui-px));
+}
+.motif-diff .motif-proposal-detail { margin: 0; }
+.motif-diff-heading {
+  margin: 0 0 calc(2 * var(--ui-px));
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.motif-proposal-note {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--ui-px));
+  font-size: var(--font-size-caption);
+}
+.motif-proposal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: calc(6 * var(--ui-px));
+}

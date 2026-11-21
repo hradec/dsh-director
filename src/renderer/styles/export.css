@@ -1,0 +1,385 @@
+
+
+/* Two side-by-side "include" checkboxes in the export dialog's General pane. */
+.export-content-checks {
+  display: flex;
+  align-items: center;
+  gap: calc(18 * var(--ui-px));
+}
+
+.export-check {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+  cursor: pointer;
+  font-size: var(--font-size-label);
+  color: var(--foreground);
+}
+
+
+
+
+
+
+
+
+.export-panel {
+  position: fixed;
+  left: calc(16 * var(--ui-px));
+  bottom: calc(16 * var(--ui-px));
+  width: min(var(--dialog-width-confirm), calc(100vw - calc(32 * var(--ui-px))));
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-popover);
+  overflow: hidden;
+}
+
+.export-panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: calc(12 * var(--ui-px));
+  padding: calc(8 * var(--ui-px)) calc(12 * var(--ui-px));
+  font-size: var(--font-size-body);
+  color: var(--foreground);
+}
+
+.export-preset-select {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  padding: calc(3 * var(--ui-px)) calc(8 * var(--ui-px));
+  font-size: var(--font-size-body);
+  border-radius: var(--radius-control);
+  font-family: inherit;
+}
+
+/* Compact the reused settings-panel skin down to a confirmation size. Compound
+   selector on purpose: export.css is imported before settings.css, so a lone
+   .export-experimental-confirm loses the width to .settings-panel. */
+.settings-panel.export-experimental-confirm {
+  width: min(var(--dialog-width-prompt), calc(100vw - calc(32 * var(--ui-px))));
+}
+
+.export-experimental-points {
+  margin: 0 0 calc(12 * var(--ui-px));
+  padding-left: calc(18 * var(--ui-px));
+  font-size: var(--font-size-body);
+  color: var(--muted-foreground);
+  line-height: 1.5;
+}
+
+.export-experimental-points li {
+  margin: calc(4 * var(--ui-px)) 0;
+}
+
+/* Export settings dialog — reuses the settings popup chrome
+ * (.settings-panel / .settings-body / .settings-card inside AppDialog);
+ * these rules style the per-field label/control rows + footer actions. */
+.export-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(12 * var(--ui-px));
+  padding: calc(7 * var(--ui-px)) 0;
+}
+
+/* Export-dialog context: AppSelect triggers here keep the wide field
+ * footprint native selects had (.app-select carries the shared skin). */
+.export-select {
+  min-width: calc(180 * var(--ui-px));
+}
+
+.export-bitrate {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+}
+
+.export-estimate {
+  margin: calc(14 * var(--ui-px)) 0 0;
+  font-size: var(--font-size-label);
+  font-weight: 500;
+  color: var(--color-gray-300);
+}
+
+.export-path-row {
+  align-items: flex-start;
+}
+
+.export-path {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+}
+
+.export-path-input {
+  width: calc(220 * var(--ui-px));
+  text-align: left;
+  font-size: var(--font-size-caption);
+}
+
+.export-filename {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+}
+
+.export-filename-input {
+  width: calc(180 * var(--ui-px));
+  text-align: left;
+}
+
+.export-path-status {
+  margin: calc(4 * var(--ui-px)) 0 calc(12 * var(--ui-px));
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+  line-height: 1.5;
+  text-align: right;
+}
+
+.export-path-status-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: calc(4 * var(--ui-px)) calc(8 * var(--ui-px));
+}
+
+.export-path-status p {
+  margin: 0;
+}
+
+.export-path-status .export-check {
+  margin-top: calc(8 * var(--ui-px));
+  font-size: var(--font-size-body);
+}
+
+.export-use-name {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+
+
+.export-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: calc(8 * var(--ui-px));
+  margin-top: calc(18 * var(--ui-px));
+  padding-top: calc(14 * var(--ui-px));
+  border-top: 1px solid var(--border-soft);
+}
+
+/* Pinned footer for the export dialog — sits below the scrolling
+ * `.settings-layout` (flex sibling, not inside it), so Cancel/Export stay
+ * reachable regardless of scroll position. */
+.export-footer {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: calc(8 * var(--ui-px));
+  padding: calc(12 * var(--ui-px)) calc(16 * var(--ui-px));
+  border-top: 1px solid var(--border-soft);
+}
+
+
+
+
+/* Status, destination, optional details, fixed actions. Independent of the
+ * settings form's card and row spacing. */
+.settings-panel.export-progress-panel {
+  width: min(calc(480 * var(--ui-px)), calc(100vw - calc(32 * var(--ui-px))));
+}
+
+.export-progress-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: calc(20 * var(--ui-px));
+  display: flex;
+  flex-direction: column;
+  gap: calc(16 * var(--ui-px));
+  font-size: var(--font-size-body);
+  line-height: 1.5;
+}
+
+.export-phase-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: calc(16 * var(--ui-px));
+}
+
+.export-progress-status {
+  margin: 0;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+.export-work .export-progress-status {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+  font-size: var(--font-size-label);
+  font-weight: 500;
+}
+
+.export-percent {
+  font-size: var(--font-size-title);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.export-progress-detail {
+  margin: calc(8 * var(--ui-px)) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-body);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.export-destination {
+  min-width: 0;
+  user-select: text;
+}
+
+.export-output-name {
+  margin: calc(4 * var(--ui-px)) 0;
+  font-size: var(--font-size-label);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.export-output-directory {
+  margin: 0;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+
+.export-failure {
+  padding-left: calc(12 * var(--ui-px));
+  border-left: calc(2 * var(--ui-px)) solid var(--warning);
+}
+
+.export-error-details {
+  color: var(--muted-foreground);
+  font-size: var(--font-size-body);
+}
+
+.export-error-details summary {
+  cursor: pointer;
+  width: fit-content;
+}
+
+.export-error-details summary:hover {
+  color: var(--foreground);
+}
+
+.export-error-details summary:focus-visible {
+  outline: calc(2 * var(--ui-px)) solid var(--ring);
+  outline-offset: calc(2 * var(--ui-px));
+  border-radius: var(--radius-control);
+}
+
+.export-error-details pre {
+  margin: calc(8 * var(--ui-px)) 0 0;
+  padding: calc(10 * var(--ui-px));
+  background: var(--surface-sunken);
+  border-radius: var(--radius-control);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: calc(120 * var(--ui-px));
+  overflow-y: auto;
+  user-select: text;
+  font-size: var(--font-size-caption);
+}
+
+.export-rename {
+  margin-top: calc(8 * var(--ui-px));
+}
+
+.export-rename > button {
+  padding-left: 0;
+}
+
+.export-rename-field {
+  display: flex;
+  flex-direction: column;
+  gap: calc(6 * var(--ui-px));
+  margin-top: calc(8 * var(--ui-px));
+}
+
+.export-rename-field p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}
+
+.export-action-error {
+  margin: 0;
+  color: var(--destructive);
+  overflow-wrap: anywhere;
+}
+
+.export-progress-panel .progress-track {
+  height: calc(6 * var(--ui-px));
+  margin-top: calc(10 * var(--ui-px));
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+
+.export-progress-panel .progress-fill {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.export-wait {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted-foreground);
+}
+
+.export-spinner {
+  animation: export-wait-spin 1s linear infinite;
+}
+
+@keyframes export-wait-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .export-spinner {
+    animation: none;
+  }
+}
+
+.export-progress-footer {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: calc(12 * var(--ui-px)) calc(20 * var(--ui-px));
+}
+
+/* Preset menus share the heading row without occupying space in the form. */
+.export-preset-control { margin-left: calc(12 * var(--ui-px)); min-width: 0; max-width: min(calc(240 * var(--ui-px)), 60%); }
+.export-preset-control + .settings-close { margin-left: auto; flex-shrink: 0; }
+.export-preset-trigger { display: inline-flex; align-items: center; gap: calc(10 * var(--ui-px)); max-width: 100%; min-width: 0; }
+.export-preset-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.export-preset-modified, .export-preset-trigger > svg { flex-shrink: 0; }
+.export-preset-modified { color: var(--muted-foreground); font-size: var(--font-size-caption); }
+.export-preset-actions { display: flex; flex-wrap: wrap; gap: calc(8 * var(--ui-px)); margin-top: calc(8 * var(--ui-px)); }
+.export-preset-name { max-width: min(calc(480 * var(--ui-px)), 95vw); }
+.export-preset-name-count { margin: calc(4 * var(--ui-px)) 0 0; text-align: right; color: var(--muted-foreground); font-size: var(--font-size-caption); }
+.export-preset-name-tooltip { max-width: min(calc(360 * var(--ui-px)), var(--available-width)); padding: calc(8 * var(--ui-px)) calc(10 * var(--ui-px)); background: var(--card); border: 1px solid var(--border-soft); border-radius: var(--radius-control); box-shadow: var(--shadow-menu); color: var(--foreground); font-size: var(--font-size-body); white-space: normal; overflow-wrap: anywhere; }
+.export-validation-hint { padding: calc(8 * var(--ui-px)) calc(20 * var(--ui-px)); }
+
+.export-preset-menu { width: calc(320 * var(--ui-px)); min-width: 0; max-width: min(var(--available-width), calc(100vw - calc(24 * var(--ui-px)))); }
+.export-preset-menu .app-menu-item-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.export-preset-options { max-height: min(calc(240 * var(--ui-px)), 30vh); overflow-y: auto; }
+.export-preset-default { flex-shrink: 0; margin-left: calc(8 * var(--ui-px)); font-size: var(--font-size-caption); color: var(--muted-foreground); }
+.export-preset-empty { padding: calc(6 * var(--ui-px)) calc(12 * var(--ui-px)); color: var(--muted-foreground); font-size: var(--font-size-caption); }
+.export-preset-delete { color: var(--destructive); }

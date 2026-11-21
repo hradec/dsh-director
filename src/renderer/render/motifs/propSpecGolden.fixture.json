@@ -1,0 +1,35 @@
+{
+  "comment": "PropSpec behaviour golden for the TS render path. Its one consumer is propSpecGolden.test.ts, which asserts per variant that the declared default self-validates, that `valid` samples survive canonicalizePropsLenient, and that `invalid` ones fall back to the default (the cross-language Rust validator this file was once shared with no longer exists — the catalog is TS-only). Every PropSpec variant must appear here. Each `valid`/`invalid` sample must differ from `spec.default` so the lenient-fallback check can tell kept-from-replaced.",
+  "variants": [
+    {
+      "type": "string",
+      "spec": { "type": "string", "default": "hi", "max_length": 5, "multiline": true },
+      "valid": ["hello", "ok"],
+      "invalid": ["toolong"]
+    },
+    {
+      "type": "color",
+      "spec": { "type": "color", "default": "#ffffff" },
+      "valid": ["#000000", "#00aaffcc"],
+      "invalid": ["blue"]
+    },
+    {
+      "type": "number",
+      "spec": { "type": "number", "default": 5, "min": 1, "max": 60 },
+      "valid": [1, 60, 30],
+      "invalid": [0, 61]
+    },
+    {
+      "type": "enum",
+      "spec": { "type": "enum", "default": "a", "options": ["a", "b", "c"] },
+      "valid": ["b", "c"],
+      "invalid": ["x"]
+    },
+    {
+      "type": "media",
+      "spec": { "type": "media", "default": "" },
+      "valid": ["01a16264-9ec6-7eb3-9edc-f39041803cf5", "01a16264-9ec6-7eb3-9edc-f39041803cf5@1200000"],
+      "invalid": ["../etc/passwd", "01a16264@-5", "01a16264@1.5", 5, null, "a b"]
+    }
+  ]
+}

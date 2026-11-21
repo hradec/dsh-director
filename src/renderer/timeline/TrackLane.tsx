@@ -1,0 +1,725 @@
+import type { ModifierFlags } from "@/modKeyReading";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { LayerBlock, type PendingLayerPlacement } from "./LayerBlock";
+import {
+  useLayerDragForTrack,
+  type DragSeed,
+  type DragSubject,
+} from "./layerDragStore";
+import {
+  computeLayerSlices,
+  layerSliceRect,
+  type LayerSlice,
+  type LinkTab,
+} from "./geometry";
+import { formatTimecode } from "../frames";
+import { TransitionChip } from "./TransitionChip";
+import {
+  transitionChipsForTrack,
+  type TrackTransitionChip,
+  type TransitionResizeArgs,
+} from "./transitions";
+import type {
+  LayerSummary,
+  TrackSummary,
+  TransitionSummary,
+} from "../ipc";
+import type { GapSelection } from "../state/selectionStore";
+import { useMarqueeAnchor } from "./hooks/useMarqueeAnchor";
+import {
+  MEDIA_DRAG_CURSOR_OFFSET_PX,
+  MEDIA_DRAG_TYPE,
+  mediaDropInvalid,
+  parseMediaDrag,
+  planMediaDrop,
+  useIsMediaDropTarget,
+  useMediaDragStore,
+  type MediaDragPayload,
+  type MediaDropPlan,
+  mediaDropSnapAt,
+  type MediaDropSnapSetup,
+} from "./mediaDrag";
+import { ReviewCuts, ReviewFocusWash, ReviewGhosts, ReviewWasFrames } from "./ReviewMarks";
+
+export function TrackLane({
+  track,
+  registerLaneEl,
+  pxPerSec,
+  height,
+  isExpanded,
+  selectedLayerId,
+  selectedLayerIds,
+  selectedGap,
+  transitions,
+  selectedTransitionId,
+  linkByLayerId,
+  linkTabByLayerId,
+  pendingPlacements,
+  pendingLayerById,
+  dragLayerById,
+  bladeMode,
+  onBladeSplit,
+  onBladePreview,
+  onSelectFromClick,
+  onDragStart,
+  onMediaDrop,
+  onContextMenu,
+  onChipContextMenu,
+  onGapContextMenu,
+  onChipResize,
+  onCommitLabel,
+  onCommitGroupLabel,
+  isRevealed,
+  isResizing,
+  onHeightDragStart,
+  fpsNum,
+  fpsDen,
+  mediaDropSnap,
+  compositionId,
+}: {
+  track: TrackSummary;
+  /// Publishes this lane's DOM node to the Timeline's lane registry, which is
+  /// what the drag hit-test measures (`trackIdAtClientY`). Called with null on
+  /// unmount.
+  registerLaneEl: (trackId: string, el: HTMLElement | null) => void;
+  pxPerSec: number;
+  height: number;
+  /// True when this track's keyframe sub-lanes are expanded — collapsed
+  /// in-clip diamonds are hidden (the sub-lanes render them instead).
+  isExpanded: boolean;
+  selectedLayerId: string | null;
+  selectedLayerIds: ReadonlySet<string>;
+  /// The selected gap when it sits on THIS lane, else null. Timeline
+  /// narrows it per lane so a gap selection re-renders the lane it is on and
+  /// leaves the others' props untouched.
+  selectedGap: GapSelection | null;
+  /// Full project transition list; the lane filters to chips whose both
+  /// participants live on this track.
+  transitions: TransitionSummary[];
+  selectedTransitionId: string | null;
+  linkByLayerId: Map<string, string>;
+  /// Each link's anchor member → its tab (`indexLinkTabs`); a layer absent
+  /// from the map draws no link chrome beyond the accent.
+  linkTabByLayerId: ReadonlyMap<string, LinkTab>;
+  pendingPlacements: PendingLayerPlacement[] | null;
+  pendingLayerById: ReadonlyMap<string, LayerSummary>;
+  dragLayerById: ReadonlyMap<string, LayerSummary>;
+  bladeMode: boolean;
+  /// `mods` carries the pointer event's Mod state; the Timeline owns the reading
+  /// (`modKeyReading.ts`), so a key press with the pointer still re-resolves too.
+  onBladeSplit: (layer: LayerSummary, clientX: number, mods: ModifierFlags) => void;
+  onBladePreview: (layer: LayerSummary | null, clientX?: number, mods?: ModifierFlags) => void;
+  /// Pass-through to `LayerBlock`, whose prop docstring owns the contract:
+  /// applies the click's selection semantics, returns whether the clicked layer
+  /// is selected afterwards.
+  onSelectFromClick: (
+    layerId: string,
+    e: { altKey: boolean; shiftKey: boolean; metaKey: boolean },
+  ) => boolean;
+  onDragStart: (state: DragSeed) => void;
+  onMediaDrop: (
+    track: TrackSummary,
+    payload: MediaDragPayload,
+    plan: MediaDropPlan,
+  ) => void;
+  /// Context-menu hook. LayerBlock fires this on right-click; the
+  /// Timeline shows a small floating menu and routes the chosen
+  /// action.
+  onContextMenu: (
+    e: React.MouseEvent,
+    layerId: string,
+    layerKind: string,
+    layerEnabled: boolean,
+  ) => void;
+  /// Transition-chip counterpart of `onContextMenu` — the Timeline anchors
+  /// the chip menu at the cursor for this chip's transition.
+  onChipContextMenu: (e: React.MouseEvent, chip: TrackTransitionChip) => void;
+  /// Lane-background counterpart: a right-click on blank lane space. The
+  /// Timeline resolves it to the gap under the pointer (or to nothing) — the
+  /// lane hands over only where the press was and which lane it is.
+  onGapContextMenu: (e: React.MouseEvent, trackId: string) => void;
+  /// Chip edge-drag commit — the Timeline lowers the assembled patch through
+  /// `updateTransition` (one commit per gesture, spec D6).
+  onChipResize: (args: TransitionResizeArgs) => void;
+  onCommitLabel: (layerId: string, label: string) => void;
+  onCommitGroupLabel: (compositionId: string, label: string | null) => void;
+  /// Inline-reveal flag. The lane renders with extra chrome
+  /// (dashed border / "hidden" badge) so the user knows this row is
+  /// only here because they clicked a Playhead Panel row.
+  isRevealed: boolean;
+  /// True while this track's height drag is in flight — keeps its resize
+  /// handle highlighted even when the pointer wanders off it mid-drag.
+  isResizing: boolean;
+  onHeightDragStart: (e: React.PointerEvent) => void;
+  fpsNum: number;
+  fpsDen: number;
+  mediaDropSnap: MediaDropSnapSetup;
+  /// The composition this lane belongs to — this Panel's own, whichever tab
+  /// holds the keyboard. It offers the playhead as a snap boundary on this
+  /// Panel's own axis (`state/playheadProjection.ts`) and answers the cycle gate
+  /// for a Group released here.
+  compositionId: string | null;
+}) {
+  const { t } = useTranslation();
+  // Null unless this lane is one the gesture concerns — it holds a subject, or
+  // the pointer is over it. Every other lane sits out the pointermove entirely
+  // (`layerDragStore.ts`).
+  const dragState = useLayerDragForTrack(track.id);
+  const activeMediaDrag = useMediaDragStore((s) => s.active);
+  const isDropTarget = useIsMediaDropTarget(compositionId, track.id);
+  const claimDropTarget = useMediaDragStore((s) => s.claimDropTarget);
+  const releaseDropTarget = useMediaDragStore((s) => s.releaseDropTarget);
+  const endMediaDrag = useMediaDragStore((s) => s.end);
+  const [dropPreview, setDropPreview] = useState<{
+    media: MediaDragPayload;
+    plan: MediaDropPlan;
+  } | null>(null);
+
+  useEffect(() => {
+    if (activeMediaDrag === null || !isDropTarget) {
+      setDropPreview(null);
+    }
+  }, [activeMediaDrag, isDropTarget]);
+
+  const visibleDropPreview =
+    isDropTarget ? dropPreview : null;
+
+  const dragPreviewTrackId = useCallback(
+    (subject: DragSubject): string =>
+      dragState?.movePlacements?.get(subject.layerId)?.trackId ?? subject.trackId,
+    [dragState],
+  );
+
+  const renderedLayers = useMemo(() => {
+    let layers = track.layers;
+
+    for (const pendingPlacement of pendingPlacements ?? []) {
+      const pendingLayer = pendingLayerById.get(pendingPlacement.layerId);
+      if (!pendingLayer) continue;
+      const pendingRenderLayer: LayerSummary = {
+        ...pendingLayer,
+        id: pendingPlacement.layerId,
+        t_start_us: pendingPlacement.tStartUs,
+        t_end_us: pendingPlacement.tEndUs,
+      };
+
+      if (pendingPlacement.trackId === track.id) {
+        let replaced = false;
+        layers = layers.map((layer) => {
+          if (layer.id !== pendingPlacement.layerId) return layer;
+          replaced = true;
+          return pendingRenderLayer;
+        });
+        if (!replaced) layers = [...layers, pendingRenderLayer];
+      } else {
+        layers = layers.filter(
+          (layer) => layer.id !== pendingPlacement.layerId,
+        );
+      }
+    }
+
+    if (dragState?.kind === "move" && !dragState.duplicate) {
+      for (const subject of dragState.subjects) {
+        const layer = dragLayerById.get(subject.layerId);
+        if (!layer) continue;
+        const previewTrackId = dragPreviewTrackId(subject);
+        if (previewTrackId === track.id) {
+          if (!layers.some((candidate) => candidate.id === layer.id)) {
+            layers = [...layers, layer];
+          }
+        } else if (subject.trackId === track.id) {
+          layers = layers.filter((candidate) => candidate.id !== subject.layerId);
+        }
+      }
+    }
+
+    return layers;
+  }, [
+    dragLayerById,
+    dragPreviewTrackId,
+    dragState,
+    pendingLayerById,
+    pendingPlacements,
+    track.id,
+    track.layers,
+  ]);
+
+  // A transition travels with its participants, including the pending commit
+  // bridge. Use the same landings as the clip bodies; playback never drives it.
+  const transitionChips = useMemo(() => {
+    const landings = dragState?.duplicate ? null : dragState?.movePlacements;
+    const layers = renderedLayers.map((layer) => {
+      const landing = landings?.get(layer.id);
+      return landing ? { ...layer, t_start_us: landing.tStartUs, t_end_us: landing.tEndUs } : layer;
+    });
+    return transitionChipsForTrack({ ...track, layers }, transitions).filter((chip) =>
+      Math.min(chip.fromLayer.t_end_us, chip.toLayer.t_end_us) -
+        Math.max(chip.fromLayer.t_start_us, chip.toLayer.t_start_us) === chip.transition.duration_us,
+    );
+  }, [track, transitions, renderedLayers, dragState]);
+
+  // One in-flight clone ghost per duplicate subject landing on THIS lane: the
+  // dragged seed follows the pointer's lane, every other member stays on its
+  // own — the same rule the move projection and `paste_layers` apply.
+  const duplicatePreviews = useMemo(() => {
+    if (dragState?.kind !== "move" || !dragState.duplicate) return [];
+    const out: { layer: LayerSummary; sliceLayer: LayerSummary }[] = [];
+    for (const subject of dragState.subjects) {
+      const layer = dragLayerById.get(subject.layerId);
+      if (!layer) continue;
+      const landed = dragState.movePlacements?.get(subject.layerId);
+      if (landed?.trackId !== track.id) continue;
+      out.push({
+        layer,
+        sliceLayer: {
+          ...layer,
+          id: `${layer.id}::duplicate-preview`,
+          t_start_us: landed.tStartUs,
+          t_end_us: landed.tEndUs,
+        } satisfies LayerSummary,
+      });
+    }
+    return out;
+  }, [dragLayerById, dragState, track.id]);
+
+  const onDragOver = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      if (!e.dataTransfer.types.includes(MEDIA_DRAG_TYPE)) return;
+      e.preventDefault();
+      if (activeMediaDrag === null) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const plan = planMediaDrop({
+        compositionId,
+        track,
+        media: activeMediaDrag,
+        pointerXPx: e.clientX - rect.left,
+        pxPerSec,
+        fpsNum,
+        fpsDen,
+        snap: mediaDropSnapAt(mediaDropSnap, compositionId, e),
+      });
+      e.dataTransfer.dropEffect = plan.validity === "valid" ? "copy" : "none";
+      const slot = mediaDropGhostSlot(height, plan);
+      const ghostLeft =
+        rect.left + (plan.tStartUs / 1_000_000) * pxPerSec;
+      const ghostWidth = Math.max(
+        4,
+        ((plan.tEndUs - plan.tStartUs) / 1_000_000) * pxPerSec,
+      );
+      // The floating media card collapses into a compact point inside the
+      // ghost while the ghost itself expands from that same point.
+      const targetWidth = Math.min(36, Math.max(14, ghostWidth));
+      const targetHeight = Math.min(20, Math.max(10, slot.height * 0.45));
+      const anchorX = ghostLeft + Math.min(MEDIA_DRAG_CURSOR_OFFSET_PX, ghostWidth / 2);
+      claimDropTarget({
+        compositionId,
+        trackId: track.id,
+        snapBoundaryUs: plan.validity === "valid" ? plan.snapBoundaryUs ?? null : null,
+        absorptionTarget: {
+          left: anchorX - targetWidth / 2,
+          top: rect.top + slot.top + (slot.height - targetHeight) / 2,
+          width: targetWidth,
+          height: targetHeight,
+        },
+      });
+      setDropPreview({ media: activeMediaDrag, plan });
+    },
+    [
+      activeMediaDrag,
+      claimDropTarget,
+      compositionId,
+      fpsDen,
+      fpsNum,
+      height,
+      mediaDropSnap,
+      pxPerSec,
+      track,
+    ],
+  );
+
+  const onDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    // Crossing a child LayerBlock is not leaving the lane. Without this guard
+    // the ghost flickers whenever it passes over existing clip content.
+    const rect = e.currentTarget.getBoundingClientRect();
+    // Chromium may report (0, 0) as an unavailable-coordinate sentinel for
+    // dragleave. Treating it as a real point wedges the first lane's ghost,
+    // because that lane commonly begins at the viewport origin.
+    const hasPointerCoordinates = e.clientX !== 0 || e.clientY !== 0;
+    const pointerStillInside =
+      hasPointerCoordinates &&
+      e.clientX >= rect.left &&
+      e.clientX <= rect.right &&
+      e.clientY >= rect.top &&
+      e.clientY <= rect.bottom;
+    if (
+      pointerStillInside ||
+      (e.relatedTarget instanceof Node &&
+        e.currentTarget.contains(e.relatedTarget))
+    ) {
+      return;
+    }
+    releaseDropTarget(compositionId, track.id);
+    setDropPreview(null);
+  }, [compositionId, releaseDropTarget, track.id]);
+
+  const onDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      const payload = parseMediaDrag(e);
+      const rect = e.currentTarget.getBoundingClientRect();
+      const plan = payload
+        ? planMediaDrop({
+            compositionId,
+            track,
+            media: payload,
+            pointerXPx: e.clientX - rect.left,
+            pxPerSec,
+            fpsNum,
+            fpsDen,
+            snap: mediaDropSnapAt(mediaDropSnap, compositionId, e),
+          })
+        : null;
+      setDropPreview(null);
+      if (!payload) {
+        releaseDropTarget(compositionId, track.id);
+        return;
+      }
+      e.preventDefault();
+      endMediaDrag();
+      // `=== "valid"`, deliberately not `!placementRefuses(...)`: a lane drop
+      // always names a real track, so `"spawn"` cannot arise here, and if one
+      // ever did it would mean a caller routed a strip plan onto a lane — refuse
+      // rather than commit it to the wrong row. The strip has its own handler.
+      if (plan?.validity !== "valid") return;
+      onMediaDrop(track, payload, plan);
+    },
+    [
+      compositionId,
+      endMediaDrag,
+      fpsDen,
+      fpsNum,
+      mediaDropSnap,
+      onMediaDrop,
+      pxPerSec,
+      releaseDropTarget,
+      track,
+    ],
+  );
+
+  // Highlight the lane the user is currently dragging an existing layer over.
+  const isCrossTrackTarget =
+    dragState?.kind === "move" &&
+    dragState.overTrackId === track.id &&
+    dragState.trackId !== track.id;
+  const existingDragTargetValidity =
+    dragState?.kind === "move" &&
+    (dragState.overTrackId ?? dragState.trackId) === track.id
+      ? dragState.validity
+      : null;
+  const existingDragTargetClass =
+    existingDragTargetValidity === "collision"
+      ? "bg-red-500/10 outline outline-1 outline-dashed -outline-offset-1 outline-red-400/80"
+      : existingDragTargetValidity === "locked"
+        ? "bg-amber-500/10 outline outline-1 outline-dashed -outline-offset-1 outline-amber-400/80"
+        : "";
+
+  const dropTargetClass =
+    visibleDropPreview !== null && mediaDropInvalid(visibleDropPreview.plan.validity)
+      ? "bg-red-500/10 outline outline-1 outline-dashed -outline-offset-1 outline-red-400/80"
+      : visibleDropPreview?.plan.validity === "locked"
+        ? "bg-amber-500/10 outline outline-1 outline-dashed -outline-offset-1 outline-amber-400/80"
+        : visibleDropPreview !== null
+          ? "bg-blue-500/10 outline outline-1 outline-dashed -outline-offset-1 outline-blue-300/80"
+          : "";
+
+  const ghostSlot = visibleDropPreview
+    ? mediaDropGhostSlot(height, visibleDropPreview.plan)
+    : { top: 4, height: Math.max(8, height - 8) };
+
+  // Stable identity so a re-render doesn't churn the registry through
+  // null; React only re-invokes it when the lane actually remounts.
+  const laneRef = useCallback(
+    (el: HTMLDivElement | null) => registerLaneEl(track.id, el),
+    [registerLaneEl, track.id],
+  );
+
+  // A box started on lane background sweeps CLIPS. Chips and the height
+  // splitter stop their own pointerdown, so only the background reaches here —
+  // and a locked chip, which does not stop it and is background as far as
+  // selection is concerned. The lane's id rides along so a press that never
+  // becomes a box can select the gap under it.
+  const { onPointerDown: onMarqueeDown } = useMarqueeAnchor({
+    kind: "clip",
+    trackId: track.id,
+  });
+
+  // Right-click on blank lane space. Chips and blocks stop their own
+  // contextmenu, so only background reaches here; the `closest` guard is belt
+  // and braces for a child that forgets to.
+  const onLaneContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      const target = e.target as Element | null;
+      if (target?.closest?.("[data-layer-id], [data-transition-id]")) return;
+      onGapContextMenu(e, track.id);
+    },
+    [onGapContextMenu, track.id],
+  );
+
+  // The selected gap's band: the lane's full-height slice, as a clip on a
+  // single-class lane would fill it, so the highlight reads as "this span is
+  // selected" in the same vocabulary as a selected clip's outline.
+  const gapBand = layerSliceRect(height, "full");
+
+  return (
+    <div
+      ref={laneRef}
+      data-testid="track-lane"
+      data-track-id={track.id}
+      className={[
+        "relative border-b border-border-soft bg-track-lane",
+        // Mutually exclusive so emit order never decides which state's
+        // chrome wins (drop-target vs revealed); the base bg-track-lane
+        // vs branch-bg conflict still resolves by emit order, currently
+        // favouring the branches.
+        visibleDropPreview !== null
+          ? dropTargetClass
+          : existingDragTargetClass !== ""
+            ? existingDragTargetClass
+            : isCrossTrackTarget
+              ? "bg-secondary outline outline-1 outline-dashed -outline-offset-1 outline-primary"
+              : isRevealed
+                ? "outline outline-1 outline-dashed -outline-offset-1 outline-blue-400/55 bg-blue-400/5"
+                : "",
+      ].join(" ")}
+      style={{ height }}
+      onPointerDown={onMarqueeDown}
+      onContextMenu={onLaneContextMenu}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {/* The selected gap (docs/features.md#ripple-delete). It takes pointer
+          events only to carry its tooltip; every press on it bubbles to the
+          lane's own pointerdown and contextmenu, which resolve it as lane
+          background: clicking a
+          selected gap re-selects it (a no-op commit), dragging from it starts a
+          box, right-clicking it opens its menu. Below the blocks in z, since it
+          can never overlap one. */}
+      {selectedGap !== null && (
+        <div
+          data-testid="timeline-gap-selection"
+          data-track-id={track.id}
+          data-start-us={selectedGap.s}
+          data-end-us={selectedGap.e}
+          className="absolute z-[1] rounded bg-ring/15 outline outline-2 -outline-offset-2 outline-ring"
+          style={{
+            left: (selectedGap.s / 1_000_000) * pxPerSec,
+            top: gapBand.top,
+            width: Math.max(2, ((selectedGap.e - selectedGap.s) / 1_000_000) * pxPerSec),
+            height: gapBand.height,
+          }}
+          title={t("timeline.gap_title", {
+            start: formatTimecode(selectedGap.s, fpsNum, fpsDen),
+            end: formatTimecode(selectedGap.e, fpsNum, fpsDen),
+          })}
+        />
+      )}
+      {visibleDropPreview !== null && (
+        <div
+          data-testid="media-drop-ghost"
+          data-validity={visibleDropPreview.plan.validity}
+          data-start-us={visibleDropPreview.plan.tStartUs}
+          data-end-us={visibleDropPreview.plan.tEndUs}
+          className={`media-drop-ghost pointer-events-none absolute z-[5] flex min-w-1 items-center gap-1 overflow-hidden rounded border px-2 text-[length:var(--font-size-micro)] font-semibold text-white shadow-[0_3px_10px_rgba(0,0,0,0.4)] ${
+            mediaDropInvalid(visibleDropPreview.plan.validity)
+              ? "border-red-300 bg-red-500/55"
+              : visibleDropPreview.plan.validity === "locked"
+                ? "border-amber-300 bg-amber-500/55"
+                : "border-blue-200 bg-blue-500/45"
+          }`}
+          style={{
+            left: (visibleDropPreview.plan.tStartUs / 1_000_000) * pxPerSec,
+            top: ghostSlot.top,
+            width: Math.max(
+              4,
+              ((visibleDropPreview.plan.tEndUs - visibleDropPreview.plan.tStartUs) /
+                1_000_000) *
+                pxPerSec,
+            ),
+            height: ghostSlot.height,
+            "--media-drop-ghost-origin-x": `${Math.min(
+              MEDIA_DRAG_CURSOR_OFFSET_PX,
+              Math.max(
+                2,
+                (((visibleDropPreview.plan.tEndUs -
+                  visibleDropPreview.plan.tStartUs) /
+                  1_000_000) *
+                  pxPerSec) /
+                  2,
+              ),
+            )}px`,
+          } as React.CSSProperties}
+          title={`${visibleDropPreview.media.label}: ${formatTimecode(visibleDropPreview.plan.tStartUs, fpsNum, fpsDen)} → ${formatTimecode(visibleDropPreview.plan.tEndUs, fpsNum, fpsDen)}`}
+        >
+          <span className="min-w-0 truncate">{visibleDropPreview.media.label}</span>
+          <span className="shrink-0 opacity-80">
+            {formatTimecode(visibleDropPreview.media.durationUs, fpsNum, fpsDen)}
+          </span>
+          {visibleDropPreview.plan.validity !== "valid" && (
+            <span className="ml-auto shrink-0 rounded bg-black/35 px-1 py-0.5">
+              {visibleDropPreview.plan.validity === "cycle"
+                ? t("timeline.drop_cycle")
+                : visibleDropPreview.plan.validity === "locked"
+                  ? t("timeline.drop_locked", { defaultValue: "Locked" })
+                  : t("timeline.drop_collision", { defaultValue: "Overlap" })}
+            </span>
+          )}
+        </div>
+      )}
+      {/* Removed clips of this lane under the Review overlay (ADR 0116):
+          outlines at their baseline place, before the blocks so a clip now on
+          that stretch paints over them — until pointed at, when one lifts
+          over the blocks as its edge alone and takes no press. */}
+      <ReviewGhosts
+        trackId={track.id}
+        pxPerSec={pxPerSec}
+        laneHeight={height}
+        fpsNum={fpsNum}
+        fpsDen={fpsDen}
+      />
+      {/* A focused change's old places on this lane: over the blocks
+          (`z-[3]`), so the clip now there cannot hide them. */}
+      <ReviewWasFrames trackId={track.id} pxPerSec={pxPerSec} laneHeight={height} />
+      {/* Eye-off feedback: dim + freeze the whole layer area. When the
+          track is enabled the wrapper is `display: contents` (no box, no
+          layout impact); when disabled it's an unpositioned plain div, so
+          the absolutely-positioned LayerBlocks still resolve against the
+          lane's `relative` box — geometry identical in both states. */}
+      <div className={track.enabled ? "contents" : "pointer-events-none opacity-40"}>
+      {(() => {
+        // Compute per-layer slice once per track render (see `LayerSlice`).
+        const sliceLayers = [
+          ...renderedLayers,
+          ...duplicatePreviews.map((preview) => preview.sliceLayer),
+        ];
+        const slices = computeLayerSlices(sliceLayers);
+        const blocks = renderedLayers.map((layer) => (
+          <LayerBlock
+            key={layer.id}
+            layer={layer}
+            trackId={track.id}
+            trackKind={track.kind}
+            trackLocked={track.locked}
+            isTrackExpanded={isExpanded}
+            pxPerSec={pxPerSec}
+            laneHeight={height}
+            slice={slices.get(layer.id) ?? "full"}
+            isPrimary={selectedLayerId === layer.id}
+            isSelected={selectedLayerIds.has(layer.id)}
+            linkId={linkByLayerId.get(layer.id) ?? null}
+            linkTab={linkTabByLayerId.get(layer.id) ?? null}
+            pendingPlacement={
+              pendingPlacements?.find((placement) => placement.layerId === layer.id) ?? null
+            }
+            bladeMode={bladeMode}
+            onBladeSplit={onBladeSplit}
+            onBladePreview={onBladePreview}
+            onSelectFromClick={onSelectFromClick}
+            onDragStart={onDragStart}
+            onContextMenu={onContextMenu}
+            onCommitLabel={onCommitLabel}
+            onCommitGroupLabel={onCommitGroupLabel}
+            fpsNum={fpsNum}
+            fpsDen={fpsDen}
+          />
+        ));
+        for (const preview of dragState ? duplicatePreviews : []) {
+          blocks.push(
+            <LayerBlock
+              key={preview.sliceLayer.id}
+              layer={preview.layer}
+              trackId={track.id}
+              trackKind={track.kind}
+              trackLocked={track.locked}
+              isTrackExpanded={isExpanded}
+              pxPerSec={pxPerSec}
+              laneHeight={height}
+              slice={slices.get(preview.sliceLayer.id) ?? "full"}
+              isPrimary={false}
+              isSelected={false}
+              linkId={null}
+              linkTab={null}
+              pendingPlacement={null}
+              previewOnly
+              bladeMode={bladeMode}
+              onBladeSplit={onBladeSplit}
+              onBladePreview={onBladePreview}
+              onSelectFromClick={onSelectFromClick}
+              onDragStart={onDragStart}
+              onContextMenu={onContextMenu}
+              onCommitLabel={onCommitLabel}
+                onCommitGroupLabel={onCommitGroupLabel}
+              fpsNum={fpsNum}
+              fpsDen={fpsDen}
+            />,
+          );
+        }
+        // Transition chips render AFTER the blocks so they sit above the
+        // participating layers' heads, including the raised linked-member
+        // chrome. Slotted to the incoming layer's slice so they
+        // hug its block in combined V+A rows.
+        for (const chip of transitionChips) {
+          blocks.push(
+            <TransitionChip
+              key={chip.transition.id}
+              chip={chip}
+              pxPerSec={pxPerSec}
+              laneHeight={height}
+              slice={slices.get(chip.toLayer.id) ?? "full"}
+              isSelected={selectedTransitionId === chip.transition.id}
+              bladeMode={bladeMode}
+              fpsNum={fpsNum}
+              fpsDen={fpsDen}
+              onContextMenu={(e) => onChipContextMenu(e, chip)}
+              onResize={onChipResize}
+            />,
+          );
+        }
+        return blocks;
+      })()}
+      </div>
+      {/* The review focus's time range (ADR 0115), over the blocks: a clip
+          fills its lane but for a 4 px margin, so a wash beneath one showed
+          only as a sliver along its edges. Above a selected block (`z-[2]`,
+          earlier in the DOM), below a dragged one and the height handle
+          (`z-[3]`); paint only. */}
+      <ReviewFocusWash compositionId={compositionId} pxPerSec={pxPerSec} />
+      {/* Cut marks (ADR 0115): where material was taken out, from the lane's
+          top edge — after the blocks and the wash, so one at a clip's edge is
+          never under the clip. They take the click alone. */}
+      <ReviewCuts trackId={track.id} pxPerSec={pxPerSec} />
+      {/* Absolute positioning ends inside the 1px lane border. Anchor at its
+          center, then translate by half the handle's theme-scaled height. */}
+      <div
+        data-testid="track-height-handle"
+        className={`absolute inset-x-0 -bottom-[0.5px] z-[3] h-1.5 translate-y-1/2 cursor-ns-resize transition-colors duration-75 hover:bg-blue-400/35 ${isResizing ? "bg-blue-400/35" : "bg-transparent"}`}
+        title={t("timeline.resize_track_hint", {
+          defaultValue: "Drag to resize this track",
+        })}
+        onPointerDown={onHeightDragStart}
+      />
+    </div>
+  );
+}
+
+/// The ghost occupies the band the dropped layer's chip will get. Translating
+/// the drop plan's overlap vocabulary into a `LayerSlice` is the only part of
+/// this that was ever local.
+function mediaDropGhostSlot(height: number, plan: MediaDropPlan) {
+  const slice: LayerSlice = !plan.sharesLane
+    ? "full"
+    : plan.overlapClass === "visual"
+      ? "top"
+      : "bottom";
+  return layerSliceRect(height, slice);
+}

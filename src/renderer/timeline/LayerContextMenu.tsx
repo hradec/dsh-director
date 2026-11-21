@@ -1,0 +1,714 @@
+import { AppMenuPositioner } from "../components/PopupPositioner";
+import { useSyncExternalStore } from "react";
+import { CROP_MENU_COMMAND_IDS } from '../commands/cropCommands';
+import { useTranslation } from "react-i18next";
+import { Menu as MenuPrimitive } from "@base-ui/react/menu";
+import type { TrackSummary, TransitionDirection } from "../ipc";
+import { moveSelectionToComposition } from "../commands/groupCommands";
+import {
+  commandRegistryVersion,
+  getCommand,
+  subscribeCommandRegistry,
+} from "../commands/registry";
+import {
+  useDescribeState,
+  type DescribeState,
+} from "../describe/describeEligibility";
+import { groupDisplayName } from "../lib/layerName";
+import { useDescribeRunPhaseHint, useTranscribeRunPhaseHint } from "../compute/runPhaseHint";
+import { CommandContextItem } from "../menu/CommandContextItem";
+import {
+  closeContextMenuOn,
+  contextMenuFinalFocus,
+  MenuItem,
+  MenuSeparator,
+  SubMenu,
+} from "../menu/Menu";
+import {
+  usePauseSubjectState,
+  type PauseSubjectState,
+} from "../commands/pauseCommands";
+import {
+  useAutoCaptionState,
+  type AutoCaptionState,
+} from "../speech/autoCaptionEligibility";
+import { useGroupOrdinals } from "../state/projectStore";
+import { useSelectedLayerIds } from "../state/selectionStore";
+import { useCursorAnchor } from "./contextMenuAnchor";
+import {
+  addToGroupTarget,
+  useAddToGroupState,
+  useGroupState,
+  useUngroupState,
+  selectedWithTracks,
+  type AddToGroupState,
+  type GroupState,
+  type UngroupState,
+} from "./groupEligibility";
+import {
+  useLinkToggleState,
+  type LinkToggleState,
+} from "./linkEligibility";
+import {
+  rippleDeleteReason,
+  useRippleDeleteState,
+} from "./rippleEligibility";
+import {
+  moveDestinations,
+  useMoveToCompositionState,
+  type DestinationState,
+  type MoveDestination,
+  type MoveToCompositionState,
+} from "./moveToCompositionEligibility";
+import {
+  TRANSITION_DIRECTIONS,
+  type TransitionCut,
+  type TransitionKindName,
+} from "./transitions";
+
+/// The clip menu's registry-driven rows, in order, with `"---"` for the
+/// separators. Exported for the test that sweeps them against the command
+/// catalogue — the safety net `CommandContextItem`'s untyped `id` trades away.
+///
+/// Clipboard and deletion first, then split/lane edits, then links and Groups.
+/// Selection commands retain the whole selection when right-clicking a member
+/// (`Timeline.tsx`'s `onContextMenu`). The link toggle is owned by the focused
+/// Timeline provider, which is mounted whenever this popup can be opened.
+///
+/// `splitAtPlayhead` and not a cursor-anchored "split here": splitting where
+/// you pointed is the Blade tool's whole job, and it is one key (`C`) and one
+/// strip button away. Resolve makes the same split — its clip menu's "Split
+/// Clip" cuts at the playhead too.
+///
+/// `moveToComposition` sits in this always-present tier and NOT in the Group
+/// tier below, for `groupSelected`'s reason: what it acts on is the selection,
+/// whatever the selection is made of. Its most common use is a clip that is not
+/// a Group at all — two ordinary clips inside one, carried back out into the
+/// film — and a kind gate would put the row exactly where that selection can
+/// never see it.
+///
+/// `rippleDeleteSelected` sits directly under `deleteSelected` and in no section
+/// of its own: the two are the same act with and without the gap closing, and
+/// separating them would hide the choice at the moment it is being made.
+/// Premiere lists the pair adjacently for the same reason.
+export const LAYER_MENU_COMMAND_IDS = [
+  "copySelected",
+  "pasteAtPlayhead",
+  "deleteSelected",
+  "rippleDeleteSelected",
+  "---",
+  "splitAtPlayhead",
+  "moveToNewTrack",
+  "---",
+  "toggleLinkSelected",
+  "groupSelected",
+  "addToGroup",
+  "moveToComposition",
+] as const;
+
+/// The rows only a Group clip gets, appended when the right-clicked layer is
+/// one. Registry-driven like the tier above and swept by the same test, and they
+/// act on the SELECTION. Their predicates require exactly one Group, so a
+/// multi-selection keeps the rows disabled even when opened over a Group.
+///
+/// `groupSelected` sits in the always-present tier instead, beside the other
+/// structural edits: pre-composing is offered on ANY clip, which is the whole
+/// point of it. `addToGroup` also belongs to the selection tier: selecting a
+/// Group and some clips must offer the same action over any selected member.
+export const GROUP_MENU_COMMAND_IDS = [
+  "openGroup",
+  "ungroupSelected",
+] as const;
+
+/// The rows a clip WITH AUDIO gets — a `VideoClip` or an `Audio` layer.
+/// Registry-driven like the two tiers above and swept by the same test.
+///
+/// Kind-gated rather than always-present because the row is about the clip's
+/// material: offering "Transcribe" over a Color layer would be a row that can
+/// only ever refuse. The gate is the two kinds that carry a media reference with
+/// an audio stream, which is exactly what `resolve_clip_audio_source` accepts.
+///
+/// Two rows, in the order they are reached: transcribe a clip, then measure its
+/// pauses. The first runs on the click — the clip is the selection and the
+/// language is the engine's to detect — and the second opens the Attribute
+/// Panel's Pauses section, because a threshold is a parameter someone has to
+/// choose against a waveform they can see.
+///
+/// The pause row joins as *detect*, not as *cut pauses*, and the distinction is
+/// the reason the tier still holds two entries rather than three: MEASURING is
+/// the half every pause recipe shares — mark them, tighten them, remove them —
+/// so the row that opens the surface is the measurement, and what becomes of
+/// the pauses is a decision made inside it rather than by which row was
+/// clicked.
+export const ANALYSIS_MENU_COMMAND_IDS = [
+  "autoCaptionSelected",
+  "detectPausesSelected",
+] as const;
+
+/// The rows only a `VideoClip` gets. Registry-driven like the tiers above and
+/// swept by the same test.
+///
+/// Kind-gated for the analysis tier's reason, one notch narrower: a shot report
+/// is a claim about a picture stream, so the row is meaningless over an Audio
+/// layer that the audio tier above happily accepts.
+///
+/// Above the hand-rolled *Mark shot cuts* row rather than below it, because
+/// this is the surface the review effort made authoritative — marking is the
+/// drive-by that writes without looking, and the eye should reach the one that
+/// shows you the cuts first.
+/// *Review shots* first: it is the surface this menu made authoritative, and it
+/// costs nothing to open. *Describe clip content* follows because its answer is
+/// something to READ on those rows — the correlation between where a clip cuts
+/// and what is in it is the whole reason the two sit together.
+export const VIDEO_MENU_COMMAND_IDS = ["reviewShots", "describeSelected"] as const;
+
+/// Kinds whose material carries audio — the gate on the tier above. Matches the
+/// two `LayerParams` variants that hold a `media` id with an audio stream.
+const AUDIO_BEARING_KINDS: ReadonlySet<string> = new Set(["VideoClip", "Audio"]);
+
+const LINK_REASON: Record<Exclude<LinkToggleState, "link" | "unlink">, string> = {
+  needs_two: "quick_actions.link_needs_two",
+  mixed: "quick_actions.link_mixed_selection",
+};
+const GROUP_REASON: Record<Exclude<GroupState, "group">, string> = {
+  needs_selection: "quick_actions.group_needs_selection",
+  locked: "quick_actions.group_locked",
+};
+const UNGROUP_REASON: Record<Exclude<UngroupState, "ungroup">, string> = {
+  needs_one_group: "quick_actions.ungroup_needs_one_group",
+  locked: "quick_actions.ungroup_locked",
+  not_plain_transform: "quick_actions.ungroup_not_plain_transform",
+  not_plain_opacity: "quick_actions.ungroup_not_plain_opacity",
+  not_plain_effects: "quick_actions.ungroup_not_plain_effects",
+  not_plain_time_map: "quick_actions.ungroup_not_plain_time_map",
+};
+
+/// Why a greyed *Add to Group* row is greyed, one sentence per state, in the
+/// `quick_actions` namespace the strip's disabled-button reasons already live
+/// in — this row is the only surface that shows them, but they are the same
+/// kind of sentence and belong in the same block.
+///
+/// The live state is absent on purpose: the row already reads "Add to X", and a
+/// tooltip restating an enabled row's own label earns nothing. A `Record` over
+/// the remaining states so a new one cannot compile until someone has written
+/// the instruction that tells the user what to do about it — the rule
+/// `panels/quickActions.ts` states for its own two.
+const ADD_TO_GROUP_REASON: Record<Exclude<AddToGroupState, "add_to_group">, string> =
+  {
+    needs_selection: "quick_actions.add_to_group_needs_selection",
+    needs_one_group: "quick_actions.add_to_group_needs_one_group",
+    needs_member: "quick_actions.add_to_group_needs_member",
+    locked: "quick_actions.add_to_group_locked",
+    starts_before_group: "quick_actions.add_to_group_starts_before_group",
+    retimed: "quick_actions.add_to_group_retimed",
+  };
+
+/// Why a greyed *Transcribe* row is greyed. Same block and same
+/// `Record`-over-the-remaining-states rule as `ADD_TO_GROUP_REASON` above.
+///
+/// `needs_selection` survives even though the row only renders over a clip a
+/// right-click has just selected: the state is reachable when the summary has
+/// not caught up with the selection, and the `Record` admits no gap.
+const AUTO_CAPTION_REASON: Record<
+  Exclude<AutoCaptionState, "auto_caption">,
+  string
+> = {
+  needs_selection: "quick_actions.auto_caption_needs_selection",
+  needs_audio_kind: "quick_actions.auto_caption_needs_audio_kind",
+  transcribing: "quick_actions.auto_caption_transcribing",
+};
+
+/// Why a greyed *Detect pauses* row is greyed. Its own table even though the
+/// first three states are shared with *Transcribe*: the verdict is one thing,
+/// but the instruction reads differently per verb — "a clip to transcribe" and
+/// "a clip to measure" send the user to the same place for different reasons,
+/// and a tooltip that names the wrong operation is worse than none.
+///
+/// `plays_no_sound` is the one state transcription does not have: a pause is a
+/// fact about the audio that PLAYS, so a picture clip with no linked Audio
+/// partner has nothing to measure even though its own file carries a track
+/// (spec Decision 1).
+const DETECT_PAUSES_REASON: Record<Exclude<PauseSubjectState, "ok">, string> = {
+  needs_selection: "quick_actions.detect_pauses_needs_selection",
+  needs_audio_kind: "quick_actions.detect_pauses_needs_audio_kind",
+  plays_no_sound: "quick_actions.detect_pauses_plays_no_sound",
+};
+
+/// Why a greyed *Describe clip content* row is greyed. Same block and same
+/// `Record`-over-the-remaining-states rule as the two tables above.
+///
+/// `needs_video_kind` survives even though the row renders only over a
+/// `VideoClip`, on `AUTO_CAPTION_REASON`'s note: the state is reachable when
+/// the summary has not caught up with the selection, and the `Record` admits no
+/// gap.
+const DESCRIBE_REASON: Record<Exclude<DescribeState, "describe">, string> = {
+  needs_selection: "quick_actions.describe_needs_selection",
+  needs_video_kind: "quick_actions.describe_needs_video_kind",
+  already_running: "quick_actions.describe_already_running",
+};
+
+/// Why a greyed *Move to… ›* trigger is greyed. Same block and same
+/// `Record`-over-the-remaining-states rule as `ADD_TO_GROUP_REASON` above.
+const MOVE_TO_COMPOSITION_REASON: Record<
+  Exclude<MoveToCompositionState, "move_to_composition">,
+  string
+> = {
+  needs_selection: "quick_actions.move_to_composition_needs_selection",
+  locked: "quick_actions.move_to_composition_locked",
+  no_destination: "quick_actions.move_to_composition_no_destination",
+};
+
+/// Why a greyed DESTINATION row is greyed. A separate table because these
+/// explain the row rather than the gesture: the answer is which composition to
+/// pick instead, not what to go and fix about the selection.
+const DESTINATION_REASON: Record<Exclude<DestinationState, "eligible">, string> = {
+  already_there: "quick_actions.move_to_composition_already_there",
+  cycle: "quick_actions.move_to_composition_cycle",
+};
+
+/// Floating context menu (Base UI Menu) anchored to a zero-size virtual
+/// element at the right-click coordinates. The popup machinery (portal,
+/// outside-press + Escape close, arrow-key nav) comes from the library.
+///
+/// Three tiers of row, in this order:
+///   1. `LAYER_MENU_COMMAND_IDS` — registry commands on the selection, which
+///      carry their own labels, enabled state and accelerators.
+///   2. Layer-scoped actions taking an explicit `layerId`, some of them gated
+///      on the right-clicked layer's KIND — plus two kind-gated registry tiers:
+///      the Group tier (`GROUP_MENU_COMMAND_IDS`), which mixes registry rows
+///      with the one composition-scoped rename that has no command form, and
+///      the analysis tier (`ANALYSIS_MENU_COMMAND_IDS`) on any clip with audio,
+///      and the video tier (`VIDEO_MENU_COMMAND_IDS`) on a `VideoClip`.
+///   3. The transition section, appended only when the right-click landed
+///      within the click-tolerance band of a cut between same-track adjacent
+///      visual layers (`transitionCut` non-null).
+///
+/// Every row goes through `Menu.tsx`'s `MenuItem`, tiers 2 and 3 included.
+/// A bare `MenuPrimitive.Item` with a text child renders without the 16px
+/// check-glyph gutter `MenuItem` puts before its label, so tier 1 (which
+/// reaches `MenuItem` via `CommandContextItem`) and the tiers under it used
+/// to sit on two different left edges inside the one popup.
+///
+/// Flat but for one row: *Move to… ›*, whose destinations are a list only the
+/// project can enumerate. Every other row is a single act, and a submenu around
+/// one act is a click spent on nothing.
+export function LayerContextMenu({
+  x,
+  y,
+  layerId,
+  layerKind,
+  tracks,
+  transitionCut,
+  onClose,
+  onRename,
+  onRenameGroup,
+  onToggleEnabled,
+  onSeparateAudio,
+  onPrebakeNow,
+  onMarkShotCuts,
+  onAddTransition,
+}: {
+  x: number;
+  y: number;
+  layerId: string;
+  layerKind: string;
+  /// Live data from the owning timeline, including hidden lanes and siblings.
+  tracks: readonly TrackSummary[];
+  transitionCut: TransitionCut | null;
+  onClose: () => void;
+  onRename: (id: string) => void;
+  /// Opens the inline editor on the Group clip for its COMPOSITION's name.
+  /// Distinct from `onRename`, which edits this clip's own label: a Group has
+  /// both, and the two rows say which one they write.
+  onRenameGroup: (layerId: string) => void;
+  /// The set is resolved HERE and handed over whole — `set_layers_enabled`
+  /// expands nothing, and one call is one undo step however many it names.
+  onToggleEnabled: (layerIds: string[], enabled: boolean) => void;
+  onSeparateAudio: (id: string) => void;
+  onPrebakeNow: (id: string) => void;
+  /// Materializes this clip's detected shot cuts as timeline markers. Layer-
+  /// scoped like the two above — it takes the clicked clip's id, not the
+  /// selection, because a shot report belongs to one source.
+  onMarkShotCuts: (id: string) => void;
+  onAddTransition: (
+    cut: TransitionCut,
+    kind: TransitionKindName,
+    direction?: TransitionDirection,
+  ) => void;
+}) {
+  const { t } = useTranslation();
+  const anchor = useCursorAnchor(x, y);
+  // Providers register in post-paint effects, long before any right-click. The
+  // subscription is here so the rows survive a provider remounting under an
+  // already-open menu, and costs one line.
+  useSyncExternalStore(subscribeCommandRegistry, commandRegistryVersion);
+  // Linked selection is resolved by the timeline gesture. Honor that set
+  // without adding unselected siblings again when executing this command.
+  const selected = useSelectedLayerIds();
+  const targets = new Set(selected.has(layerId) ? selected : [layerId]);
+  const targetLayers = selectedWithTracks(targets, tracks);
+  const enabledTargets = targetLayers.map(({ layer }) => layer.id);
+  // Mixed state has one predictable result regardless of which member was
+  // right-clicked: enable all. A fully enabled set instead offers disable all.
+  const enableTargets = targetLayers.some(({ layer }) => !layer.enabled);
+  // Both layer and track locks reject the whole edit, never a subset.
+  const enabledLocked = targetLayers.some(({ track, layer }) => track.locked || layer.locked);
+  const enabledLabel =
+    enabledTargets.length > 1
+      ? t(enableTargets ? "timeline.enable_layers" : "timeline.disable_layers", {
+          count: enabledTargets.length,
+        })
+      : t(enableTargets ? "timeline.enable_layer" : "timeline.disable_layer");
+  // The *Add to Group* row's label and tooltip. `useAddToGroupState` is the
+  // subscription that keeps both live under an open popup; `addToGroupTarget`
+  // reads the same two stores imperatively and is therefore re-read by the very
+  // re-render that subscription causes.
+  const addToGroup = useAddToGroupState();
+  const linkToggle = useLinkToggleState();
+  const linkLabel = t(
+    linkToggle === "unlink"
+      ? "quick_actions.unlink_selected"
+      : "quick_actions.link_selected",
+  );
+  const linkHint =
+    linkToggle === "link" || linkToggle === "unlink"
+      ? undefined
+      : t(LINK_REASON[linkToggle]);
+  const group = useGroupState();
+  const groupHint = group === "group" ? undefined : t(GROUP_REASON[group]);
+  const ungroup = useUngroupState();
+  const ungroupHint =
+    ungroup === "ungroup" ? undefined : t(UNGROUP_REASON[ungroup]);
+  const groupOrdinals = useGroupOrdinals();
+  const addToGroupDestination = addToGroupTarget();
+  const addToGroupParams =
+    addToGroupDestination?.params.kind === "CompositionRef"
+      ? addToGroupDestination.params
+      : null;
+  // Named only when the selection names exactly one destination; the plain
+  // label stands otherwise, since there is no Group to name.
+  const addToGroupLabel = addToGroupParams
+    ? t("actions.add_to_group_named", {
+        name: groupDisplayName(
+          addToGroupParams.composition_id,
+          addToGroupParams.composition_label,
+          groupOrdinals,
+          t,
+        ),
+      })
+    : undefined;
+  const addToGroupHint =
+    addToGroup === "add_to_group" ? undefined : t(ADD_TO_GROUP_REASON[addToGroup]);
+  // The *Ripple delete* row's tooltip. Subscribed like the rows below it, and
+  // with one reason of its own: the sentence NAMES the layer, link or lane that
+  // blocks, so a selection change under an open popup would otherwise leave a
+  // greyed row pointing at a clip the ripple has moved on from. The sentence
+  // itself is the curated refusal copy the status bar shows when the actor
+  // refuses for real (`timeline/rippleEligibility.ts`).
+  const rippleDelete = useRippleDeleteState();
+  const rippleDeleteHint = rippleDeleteReason(rippleDelete, t);
+  // The *Transcribe* row's tooltip. Subscribed so a greyed row re-labels
+  // under an open popup — a transcription started elsewhere flips the state.
+  const autoCaption = useAutoCaptionState();
+  // Greyed because this window's run is in flight: what that run is doing —
+  // waiting for memory, 40% through — says more than "already running".
+  const transcribePhase = useTranscribeRunPhaseHint();
+  const autoCaptionHint =
+    autoCaption === "auto_caption"
+      ? undefined
+      : autoCaption === "transcribing" && transcribePhase !== null
+        ? transcribePhase
+        : t(AUTO_CAPTION_REASON[autoCaption]);
+  // The *Detect pauses* row's tooltip. Subscribed like the row above it, on
+  // the shared half of the same gate plus its own subject rule — a selection
+  // change under an open popup has to re-label both rows or one of them would
+  // be explaining a clip the other has moved on from.
+  const pauseSubject = usePauseSubjectState();
+  const detectPausesHint =
+    pauseSubject === "ok" ? undefined : t(DETECT_PAUSES_REASON[pauseSubject]);
+  // The *Describe clip content* row's tooltip. Subscribed like the two above it, on
+  // its own picture-clip gate.
+  const describe = useDescribeState();
+  const describePhase = useDescribeRunPhaseHint("clip");
+  const describeHint =
+    describe === "describe"
+      ? undefined
+      : describe === "already_running" && describePhase !== null
+        ? describePhase
+        : t(DESCRIBE_REASON[describe]);
+  // The *Move to… ›* trigger. Live it is a submenu — a destination is the
+  // content of the gesture, and only a list can carry one — and greyed it falls
+  // back to the flat registry row, which is what can show WHY. The command is
+  // still read from the registry, so an unregistered provider drops this row
+  // exactly as `CommandContextItem` drops the others; only the LABEL is the
+  // menu's own, because the two forms are two different acts. The flat one
+  // moves to the root and says so; the trigger says nothing about where,
+  // because the destination rows under it each name themselves.
+  const moveToComposition = useMoveToCompositionState();
+  const moveToCompositionCommand = getCommand("moveToComposition");
+  const moveToCompositionHint =
+    moveToComposition === "move_to_composition"
+      ? undefined
+      : t(MOVE_TO_COMPOSITION_REASON[moveToComposition]);
+  // Resolved per right-click, never subscribed: the rows are an array, so a
+  // selector over them would be a fresh reference every store tick
+  // (`feedback_zustand_composite_selector`). The popup mounts on open, which is
+  // what makes one read enough.
+  //
+  // Built for `no_destination` as well as for the live state, and that is the
+  // point of the submenu: a destination refused on the cycle rule is a row
+  // saying so, where a greyed trigger would leave the user guessing which
+  // composition it meant. Only a selection with nothing to move — or nothing
+  // movable — falls back to the flat row.
+  const destinations =
+    moveToComposition === "needs_selection" || moveToComposition === "locked"
+      ? []
+      : moveDestinations(t);
+  // A live row explains itself only when the landing is not where the user
+  // would guess — the destination shows nothing at this moment, so the clips go
+  // to its start instead.
+  const destinationHint = (d: MoveDestination): string | undefined =>
+    d.state === "eligible"
+      ? d.offScreen
+        ? t("quick_actions.move_to_composition_offscreen")
+        : undefined
+      : t(DESTINATION_REASON[d.state]);
+  const directionLabel = (d: TransitionDirection) =>
+    t(`transitions.direction_${d}`, { defaultValue: d });
+  return (
+    <MenuPrimitive.Root
+      open
+      // A submenu lives in this menu, so the pointer-driven highlight has to go
+      // — see the LANDMINE on `SubMenu` in `menu/Menu.tsx`.
+      highlightItemOnHover={false}
+      // Non-modal: no scroll lock — the scroll-close effect in Timeline
+      // handles the anchored-to-stale-coordinates case instead.
+      modal={false}
+      onOpenChange={closeContextMenuOn(onClose)}
+    >
+      <MenuPrimitive.Portal>
+        <AppMenuPositioner
+          anchor={anchor}
+          side="bottom"
+          align="start"
+          sideOffset={0}
+          className="app-popup-positioner"
+        >
+          <MenuPrimitive.Popup
+            className="app-menu-list"
+            finalFocus={contextMenuFinalFocus}
+          >
+            {LAYER_MENU_COMMAND_IDS.map((id, i) =>
+              id === "---" ? (
+                // Position-keyed: separators have no identity, and the list is
+                // static.
+                <MenuSeparator key={`sep-${i}`} />
+              ) : id === "toggleLinkSelected" ? (
+                <CommandContextItem
+                  key={id}
+                  id={id}
+                  onRun={onClose}
+                  label={linkLabel}
+                  {...(linkHint ? { hint: linkHint } : {})}
+                />
+              ) : id === "groupSelected" ? (
+                <CommandContextItem
+                  key={id}
+                  id={id}
+                  onRun={onClose}
+                  {...(groupHint ? { hint: groupHint } : {})}
+                />
+              ) : id === "addToGroup" ? (
+                (addToGroupDestination || layerKind === "CompositionRef") && (
+                  <CommandContextItem
+                    key={id}
+                    id={id}
+                    onRun={onClose}
+                    {...(addToGroupLabel ? { label: addToGroupLabel } : {})}
+                    {...(addToGroupHint ? { hint: addToGroupHint } : {})}
+                  />
+                )
+              ) : id === "moveToComposition" ? (
+                moveToCompositionCommand && destinations.length > 0 ? (
+                  <SubMenu key={id} label={t("actions.move_to_composition_submenu")}>
+                    {destinations.map((d) => {
+                      const hint = destinationHint(d);
+                      return (
+                        <MenuItem
+                          key={d.compositionId}
+                          label={d.name}
+                          disabled={d.state !== "eligible"}
+                          {...(hint ? { hint } : {})}
+                          // The landing is NOT taken from the row: it is
+                          // resolved again at commit, because an open popup
+                          // does not re-render while the film plays under it.
+                          onSelect={() => {
+                            onClose();
+                            return moveSelectionToComposition(d.compositionId);
+                          }}
+                        />
+                      );
+                    })}
+                  </SubMenu>
+                ) : (
+                  <CommandContextItem
+                    key={id}
+                    id={id}
+                    onRun={onClose}
+                    {...(moveToCompositionHint
+                      ? { hint: moveToCompositionHint }
+                      : {})}
+                  />
+                )
+              ) : id === "rippleDeleteSelected" ? (
+                <CommandContextItem
+                  key={id}
+                  id={id}
+                  onRun={onClose}
+                  {...(rippleDeleteHint ? { hint: rippleDeleteHint } : {})}
+                />
+              ) : (
+                <CommandContextItem key={id} id={id} onRun={onClose} />
+              ),
+            )}
+            <MenuSeparator />
+            <MenuItem
+              label={t("timeline.rename", { defaultValue: "Rename" })}
+              onSelect={() => onRename(layerId)}
+            />
+            <MenuItem
+              label={enabledLabel}
+              disabled={enabledLocked || enabledTargets.length === 0}
+              {...(enabledLocked
+                ? { hint: t("timeline.enabled_tracks_locked") }
+                : {})}
+              onSelect={() => onToggleEnabled(enabledTargets, enableTargets)}
+            />
+            {layerKind === "Audio" && (
+              <>
+                <MenuSeparator />
+                <MenuItem
+                  label={t("timeline.separate_audio", {
+                    defaultValue: "Separate audio to new track",
+                  })}
+                  onSelect={() => onSeparateAudio(layerId)}
+                />
+              </>
+            )}
+            {layerKind === "CompositionRef" && (
+              <>
+                <MenuSeparator />
+                {GROUP_MENU_COMMAND_IDS.map((id) => (
+                  <CommandContextItem
+                    key={id}
+                    id={id}
+                    onRun={onClose}
+                    {...(id === "ungroupSelected" && ungroupHint
+                      ? { hint: ungroupHint }
+                      : {})}
+                  />
+                ))}
+                <MenuItem
+                  label={t("timeline.rename_group", {
+                    defaultValue: "Rename group…",
+                  })}
+                  onSelect={() => onRenameGroup(layerId)}
+                />
+              </>
+            )}
+            {(layerKind === "Motif" || layerKind === "CompositionRef") && (
+              <>
+                <MenuSeparator />
+                <MenuItem
+                  label={t("timeline.prebake_now", {
+                    defaultValue: "Pre-bake now",
+                  })}
+                  onSelect={() => onPrebakeNow(layerId)}
+                />
+              </>
+            )}
+            {/* Above the shot-cut row rather than below it, because these are
+                the operations reached far more often — and they are the ones
+                that take arguments, so they want the eye first. */}
+            {AUDIO_BEARING_KINDS.has(layerKind) && (
+              <>
+                <MenuSeparator />
+                {ANALYSIS_MENU_COMMAND_IDS.map((id) => (
+                  <CommandContextItem
+                    key={id}
+                    id={id}
+                    onRun={onClose}
+                    {...(id === "autoCaptionSelected" && autoCaptionHint
+                      ? { hint: autoCaptionHint }
+                      : {})}
+                    {...(id === "detectPausesSelected" && detectPausesHint
+                      ? { hint: detectPausesHint }
+                      : {})}
+                  />
+                ))}
+              </>
+            )}
+            {layerKind === "VideoClip" && (
+              <>
+                <MenuSeparator />
+                {CROP_MENU_COMMAND_IDS.map(id => <CommandContextItem key={id} id={id} onRun={onClose} />)}
+                <MenuSeparator />
+                {VIDEO_MENU_COMMAND_IDS.map((id) => (
+                  <CommandContextItem
+                    key={id}
+                    id={id}
+                    onRun={onClose}
+                    {...(id === "describeSelected" && describeHint
+                      ? { hint: describeHint }
+                      : {})}
+                  />
+                ))}
+                <MenuItem
+                  label={t("timeline.mark_shot_cuts", {
+                    defaultValue: "Mark shot cuts",
+                  })}
+                  hint={t("timeline.mark_shot_cuts_hint", {
+                    defaultValue:
+                      "Detect this clip's shot boundaries and drop a marker on each.",
+                  })}
+                  onSelect={() => onMarkShotCuts(layerId)}
+                />
+              </>
+            )}
+            {transitionCut && (
+              <>
+                <MenuSeparator />
+                <MenuItem
+                  label={t("timeline.add_transition_crossfade", {
+                    defaultValue: "Add crossfade",
+                  })}
+                  onSelect={() => onAddTransition(transitionCut, "Crossfade")}
+                />
+                {TRANSITION_DIRECTIONS.map((d) => (
+                  <MenuItem
+                    key={`wipe-${d}`}
+                    label={t("timeline.add_transition_wipe", {
+                      direction: directionLabel(d),
+                      defaultValue: "Add wipe · {{direction}}",
+                    })}
+                    onSelect={() => onAddTransition(transitionCut, "Wipe", d)}
+                  />
+                ))}
+                {TRANSITION_DIRECTIONS.map((d) => (
+                  <MenuItem
+                    key={`slide-${d}`}
+                    label={t("timeline.add_transition_slide", {
+                      direction: directionLabel(d),
+                      defaultValue: "Add slide · {{direction}}",
+                    })}
+                    onSelect={() => onAddTransition(transitionCut, "Slide", d)}
+                  />
+                ))}
+              </>
+            )}
+          </MenuPrimitive.Popup>
+        </AppMenuPositioner>
+      </MenuPrimitive.Portal>
+    </MenuPrimitive.Root>
+  );
+}

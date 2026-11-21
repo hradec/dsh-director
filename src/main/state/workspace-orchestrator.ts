@@ -1,0 +1,403 @@
+// apps/desktop/src/main/state/workspace-orchestrator.ts
+//
+// The TS-in-main home of workspace lifecycle (project_open / save_as /
+// new_workspace). Pure + dependency-injected: the TS actor handle, a WorkspaceNapi
+// facade (the granular Rust bookkeeping), an OrchestratorFs (node:fs in production,
+// in-memory in tests), node:path.join, and an idGen; wired by src/main/index.ts.
+// Handler order is LOAD-BEARING: workspace bookkeeping (cache→workspace→
+// agent-end→LogBus, inside commitWorkspace) BEFORE replace_state; recents AFTER
+// a successful swap/write.
+import { WorkspaceFailure, isWorkspaceFailure } from '../../shared/workspaceErrors'
+import { motifEntry, type ProjectMotifEntry } from '../../shared/motifs/projectMotifs'
+import type { ActorHandle } from './actor'
+import { isCommandFailure, ValidationFailure } from './errors'
+import { validate } from './validate'
+import type { IdGen } from './ids'
+import type { MediaItem, Project } from './model'
+import { blankProject, rootComposition } from './model'
+import { loadProjectFromJson, serializeProjectToJson, PROJECT_FILE, preUpgradeBackupFile } from './persistence'
+import { relinkMissingMedia, type RelinkDeps, type RelinkReport } from './relink'
+import { serializeProject, type GridRepair } from './serialize'
+import type { MigrationContext, MotifCopy, PositionBakeReport } from './migrate'
+import { foldDerivatives, type MediaDerivativesPatch } from './mutations/media'
+import { mediaAtFolder } from './projectFile'
+import { copyLateFiles, copyProjectContent, placeFilePlans, sameFolder, type MissingFile, type ProjectContentFs } from './projectContent'
+import type { PathPlatform } from './projectPathNative'
+
+/** The Rust-native workspace bookkeeping, exposed over napi (Backend methods
+ *  commit_workspace / push_recent / set_last_new_project_parent). */
+export interface WorkspaceNapi {
+  /** cache.set_workspace → workspace.set → agent_session end → LogBus rotate. */
+  commitWorkspace(path: string): Promise<number | void>
+  /** Cancel this opening's jobs; implemented by production native backend. */
+  endWorkspace?(): Promise<number | void>
+  /** recents.push — after a successful replace_state / write. */
+  pushRecent(path: string, displayName: string): Promise<void> | void
+  /** recents.set_last_new_project_parent — new-workspace flow only. */
+  setLastNewProjectParent(parent: string): Promise<void> | void
+  /** jobs::enqueue_for_media per media item (open-time derivative re-fan-out +
+   *  stale-proxy invalidation). mediaItemsJson = JSON array of serialized
+   *  MediaItem. Async napi binding → Promise; the factory fire-and-forgets it. */
+  enqueueJobsForMedia(mediaItemsJson: string): Promise<void> | void
+  /** jobs::cached_patch per media item against the committed workspace's
+   *  cache: JSON `{ <media id>: MediaDerivativesPatch }`, an item with nothing
+   *  cached left out. Starts no job. Absent (tests) → nothing is found. */
+  hydrateDerivatives?(mediaItemsJson: string): Promise<string>
+}
+
+/** Filesystem shell, injected so the orchestrator stays unit-testable. */
+export interface OrchestratorFs {
+  exists(path: string): boolean
+  /** Throws if the file is missing — only called after `exists`. */
+  readFile(path: string): string
+  /** Replaces the file whole: on failure it throws and the previous file stays
+   *  (atomicWrite.ts in production). */
+  writeFile(path: string, text: string): void
+  /** create_dir_all equivalent. */
+  mkdirp(dir: string): void
+  /** Best-effort delete (stale quick proxies); must not throw on a missing file. */
+  rm(path: string): void
+}
+
+/** What copying one planned Motif into `Motifs/<id>/` came to: the revision
+ *  its folder holds, or null and why it holds none; with a copy, the lineage
+ *  and source its entry takes when they differ from what the upgrade
+ *  planned (a draft's lineage recorded only now, a folder kept from an
+ *  earlier copy). */
+export interface MotifCopyOutcome { id: string; revision: string | null; diagnostic?: string; uid?: string; from?: ProjectMotifEntry['from'] }
+
+export interface OrchestratorDeps {
+  /** The facts an upgrade of the project in `dir` may need. */
+  migration?: (dir: string) => MigrationContext
+  /** Copies the Motif packages an upgrade recorded into `<dir>/Motifs/`
+   *  (`main/motif/legacyResolve.ts`). Never throws: a copy that fails answers
+   *  a null revision. Without it every planned copy stays missing. */
+  placeMigratedMotifs?: (dir: string, copies: readonly MotifCopy[]) => MotifCopyOutcome[]
+  /** Copies the open project's Motif folders that `ids` names from `from` to
+   *  `to` for Save As (`main/motif/projectCopy.ts`); throws when one fails.
+   *  Without it the saved copy holds no Motif folder. */
+  copyMotifs?: (from: string, to: string, ids: readonly string[]) => void
+  /** Moves and copies files inside a project folder and between two
+   *  (projectContent.ts); node:fs/promises in production. Without it Save As
+   *  copies no project content and every file an upgrade planned to copy
+   *  stays missing. */
+  contentFs?: ProjectContentFs
+  /** Whose path rules an open places the media in its folder by. The
+   *  host's by default. */
+  platform?: PathPlatform
+  actor: Pick<ActorHandle, 'replaceState' | 'snapshot' | 'dispatch'>
+  napi: WorkspaceNapi
+  fs: OrchestratorFs
+  join: (...parts: string[]) => string
+  idGen: IdGen
+  /** Open-time derivative re-fan-out (paired with the event-based jobs
+   *  write-back). Optional — omitted in tests; a no-op then. */
+  enqueueDerivatives?: (project: Project) => void
+  /** Open-time relink-by-content self-heal (relink.ts) for workspace-managed
+   *  media whose on-disk filename changed in transit. Optional — omitted in
+   *  tests / hosts without a native hash, and the open skips healing. */
+  relink?: RelinkDeps
+  /** Surfaced only when the heal did something (or left items missing) —
+   *  the host turns it into a LogBus entry. Fired AFTER commitWorkspace
+   *  (which rotates the per-workspace LogBus), never during the heal. */
+  onRelink?: (report: RelinkReport) => void
+  /** Surfaced only when `parseProject`'s load pass actually moved a timeline field
+   *  (off-grid geometry, or a negative start) — the host turns it into a LogBus
+   *  row so a silently-migrated project is visible. Same timing constraint as
+   *  `onRelink`: fired AFTER commitWorkspace, never during the parse. */
+  onGridRepair?: (repairs: readonly GridRepair[]) => void
+  /** Surfaced only when the migration chain moved the project to a newer schema
+   *  version — the one on-open event that changes what the next save will write.
+   *  Same timing constraint as the two reports above. */
+  onSchemaUpgrade?: (report: SchemaUpgradeReport) => void
+}
+
+export interface SchemaUpgradeReport {
+  bakedPositions?: PositionBakeReport[]
+  /** The schema version the file on disk was at. */
+  from: number
+  /** The version it now holds in memory (the build's `SCHEMA_VERSION`). */
+  to: number
+  /** Verified byte-for-byte backup; opening is refused if preservation fails. */
+  backupFile: string
+  /** Table entries left without a folder: nothing resolved them, or their
+   *  copy failed (`diagnostic`). Absent when every Motif was copied. */
+  missingMotifs?: { id: string; diagnostic?: string }[]
+  /** Media files the upgrade moved into the project folder that are not
+   *  there: their copy failed. Absent when every copy was made. */
+  missingMedia?: MissingFile[]
+}
+
+/** The derivatives the committed workspace's cache already holds for the
+ *  pool's items, by media id. Best-effort: a failure (another workspace
+ *  committed meanwhile, a native error) finds none, and the jobs make them. */
+async function cachedDerivatives(napi: WorkspaceNapi, pool: Record<string, MediaItem>): Promise<Record<string, MediaDerivativesPatch>> {
+  if (!napi.hydrateDerivatives) return {}
+  // Runtime items, never their disk form (projectFile.ts): Rust reads the
+  // paths only the runtime holds.
+  const items = Object.values(pool).filter(item => !item.file_hash_blake3.startsWith('pending-'))
+  if (items.length === 0) return {}
+  try {
+    return JSON.parse(await napi.hydrateDerivatives(JSON.stringify(items))) as Record<string, MediaDerivativesPatch>
+  } catch (error) {
+    console.warn('[media] cached derivatives could not be read', error)
+    return {}
+  }
+}
+
+/** The project with each planned copy's outcome in its Motif table: an entry
+ *  whose copy failed, or that nothing copied, holds no revision, and takes
+ *  the lineage and source the outcome answers. Answers the entries left
+ *  without a revision. */
+function settleMotifCopies(project: Project, copies: readonly MotifCopy[], outcomes: readonly MotifCopyOutcome[]): { project: Project; missing: { id: string; diagnostic?: string }[] } {
+  const motifs = { ...project.motifs }
+  const diagnostics = new Map<string, string>()
+  for (const { id } of copies) {
+    const outcome = outcomes.find(o => o.id === id)
+    const entry = motifEntry(motifs, id)
+    if (!entry) continue
+    motifs[id] = {
+      uid: outcome?.uid ?? entry.uid,
+      revision: outcome?.revision ?? null,
+      from: outcome?.from !== undefined ? outcome.from : entry.from,
+    }
+    if (!outcome?.revision) diagnostics.set(id, outcome?.diagnostic ?? 'The Motif was not copied into the project')
+  }
+  const missing = Object.entries(motifs).filter(([, entry]) => entry.revision === null)
+    .map(([id]) => diagnostics.has(id) ? { id, diagnostic: diagnostics.get(id)! } : { id })
+  return { project: { ...project, motifs }, missing }
+}
+
+/** project_open. Pre-checks → load (schema gate + migration chain) →
+ *  preserve pre-upgrade bytes → validate → copy migrated Motifs + carry out
+ *  the upgrade's file plans → commit_workspace (pre-broadcast) → relink heal
+ *  → cached derivatives → onGridRepair + onSchemaUpgrade reports →
+ *  replace_state → onRelink report → push_recent → (deferred) derivative
+ *  re-fan-out and import recovery. All three reports sit after
+ *  commit_workspace because it rotates the per-workspace LogBus. */
+export async function openProject(deps: OrchestratorDeps, dir: string): Promise<void> {
+  const { actor, napi, fs, join } = deps
+  const platform = deps.platform ?? process.platform
+  // Every refusal on this path is a WorkspaceError, never prose: the launch
+  // surface renders them as localized copy (shared/workspaceErrors.ts).
+  if (!fs.exists(dir)) throw new WorkspaceFailure({ error: 'ProjectFolderMissing' })
+  const file = join(dir, PROJECT_FILE)
+  if (!fs.exists(file)) throw new WorkspaceFailure({ error: 'NotProjectFolder' })
+
+  const text = fs.readFile(file)
+  // CAPTURE the repair report, do not emit it here. The LogBus is per-workspace and
+  // `commitWorkspace` below ROTATES it, so a row emitted during the parse lands in
+  // the doomed pre-open bus (or nowhere at all on a fresh launch) and silently
+  // vanishes — the same trap `OrchestratorDeps.onRelink` documents. Object
+  // identity cannot carry the report instead: placing the media in `dir` and
+  // other load repairs may spread into fresh objects, so a WeakMap keyed on
+  // the parsed project is already dead by the time `replaceState` runs.
+  let gridRepairs: readonly GridRepair[] = []
+  // The schema gate inside already refuses in the workspace vocabulary; what is
+  // left to translate is everything below it — a JSON syntax error, a structural
+  // cast failure — which would otherwise reach the launch surface as raw English
+  // prose. Its wording (an offset, a field name) is the only actionable thing
+  // left to say, so it rides along as `detail` rather than being discarded.
+  let loaded: ReturnType<typeof loadProjectFromJson>
+  try {
+    loaded = loadProjectFromJson(text, { dir, platform, onGridRepair: (r) => { gridRepairs = r }, migration: deps.migration?.(dir) })
+  } catch (e) {
+    if (isWorkspaceFailure(e)) throw e
+    throw new WorkspaceFailure({ error: 'ProjectFileUnreadable', detail: String(e) })
+  }
+  let project = loaded.project
+
+  // A schema upgrade happened in memory only; project.json still holds the old
+  // bytes until the first edit's autosave overwrites it. Preserve them NOW —
+  // this is the last moment they exist, and if a migration step is wrong they are
+  // the only way back. Written straight from `text` rather than re-serializing:
+  // a re-serialization would already be the upgraded shape.
+  //
+  // Backup is mandatory. Reuse identical bytes, otherwise retain a new numbered
+  // copy. A backup error leaves both disk and the currently open project intact.
+  let schemaUpgrade: SchemaUpgradeReport | null = null
+  if (loaded.upgradedFrom !== null) {
+    let backupFile = preUpgradeBackupFile(loaded.upgradedFrom)
+    try {
+      // Preserve THIS input as well as older backups of the same generation.
+      let suffix = 0
+      while (fs.exists(join(dir, backupFile)) && fs.readFile(join(dir, backupFile)) !== text) {
+        backupFile = `project.pre-v${loaded.upgradedFrom}.${++suffix}.json`
+      }
+      if (!fs.exists(join(dir, backupFile))) fs.writeFile(join(dir, backupFile), text)
+      if (fs.readFile(join(dir, backupFile)) !== text) throw new Error('backup verification failed')
+    } catch (error) {
+      throw new WorkspaceFailure({ error: 'ProjectFileUnreadable', detail: `Cannot preserve original project before migration: ${String(error)}` })
+    }
+    schemaUpgrade = { from: loaded.upgradedFrom, to: project.schema_version, backupFile,
+      ...(loaded.bakedPositions.length ? { bakedPositions: loaded.bakedPositions } : {}) }
+
+  }
+
+  // Refuse invalid state before cancelling the current workspace's resources.
+  try { validate(project) }
+  catch (e) {
+    throw new WorkspaceFailure({ error: 'ProjectInvalid', detail: e instanceof ValidationFailure
+      ? JSON.stringify({ error: 'ValidationFailed', detail: e.err }) : String(e) })
+  }
+
+  // The upgrade only planned its Motif copies: they are written once the
+  // original is preserved and the upgraded project is known to open, and
+  // before it is installed, so the table never names a copy that was not made.
+  if (schemaUpgrade) {
+    const outcomes = loaded.motifCopies.length ? deps.placeMigratedMotifs?.(dir, loaded.motifCopies) ?? [] : []
+    const settled = settleMotifCopies(project, loaded.motifCopies, outcomes)
+    project = settled.project
+    if (settled.missing.length) schemaUpgrade.missingMotifs = settled.missing
+    // Before the re-fan-out: import recovery hashes a voiceover copied here.
+    const missingMedia = deps.contentFs
+      ? await placeFilePlans(dir, loaded.filePlans, deps.contentFs, platform)
+      : loaded.filePlans.filter(plan => plan.mode === 'copy').map(plan => ({ path: plan.to, diagnostic: 'The file was not copied into the project' }))
+    if (missingMedia.length) schemaUpgrade.missingMedia = missingMedia
+  }
+
+  // Re-point cache + workspace BEFORE the state swap, so project:changed
+  // consumers see the workspace, not the boot fallback.
+  await napi.commitWorkspace(dir)
+
+  // Relink-by-content self-heal (relink.ts). Best-effort: a heal crash must
+  // never block the open — the un-healed project still loads (MissingMedia UI).
+  let relinkReport: RelinkReport | null = null
+  if (deps.relink) {
+    try {
+      const healed = await relinkMissingMedia(project, dir, deps.relink)
+      project = healed.project
+      if (healed.report.healed.length > 0 || healed.report.missing.length > 0) relinkReport = healed.report
+    } catch { /* keep the un-healed project */ }
+  }
+
+  // After the heal, which settles each item's file and hash; before the swap,
+  // so the first published state already shows what the cache holds.
+  project = { ...project, media_pool: foldDerivatives(project.media_pool, await cachedDerivatives(napi, project.media_pool)) }
+
+  // Emitted BEFORE replace_state deliberately: the repair is what lets an older
+  // project satisfy the backstop at all, so if the swap STILL fails validation this
+  // row is the diagnostic that says what load already had to move.
+  if (gridRepairs.length > 0) { try { deps.onGridRepair?.(gridRepairs) } catch { /* best-effort, never blocks the open */ } }
+  // Before replace_state for the same reason as the grid-repair row: if the swap
+  // fails validation, "this file was upgraded from v{n}" is the first thing worth
+  // knowing about why.
+  if (schemaUpgrade) { try { deps.onSchemaUpgrade?.(schemaUpgrade) } catch { /* best-effort, never blocks the open */ } }
+  // Throws CommandFailure on invalid. Retranslated rather than propagated: the
+  // editor's refusal formatter resolves the uuids in a CommandError against the
+  // renderer's project mirror, which on the launch surface is empty — so the
+  // structure is kept for the log's disclosure and the copy stays generic.
+  try {
+    actor.replaceState(project)
+  } catch (e) {
+    throw new WorkspaceFailure({
+      error: 'ProjectInvalid',
+      detail: isCommandFailure(e) ? JSON.stringify(e.err) : String(e),
+    })
+  }
+  // After commitWorkspace — see OrchestratorDeps.onRelink.
+  if (relinkReport) { try { deps.onRelink?.(relinkReport) } catch { /* best-effort, never blocks the open */ } }
+  await napi.pushRecent(dir, project.metadata.name)
+
+  // Re-fan-out derivative jobs (proxies/thumbnails/waveforms). No-op when the
+  // host doesn't inject it (tests).
+  deps.enqueueDerivatives?.(project)
+}
+
+/** project_save_as. snapshot → copy the project content and the Motif
+ *  folders from `from` → write project.json → commit_workspace → place the
+ *  pool in `dir` with the new cache's derivatives (`rebase_media`) →
+ *  push_recent → derivative re-fan-out. Never swaps state (the actor already
+ *  holds it). A failed copy fails the save before project.json names it. */
+export async function saveProjectAs(deps: OrchestratorDeps, dir: string, from?: string | null): Promise<void> {
+  const { actor, napi, fs, join } = deps
+  const snap = actor.snapshot()
+  fs.mkdirp(dir)                                              // save_to_dir's create_dir_all
+  const moves = !!from && !(deps.contentFs && await sameFolder(deps.contentFs, from, dir, deps.platform ?? process.platform))
+  if (from) {
+    if (deps.contentFs) await copyProjectContent(from, dir, deps.contentFs, deps.platform ?? process.platform)
+    deps.copyMotifs?.(from, dir, Object.keys(snap.motifs))
+  }
+  fs.writeFile(join(dir, PROJECT_FILE), serializeProjectToJson(snap))
+  await napi.commitWorkspace(dir)
+  if (moves) {
+    // The committed workspace stops the old folder's imports; one that landed
+    // while the content was being copied put its file there after the copy.
+    const pool = actor.snapshot().media_pool
+    const pooled = Object.values(pool).flatMap(item => item.path_rel ? [item.path_rel] : [])
+    if (deps.contentFs) await copyLateFiles(from!, dir, pooled, deps.contentFs, deps.platform ?? process.platform)
+    const placed = mediaAtFolder(pool, dir, deps.platform ?? process.platform)
+    const result = actor.dispatch('rebase_media', { project_dir: dir, platform: deps.platform ?? process.platform, derivatives: await cachedDerivatives(napi, placed) })
+    if (!result.ok) throw new Error(`rebase_media: ${JSON.stringify(result.error)}`)
+  }
+  await napi.pushRecent(dir, snap.metadata.name)
+  deps.enqueueDerivatives?.(actor.snapshot())
+}
+
+export interface NewWorkspaceArgs {
+  parentFolder: string; name: string
+  width: number; height: number; fpsNum: number; fpsDen: number
+}
+
+/** Build the `enqueueDerivatives` seam from the napi facade: serialize the
+ *  project's media-pool values and hand them to the Rust open-time job re-fan-out
+ *  (workspace-orchestrator's `enqueueDerivatives?` hook). Fire-and-forget (the
+ *  Rust enqueue returns immediately; jobs run on tokio). Injected into the live
+ *  OrchestratorDeps by the host.
+ *
+ *  `held` answers the record to enqueue for an item, or null to keep it out:
+ *  a derivative regenerated from a file that no longer holds the item's bytes
+ *  would be cached under them (ADR 0153). The record is the current one, since
+ *  settling may have confirmed a new mtime, which the job checks the file
+ *  against. Each item goes once it is settled. */
+export function makeEnqueueDerivatives(
+  napi: Pick<WorkspaceNapi, 'enqueueJobsForMedia'>,
+  held?: (item: MediaItem) => Promise<MediaItem | null>,
+): (project: Project) => void {
+  const enqueue = (items: unknown[]) => {
+    try {
+      void Promise.resolve(napi.enqueueJobsForMedia(JSON.stringify(items))).catch(error => {
+        console.warn('[media] derivative recovery could not start', error)
+      })
+    } catch (error) { console.warn('[media] derivative recovery could not start', error) }
+  }
+  return (project) => {
+    const serialized = (serializeProject(project) as { media_pool: Record<string, { file_hash_blake3: string }> }).media_pool
+    const ids = Object.keys(serialized).filter(id => !serialized[id].file_hash_blake3.startsWith('pending-'))
+    if (!held) { enqueue(ids.map(id => serialized[id])); return }
+    for (const id of ids) {
+      void held(project.media_pool[id]).then(item => { if (item) enqueue([item]) }, () => {})
+    }
+  }
+}
+
+/** project_new_workspace. Validate → blank project with
+ *  the canvas preset → write → commit_workspace → replace_state → push_recent +
+ *  set_last_new_project_parent. Returns the created workspace path. */
+export async function newWorkspace(deps: OrchestratorDeps, args: NewWorkspaceArgs): Promise<string> {
+  const { actor, napi, fs, join, idGen } = deps
+  const trimmed = args.name.trim()
+  if (trimmed.length === 0) throw new WorkspaceFailure({ error: 'ProjectNameRequired' })
+  if (args.width === 0 || args.height === 0 || args.fpsNum === 0 || args.fpsDen === 0) {
+    throw new WorkspaceFailure({ error: 'InvalidCanvasPreset' })
+  }
+  const target = join(args.parentFolder, trimmed)
+  // Never overwritten: the occupant may be an unrelated folder full of the
+  // user's files. The path is not on the wire — the dialog composed it and is
+  // already previewing it under the name field.
+  if (fs.exists(target)) throw new WorkspaceFailure({ error: 'ProjectFolderExists' })
+
+  const project = blankProject(idGen, trimmed)
+  const root = rootComposition(project)
+  root.width = args.width
+  root.height = args.height
+  root.fps = { num: args.fpsNum, den: args.fpsDen }
+
+  fs.mkdirp(target)
+  fs.writeFile(join(target, PROJECT_FILE), serializeProjectToJson(project))
+  await napi.commitWorkspace(target)
+  actor.replaceState(project)
+  await napi.pushRecent(target, project.metadata.name)
+  await napi.setLastNewProjectParent(args.parentFolder)
+  return target
+}

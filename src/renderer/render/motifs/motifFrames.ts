@@ -1,0 +1,119 @@
+// Pure frame-math helpers for motif rendering. Extracted from
+// MotifSprite.ts so motifFrameDescriptor.ts (and the prewarmer) can
+// import them without creating a circular dependency:
+//   motifFrameDescriptor → MotifSprite → motifFrameDescriptor
+//
+// This module is deliberately low-dependency: only the pure frame-grid helper
+// from `../../frames`. No Pixi, no DOM, no catalog — Node-testable.
+
+import { frameIndexInLayer } from "../../frames";
+
+export const US_PER_SEC = 1_000_000;
+
+/// Total animated frames a motif spans over `durationUs` on the comp-fps
+/// grid, clamped to at least 1 (a zero/sub-frame placement still shows frame
+/// 0). Exact-rational (no pre-rounded frame duration) to match the rest of
+/// the renderer's frame math. Exported for unit testing.
+export function motifDurationFrames(
+  durationUs: number,
+  fpsNum: number,
+  fpsDen: number,
+): number {
+  if (fpsNum <= 0 || fpsDen <= 0) return 1;
+  return Math.max(1, Math.round((durationUs * fpsNum) / (US_PER_SEC * fpsDen)));
+}
+
+/// Exact-rational seconds at the start of comp frame `frame`. The harness
+/// renders `render(tSec)` at this time. Exported for unit testing.
+export function frameTimeSec(frame: number, fpsNum: number, fpsDen: number): number {
+  if (fpsNum <= 0) return 0;
+  return (frame * fpsDen) / fpsNum;
+}
+
+/// Compute the content-frame selection for the preview path. `contentDurationUs`
+/// is the resolved intrinsic content duration (or the layer width for uncapped
+/// motifs); `srcInUs` is the window offset (0 for uncapped). Returns the
+/// absolute content frame to render and the total content-duration frame count
+/// (for the cache key). Exported for unit testing.
+export function motifContentFrame(
+  tInLayerUs: number,
+  srcInUs: number,
+  contentDurationUs: number,
+  fpsNum: number,
+  fpsDen: number,
+): { frame: number; contentDurationFrames: number } {
+  const contentDurationFrames = motifDurationFrames(contentDurationUs, fpsNum, fpsDen);
+  const contentTimeUs = srcInUs + Math.max(0, tInLayerUs);
+  const frame = Math.min(
+    contentDurationFrames - 1,
+    frameIndexInLayer(contentTimeUs, fpsNum, fpsDen),
+  );
+  return { frame, contentDurationFrames };
+}
+
+/// Reconstruct the `tInLayerUs` the compositor derives for the layer-local
+/// frame slot `layerLocalFrame` of a layer starting at `tStartUs`. A
+/// composition frame at index `layerStartFrame + layerLocalFrame` arrives at
+/// the compositor as `tInLayerUs = snapFrameFloor(compFrameUs) - tStartUs`;
+/// this rebuilds that same value from the frame index so a caller that plans
+/// per-frame (the export bake) selects content frames IDENTICAL to the live
+/// preview, including where the fractional parts of `srcInUs` and `tInLayerUs`
+/// would make floor(a) + floor(b) ≠ floor(a+b) inside `motifContentFrame`.
+/// Exported for the export bake + unit testing.
+export function tInLayerUsForLayerLocalFrame(
+  layerLocalFrame: number,
+  tStartUs: number,
+  fpsNum: number,
+  fpsDen: number,
+): number {
+  // Reconstruct the absolute comp-frame index for this layer-local slot.
+  const layerStartFrame = frameIndexInLayer(tStartUs, fpsNum, fpsDen);
+  const absFrame = layerStartFrame + layerLocalFrame;
+  // Reconstruct the comp-grid µs for that absolute frame — same as the
+  // compositor's `snapFrameFloor(playheadUs)` for a playhead sitting exactly
+  // on a frame boundary. absFrame is always an integer, so
+  //   Math.round(absFrame * US_PER_SEC * fpsDen / fpsNum)
+  // is the exact half-up grid value (matches snapFrameFloor on-grid).
+  const compFrameUs = Math.round((absFrame * US_PER_SEC * fpsDen) / fpsNum);
+  return compFrameUs - tStartUs;
+}
+
+export interface MotifFrameCacheKeyInput {
+  motifId: string;
+  version: number;
+  /// The package revision — makes the key source-derived, so an edit of a
+  /// project Motif busts the cache even though `version` stays the same.
+  contentHash?: string;
+  canonicalProps: Record<string, unknown>;
+  renderW: number;
+  renderH: number;
+  fpsNum: number;
+  fpsDen: number;
+  durationFrames: number;
+  /// The pictures `media` props name (`MotifView.media_keys`). Absent for a
+  /// Motif without one, so its key is unchanged.
+  mediaKeys?: Record<string, string>;
+}
+
+/// Stable opaque key for `MotifFrameCache`. The cache appends `#<frame>@<div>`;
+/// callers must not. `canonicalProps` is already in stable key order
+/// (`canonicalizeProps` or `canonicalizePropsLenient`), so its JSON is deterministic. Exported for unit
+/// testing.
+export function motifFrameCacheKey(input: MotifFrameCacheKeyInput): string {
+  return [
+    // Moves whenever stored frames become unreadable or wrong: a new `.wfrm`
+    // layout or a capture fix (ADR 0078). Directories under an older
+    // namespace are no longer live, so collection removes them unread.
+    "surface-v7",
+    input.motifId,
+    String(input.version),
+    input.contentHash ?? "",
+    String(input.renderW),
+    String(input.renderH),
+    String(input.fpsNum),
+    String(input.fpsDen),
+    String(input.durationFrames),
+    JSON.stringify(input.canonicalProps),
+    ...(input.mediaKeys ? [JSON.stringify(input.mediaKeys)] : []),
+  ].join("|");
+}

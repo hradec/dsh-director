@@ -63,13 +63,24 @@
     "@deepseek-ai/cordis": "^4.0.2"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@base-ui/react": "^1.9.0",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "i18next-browser-languagedetector": "^8.3.1",
+    "immer": "^11.2.10",
+    "lucide-react": "^1.77.0",
+    "mediabunny": "^1.66.2",
+    "pinyin-pro": "^3.29.5",
+    "pixi.js": "^8.23.0",
+    "tailwind-merge": "^3.7.1",
+    "zustand": "^5.1.0"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
+    "jsdom": "^26.0.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "jsdom": "^26.0.0",
     "yaml": "^2.8.0"
   }
 }

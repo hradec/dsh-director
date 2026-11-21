@@ -1,0 +1,186 @@
+import type { Layer, LayerParams, Marker, MarkerAnchor, Project, Rgba, TextParams, TrackRole, Uuid } from '../model'
+import type { IdGen } from '../ids'
+import { gridForLayerKind, snapOnGrid } from '../snap'
+import { authoredExtentPx } from '../quantize'
+import { applyDurationAutofit, compositionOf, locateTrack, scopeComposition } from './helpers'
+import { snapMarkerTimes } from './markers'
+import { CommandFailure } from '../errors'
+import { DEFAULT_CAPTION_FONT_FAMILY } from '../../../shared/fonts'
+import { staticPosition } from '../../../shared/position'
+
+/** THE Color constructor — every creation path funnels here, including the two
+ *  MCP ones (`actor.ts` add_layers / the layer-spec builder). So the extent policy has to hold here and
+ *  not only in `applyParamsPatch`: a layer BORN 1920.7 px wide would otherwise
+ *  never meet the check that an edit to the same field must pass. */
+export function colorParams(color: Rgba, width: number, height: number): LayerParams {
+  return {
+    kind: 'Color',
+    color: { mode: 'Static', value: color },
+    width: authoredExtentPx('width', width),
+    height: authoredExtentPx('height', height),
+  }
+}
+/** THE default Text params — `prodTextParams` and `add_demo_text_layer` both
+ *  delegate here. Three factories each naming their own family is how the
+ *  bundled-font determinism guarantee stopped holding on the default authoring
+ *  path, so there is one (ADR 0049).
+ *
+ *  `x`/`y` are the ANCHOR point for Text, so half the composition plus the
+ *  default 0.5 anchor lands the layer dead centre. No cascade offset for
+ *  successive text layers — they stack exactly on top of each other, the way
+ *  Premiere and After Effects place theirs, because an offset makes "duplicate a
+ *  title and keyframe it" land somewhere the user did not ask for. */
+export function textParamsDefault(content: string, comp: { width: number; height: number }): TextParams {
+  return {
+    kind: 'Text', content,
+    font: { family: DEFAULT_CAPTION_FONT_FAMILY, size_px: 72, weight: 400, italic: false },
+    color: { mode: 'Static', value: { r: 255, g: 255, b: 255, a: 255 } },
+    align: 'Center',
+    transform: { ...defaultTransform(), position: staticPosition(comp.width / 2, comp.height / 2) },
+    opacity: { mode: 'Static', value: 1 },
+    shadow: null, outline: null, intro: null, outro: null,
+    box_w: null, box_h: null, valign: 'Middle', line_height: 0, letter_spacing: 0,
+    graphic_role: null,
+  }
+}
+export function defaultTransform(x = 0, y = 0) {
+  const s = (v: number) => ({ mode: 'Static' as const, value: v })
+  return { position: staticPosition(x, y), scale_x: s(1), scale_y: s(1), rotation_deg: s(0), anchor_x: s(0.5), anchor_y: s(0.5), scale_linked: true }
+}
+
+/** Snaps both edges onto the new layer's OWN grid — the 48 kHz sample lattice for an
+ *  Audio layer, the composition frame grid otherwise (spec R2-D6) — inserts
+ *  t-start-sorted, autofits.
+ *
+ *  An auto-paired A/V drop therefore gives the two members the same REQUESTED time
+ *  resolved on two lattices. At the six rates where the frame lattice is an exact
+ *  sublattice of 48 kHz they land identically; at 29.97 / 59.94 the audio lands on
+ *  the sample boundary nearest the video frame — which is where the mixer would have
+ *  played it anyway (`mix.rs` rounds `t_start_us` to a sample), so this stores what
+ *  renders instead of a value that renders as something else.
+ *
+ *  The composition is the TRACK's: a track lives in exactly one, so the lane
+ *  names the scope and no separate composition argument is needed.
+ *
+ *  Allocates the layer id only AFTER the track-existence check (id contract). */
+export function applyAddLayer(p: Project, idGen: IdGen, trackId: Uuid, params: LayerParams, tStartUs: number, tEndUs: number): Uuid {
+  const dest = locateTrack(p, trackId)
+  if (!dest) throw new CommandFailure({ error: 'TrackNotFound', track: trackId })
+  const { comp: c, track } = dest
+  const grid = gridForLayerKind(params.kind, c.fps)
+  const t0 = snapOnGrid(tStartUs, grid)
+  const t1 = snapOnGrid(tEndUs, grid)
+  const layerId = idGen()
+  const layer: Layer = { id: layerId, label: null, t_start_us: t0, t_end_us: t1, enabled: true, locked: false, metadata: {}, params, effects: [] }
+  const at = track.layers.findIndex((l) => l.t_start_us > t0)
+  track.layers.splice(at < 0 ? track.layers.length : at, 0, layer)
+  applyDurationAutofit(c)
+  return layerId
+}
+
+/** The reference chain from `from` to `target` — `[from, …, target]`, or `[from]`
+ *  when they are the same composition — else null when `from` cannot reach it.
+ *  Breadth-first, so the loop a refusal reports is the shortest one.
+ *
+ *  Exported because every op that can make a composition contain itself has to
+ *  ask the same question — placing a Group (here) and moving one into a Group
+ *  (`applyGroupsAddMembers`) — and a second reachability walk would be a second
+ *  answer. */
+export function compositionRefPath(p: Project, from: Uuid, target: Uuid): Uuid[] | null {
+  const queue: Uuid[][] = [[from]]
+  const seen = new Set<Uuid>([from])
+  while (queue.length > 0) {
+    const path = queue.shift()!
+    const here = path[path.length - 1]
+    if (here === target) return path
+    for (const t of p.compositions[here]?.tracks ?? [])
+      for (const l of t.layers) {
+        if (l.params.kind !== 'CompositionRef') continue
+        if (seen.has(l.params.composition)) continue
+        seen.add(l.params.composition)
+        queue.push([...path, l.params.composition])
+      }
+  }
+  return null
+}
+
+/** Place an EXISTING composition as one Group layer on `trackId` at `tStartUs`,
+ *  windowed over the whole composition with an identity transform — the media
+ *  pool's drop, and the second way a Group reaches a timeline (pre-compose is the
+ *  first, and it is the only one that also creates the composition).
+ *
+ *  The destination is the TRACK's composition, like every other layer add, so the
+ *  lane names the scope. Every refusal is decided before the first write, so a
+ *  refused placement leaves the project byte-identical and burns no layer id:
+ *
+ *  - an unknown source → `CompositionNotFound`; the root → `RootComposition`,
+ *    because nothing may contain the timeline export renders;
+ *  - a source that already reaches the destination — itself included, which is
+ *    the drag-into-yourself case → `CompositionCycle` naming the loop. Validate
+ *    would catch it on commit, but the renderer greys the drop target on the same
+ *    rule and this is what makes the two agree;
+ *  - a source with nothing inside it → `InvalidArgument`: its `duration_us` is 0,
+ *    so the only window available would be an empty one;
+ *  - a `tEndUs` past the source's length → `InvalidArgument`: the window would
+ *    overhang into nothing. Omitted, the layer spans the whole composition.
+ */
+export function applyAddGroupLayer(p: Project, idGen: IdGen, sourceCompositionId: Uuid, trackId: Uuid, tStartUs: number, tEndUs?: number): Uuid {
+  const source = compositionOf(p, sourceCompositionId)
+  if (source.id === p.root_id) throw new CommandFailure({ error: 'RootComposition', composition: source.id })
+  const dest = locateTrack(p, trackId)
+  if (!dest) throw new CommandFailure({ error: 'TrackNotFound', track: trackId })
+  const reached = compositionRefPath(p, source.id, dest.comp.id)
+  if (reached !== null)
+    throw new CommandFailure({ error: 'ValidationFailed', detail: { rule: 'CompositionCycle', path: [dest.comp.id, ...reached] } })
+  if (source.duration_us <= 0)
+    throw new CommandFailure({ error: 'InvalidArgument', field: 'composition_id', detail: `composition ${source.id} holds no content` })
+  const span = tEndUs === undefined ? source.duration_us : tEndUs - tStartUs
+  if (span > source.duration_us)
+    throw new CommandFailure({ error: 'InvalidArgument', field: 't_end_us', detail: `composition ${source.id} lasts ${source.duration_us} µs; a ${span} µs span would show nothing past its end` })
+  const params: LayerParams = {
+    kind: 'CompositionRef', composition: source.id, src_in_us: 0, src_out_us: span,
+    transform: defaultTransform(source.width / 2, source.height / 2), opacity: { mode: 'Static', value: 1 }, blend_mode: 'Normal',
+  }
+  return applyAddLayer(p, idGen, trackId, params, tStartUs, tStartUs + span)
+}
+
+/** Insert a new track with Track::new() defaults at `position` (default: end).
+ *  `role` is always null here, so `transient` — "not part of the reserved
+ *  skeleton" — is always true: every track this mints is a cleanup candidate the
+ *  moment it empties (docs/data-model.md#track). Lands in `compositionId`, the
+ *  root by default. */
+export function applyAddTrack(p: Project, idGen: IdGen, label: string | null, position?: number, compositionId?: Uuid | null): Uuid {
+  const c = scopeComposition(p, compositionId)
+  const id = idGen()
+  const track = { id, label, enabled: true, locked: false, muted: false, solo: false, removable: true, role: null as TrackRole | null, transient: true, height_px: 64, layers: [] as Layer[] }
+  const len = c.tracks.length
+  const at = Math.min(position ?? len, len)
+  c.tracks.splice(at, 0, track)
+  return id
+}
+
+/** The colour a marker is born with when its creator names none — the
+ *  timeline's marker blue. */
+export const DEFAULT_MARKER_COLOR: Rgba = { r: 0, g: 128, b: 255, a: 255 }
+
+/** Marker inserted t-sorted. Times land on the composition frame grid via
+ *  `snapMarkerTimes`, which also rejects a collapsed region — before the id is
+ *  minted, so a rejected marker burns none (id contract). Markers are per
+ *  composition: `compositionId` names the one to mark, the root by default.
+ *
+ *  `note` and `anchor` come LAST and optional so every caller that only wants a
+ *  free, unannotated marker reads exactly as it did before anchoring existed;
+ *  the defaults (`''` / `null`) are the same values the load-path backfill
+ *  writes, so a marker born here and one read off disk are indistinguishable.
+ *  `anchor` is taken on trust here — `validate` owns whether the layer it names
+ *  is in this composition and carries a source window, and the caller is
+ *  responsible for having derived `tUs` from it (nothing here does). */
+export function applyAddMarker(p: Project, idGen: IdGen, tUs: number, endTUs: number | null, label: string, color: Rgba, compositionId?: Uuid | null, note?: string, anchor?: MarkerAnchor | null): Uuid {
+  const c = scopeComposition(p, compositionId)
+  const snapped = snapMarkerTimes(c, tUs, endTUs)
+  const id = idGen()
+  const marker: Marker = { id, t_us: snapped.tUs, end_t_us: snapped.endTUs, label, note: note ?? '', color, anchor: anchor ?? null }
+  const at = c.markers.findIndex((m) => m.t_us > snapped.tUs)
+  c.markers.splice(at < 0 ? c.markers.length : at, 0, marker)
+  return id
+}

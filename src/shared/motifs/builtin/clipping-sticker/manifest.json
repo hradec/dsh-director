@@ -1,0 +1,108 @@
+{
+  "id": "clipping-sticker",
+  "name": "Clipping Sticker",
+  "version": 1,
+  "size": [
+    900,
+    760
+  ],
+  "default_duration_s": 5.0,
+  "max_duration_prop": "duration_s",
+  "graphic_role": "illustration",
+  "props_schema": {
+    "duration_s": {
+      "type": "number",
+      "default": 5.0,
+      "min": 0.5,
+      "max": 600
+    },
+    "exit": {
+      "type": "enum",
+      "options": [
+        "none",
+        "lift",
+        "fade",
+        "slide_left",
+        "slide_right",
+        "slide_up",
+        "slide_down"
+      ],
+      "default": "lift"
+    },
+    "photo": {
+      "type": "media",
+      "default": ""
+    },
+    "crop_left": {
+      "type": "number",
+      "default": 0,
+      "min": 0,
+      "max": 0.9
+    },
+    "crop_top": {
+      "type": "number",
+      "default": 0,
+      "min": 0,
+      "max": 0.9
+    },
+    "crop_right": {
+      "type": "number",
+      "default": 0,
+      "min": 0,
+      "max": 0.9
+    },
+    "crop_bottom": {
+      "type": "number",
+      "default": 0,
+      "min": 0,
+      "max": 0.9
+    },
+    "frame": {
+      "type": "enum",
+      "options": [
+        "paper",
+        "torn",
+        "cutout",
+        "none"
+      ],
+      "default": "paper"
+    },
+    "treatment": {
+      "type": "enum",
+      "options": [
+        "color",
+        "mono",
+        "halftone"
+      ],
+      "default": "color"
+    },
+    "tilt_deg": {
+      "type": "number",
+      "default": -3,
+      "min": -15,
+      "max": 15
+    },
+    "ink": {
+      "type": "color",
+      "default": "#16130F"
+    },
+    "paper": {
+      "type": "color",
+      "default": "#F2ECDF"
+    },
+    "step_fps": {
+      "type": "number",
+      "default": 0,
+      "min": 0,
+      "max": 30
+    },
+    "tape": {
+      "type": "enum",
+      "options": [
+        "none",
+        "strip"
+      ],
+      "default": "none"
+    }
+  }
+}

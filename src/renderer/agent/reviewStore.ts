@@ -1,0 +1,489 @@
+// The renderer's copy of the Review view (spec `.scratch/agent-review/spec.md`
+// Part B; ADR 0115): unreviewed changes, the user's own, and the Group layers
+// containing either. Main computes it lazily, so the renderer reads it only
+// while a review surface is mounted — the Changes tab, the editor timeline under
+// the Review overlay, the agent view's mini timeline, the notification center's
+// review row.
+//
+// One owner: consumers `acquireReview()` (or `useReviewView()`); the first one
+// subscribes to `review:changed` and to project publications and fetches, the
+// last one to leave unsubscribes. Replies older than the view held — by project
+// publication or by baseline revision — are dropped, so a fetch that started
+// before an approval or a revert can never paint those changes back.
+import { useCallback, useEffect, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
+import { create } from 'zustand'
+import { listen, type UnlistenFn } from '@/bridge/events'
+import { REVIEW_CHANGED_EVENT, reviewActivityView, reviewApproveAll, reviewRevertAll, reviewView } from '../ipc'
+import type { Change, ReviewActionResult, ReviewVersion, ReviewView, ReviewViewUnchanged } from '../../shared/review'
+import { tryMutate } from '../errors/tryMutate'
+import { useProjectStore } from '../state/projectStore'
+import { useAgentActivity } from './activityStore'
+import type { AgentActivity } from '../../shared/agent-activity'
+import { changeWordsContext, type ChangeFrame, type ChangeWordsContext, type Translate } from './changeWords'
+import { rangeLine } from './rangeWords'
+import { buildReviewHighlight, changeWeights, EMPTY_HIGHLIGHT, rangeMarks, type ReviewClipMark, type ReviewWeight, type ReviewCut, type ReviewGhost, type ReviewMarkerGhost, type ReviewHighlight, type ReviewRangeMark } from './reviewHighlight'
+
+/** One activity row's own changes (spec Part B, per-activity highlight):
+ *  what that call did, shown on the timelines in place of the unreviewed
+ *  changes while its row is selected. */
+export interface ActivityHighlight {
+  activityId: string
+  /** The ops asked about, and the row's effect then — a change to either
+   *  (the call committed more, an undo reverted it) refetches. */
+  historyIds: readonly string[]
+  effect: AgentActivity['effect']
+  /** `loading`: the first reply is pending (the review highlight still
+   *  shows). `unavailable`: an op has left the history window — the row says
+   *  so and nothing is highlighted. */
+  status: 'loading' | 'ready' | 'unavailable'
+  /** Every op is undone; the highlight still shows what the call did. */
+  reverted: boolean
+  /** Number of entity differences, including ones without a timeline range. */
+  count: number
+  highlight: ReviewHighlight
+}
+
+interface ReviewState {
+  view: ReviewView | null
+  /** What the timelines paint for the review: the unreviewed changes of
+   *  `view`. Rebuilt only when the view is replaced, so per-clip selectors
+   *  read a stable map. */
+  highlight: ReviewHighlight
+  /** The Changes tab's user-changes switch: user-only differences are
+   *  listed too. Off by default; runtime only, like the review itself. Main
+   *  sends that list only while it is on (`setShowUser`). It turns itself off
+   *  when a view says the user has no changes left (an undo took them back):
+   *  the filter is offered only while there is something to show. */
+  showUser: boolean
+  /** Whether `view` was asked for with the user-only list. */
+  viewListsUser: boolean
+  /** The last approve all or revert all was refused: the view it was made
+   *  from had moved on (an agent committed meanwhile), so nothing happened
+   *  and the fresh list is on screen. Names the refused action; cleared by
+   *  the next one. */
+  actionStale: ReviewAction | null
+  /** The selected activity row's changes, preferred by every timeline surface
+   *  over `highlight` once ready. Null when no row is selected. */
+  activity: ActivityHighlight | null
+  /** Take `next` unless it is older than the held view — or, at the same
+   *  version, unless it adds nothing (`listsUser` where the held view had no
+   *  user list). True when applied. */
+  apply: (next: ReviewView, listsUser?: boolean) => boolean
+  /** Take a newer version of the held lists (`ReviewViewUnchanged`): the
+   *  view's version and counts move, its lists and highlight stay. False —
+   *  nothing taken — unless the held view has those very lists. */
+  applyUnchanged: (next: ReviewViewUnchanged) => boolean
+}
+
+/** Is `next` a strictly newer view than `held`? A view is identified by its
+ *  project publication plus the baseline revision; within one session both
+ *  only grow, so a reply behind on either was computed before the held one. A
+ *  later session always wins (the project was replaced). */
+export function isNewerReviewView(next: ReviewView['version'], held: ReviewView['version'] | null): boolean {
+  if (held === null) return true
+  if (next.session !== held.session) return next.session > held.session
+  if (next.revision < held.revision || next.baseline_revision < held.baseline_revision) return false
+  return next.revision > held.revision || next.baseline_revision > held.baseline_revision
+}
+
+/** The changes the Changes tab lists: the unreviewed ones, and the user's own
+ *  while the user-changes switch is on — what a review focus can name. */
+export function listedChanges(s: Pick<ReviewState, 'view' | 'showUser'>): readonly Change[] {
+  if (s.view === null) return []
+  return s.showUser && s.view.user.length > 0 ? [...s.view.unreviewed, ...s.view.user] : s.view.unreviewed
+}
+
+const sameVersion = (a: ReviewVersion, b: ReviewVersion): boolean =>
+  a.session === b.session && a.revision === b.revision && a.baseline_revision === b.baseline_revision
+
+/** A view with no user changes turns the user-changes switch off. */
+const noUserLeft = (next: { user_count: number }): Partial<ReviewState> =>
+  next.user_count === 0 ? { showUser: false } : {}
+
+export const useReview = create<ReviewState>((set, get) => ({
+  view: null,
+  highlight: EMPTY_HIGHLIGHT,
+  showUser: false,
+  viewListsUser: false,
+  actionStale: null,
+  activity: null,
+  apply: (next, listsUser = false) => {
+    const held = get()
+    const fillsUser = listsUser && !held.viewListsUser && held.view !== null && sameVersion(next.version, held.view.version)
+    if (!fillsUser && !isNewerReviewView(next.version, held.view?.version ?? null)) return false
+    // Filling in the user's list keeps the clip marks and their weights (they
+    // show the unreviewed changes alone, which the same ranges list either
+    // way) but takes the ranges, which now hold theirs.
+    const highlight = fillsUser ? { ...held.highlight, ranges: rangeMarks(next.ranges) } : buildReviewHighlight(next.unreviewed, next.decorations, next.ranges)
+    set({ view: next, viewListsUser: listsUser, highlight, ...noUserLeft(next) })
+    return true
+  },
+  applyUnchanged: (next) => {
+    const held = get().view
+    if (held === null || held.version.session !== next.version.session || held.content_revision !== next.content_revision) return false
+    if (isNewerReviewView(next.version, held.version)) set({ view: { ...held, version: next.version, has_baseline: next.has_baseline, user_count: next.user_count }, ...noUserLeft(next) })
+    return true
+  },
+}))
+
+// ── Ownership ──────────────────────────────────────────────────────────────────
+
+let consumers = 0
+let teardown: (() => void) | null = null
+let pending = false
+let again = false
+
+/** Fetch the view now (coalesced: one read in flight, at most one queued). A
+ *  failed read keeps the last good view; the next event retries. */
+export async function refreshReview(): Promise<void> {
+  if (pending) { again = true; return }
+  pending = true
+  try {
+    const { showUser: listsUser, view: held, viewListsUser } = useReview.getState()
+    // The lists held, when read the way this read asks: main then sends them
+    // again only if they changed.
+    const heldContent = held !== null && viewListsUser === listsUser ? { held_content: held.content_revision } : {}
+    const next = await reviewView({ include_user: listsUser, ...heldContent })
+    if (consumers > 0) {
+      if (!('unchanged' in next)) useReview.getState().apply(next, listsUser)
+      // The view held was replaced while this read was out: read the lists.
+      else if (!useReview.getState().applyUnchanged(next)) again = true
+    }
+  } catch { /* keep the last good view */ }
+  finally {
+    pending = false
+    if (again && consumers > 0) { again = false; void refreshReview() }
+    else again = false
+  }
+}
+
+function wire(): () => void {
+  let disposed = false
+  let stopEvent: UnlistenFn | null = null
+  listen(REVIEW_CHANGED_EVENT, () => { if (!disposed) void refreshReview() })
+    .then(stop => { if (disposed) stop(); else stopEvent = stop })
+    .catch(() => { /* no bridge (tests, closed window): publications still refetch */ })
+  // A project edit changes the diff without touching the baseline; the review
+  // follows every publication the project store applies.
+  // So does a selected activity's highlight: it is drawn on the current
+  // timeline (main's `locateChanges`), which the edit just moved.
+  const stopProject = useProjectStore.subscribe((s, prev) => {
+    if (s.summary === prev.summary) return
+    void refreshReview()
+    const held = useReview.getState().activity
+    if (held !== null && held.status !== 'loading') void showActivityChanges({ id: held.activityId, history_ids: [...held.historyIds], effect: held.effect })
+  })
+  void refreshReview()
+  return () => { disposed = true; stopEvent?.(); stopProject() }
+}
+
+/** Register a review consumer; the returned function releases it. */
+export function acquireReview(): () => void {
+  consumers += 1
+  if (consumers === 1) teardown = wire()
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    consumers -= 1
+    if (consumers === 0) { teardown?.(); teardown = null }
+  }
+}
+
+/** Turn the user-changes switch on or off; turning it on fetches the user-only list
+ *  unless the held view already has it. */
+export function setShowUser(on: boolean): void {
+  useReview.setState({ showUser: on })
+  if (on && consumers > 0 && !useReview.getState().viewListsUser) void refreshReview()
+}
+
+/** Keep the Review view fresh while the calling component is mounted (and
+ *  `enabled`), without reading it — for a large surface whose leaves read
+ *  their own slice (the editor timeline). */
+export function useReviewConsumer(enabled = true): void {
+  useEffect(() => (enabled ? acquireReview() : undefined), [enabled])
+}
+
+/** Keep the Review view fresh while mounted, and read it. */
+export function useReviewView(enabled = true): ReviewView | null {
+  useReviewConsumer(enabled)
+  return useReview(s => s.view)
+}
+
+/** The number of unreviewed entity differences. */
+export function useUnreviewedCount(enabled = true): number {
+  useReviewConsumer(enabled)
+  return useReview(s => s.view?.unreviewed.length ?? 0)
+}
+
+// ── Highlight reads ───────────────────────────────────────────────────────────
+//
+// Every timeline surface reads the highlight through `selectHighlight`: the one
+// place a different change set — the selected activity row's own changes —
+// takes over from the unreviewed list.
+
+export const selectHighlight = (s: Pick<ReviewState, 'highlight' | 'activity'>): ReviewHighlight =>
+  s.activity?.status === 'ready' ? s.activity.highlight : s.highlight
+const NO_GHOSTS: readonly ReviewGhost[] = []
+const NO_CUTS: readonly ReviewCut[] = []
+const NO_MARKER_GHOSTS: readonly ReviewMarkerGhost[] = []
+const NO_RANGES: readonly ReviewRangeMark[] = []
+
+/** The editor timeline paints review marks only under the Review overlay. */
+const useOverlay = () => useAgentActivity(s => s.reviewOverlay)
+
+/** A clip's review mark on the editor timeline, or null. */
+export function useLayerReviewMark(layerId: string): ReviewClipMark | null {
+  const overlay = useOverlay()
+  return useReview(s => (overlay ? selectHighlight(s).layers.get(layerId) ?? null : null))
+}
+
+/** How loud a clip's review mark is (`ReviewWeight`), or null unmarked. */
+export function useLayerReviewWeight(layerId: string | null): ReviewWeight | null {
+  const overlay = useOverlay()
+  return useReview(s => (overlay && layerId !== null ? selectHighlight(s).layerWeights.get(layerId) ?? null : null))
+}
+
+/** Each change of the Review view by the weight its ranges give it
+ *  (`changeWeights`): the Changes tab's rows. */
+export function useChangeWeights(): ReadonlyMap<string, Exclude<ReviewWeight, 'quiet'>> {
+  const ranges = useReview(s => s.view?.ranges)
+  return useMemo(() => changeWeights(ranges ?? []), [ranges])
+}
+
+/** The change that marks a clip on the editor timeline, or null — what its
+ *  tooltip words. Null `layerId` (a duplicate's in-flight clone) reads none. */
+export function useLayerReviewChange(layerId: string | null): Change | null {
+  const overlay = useOverlay()
+  return useReview(s => {
+    if (!overlay || layerId === null) return null
+    const h = selectHighlight(s)
+    const id = h.layerChanges.get(layerId)
+    return id === undefined ? null : h.changes.get(id) ?? null
+  })
+}
+
+/** A highlighted change by id — the words of a mark that names it. */
+export function useHighlightedChanges(): ReadonlyMap<string, Change> {
+  return useReview(s => selectHighlight(s).changes)
+}
+
+/** How many highlighted changes a Group clip contains (0: no badge). */
+export function useGroupReviewCount(layerId: string): number {
+  const overlay = useOverlay()
+  return useReview(s => (overlay ? selectHighlight(s).groups.get(layerId) ?? 0 : 0))
+}
+
+/** Whether the timelines show a selected activity's own changes rather than
+ *  the unreviewed ones — what a badge counting them calls them. */
+export function useActivityHighlightShown(): boolean {
+  return useReview(s => s.activity?.status === 'ready')
+}
+
+/** The change words over the project as it is now (`changeWords.ts`), in
+ *  `frame` — by default the one the timelines show: an activity's highlight
+ *  while one is shown, else the Review baseline. Not `active`, the project
+ *  is not read, so a surface with nothing marked hears no publication; its
+ *  names then fall back to their generic words. */
+export function useChangeWords({ active = true, frame }: { active?: boolean; frame?: ChangeFrame } = {}): ChangeWordsContext {
+  const { t } = useTranslation()
+  const shown: ChangeFrame = useActivityHighlightShown() ? 'activity' : 'review'
+  const summary = useProjectStore(s => (active ? s.summary : null))
+  const layerById = useProjectStore(s => (active ? s.layerById : undefined))
+  const groupOrdinals = useProjectStore(s => (active ? s.groupOrdinals : undefined))
+  const f = frame ?? shown
+  return useMemo(() => changeWordsContext(t as unknown as Translate, { summary, layerById, groupOrdinals }, f), [t, summary, layerById, groupOrdinals, f])
+}
+
+/** What a changed range says under the pointer (`rangeWords.ts`). */
+export function useRangeMarkLabel(): (mark: ReviewRangeMark) => string {
+  const { t } = useTranslation()
+  return useCallback((mark: ReviewRangeMark) => rangeLine(mark.range, t as unknown as Translate), [t])
+}
+
+/** Removed layers to outline on one track of the editor timeline: only
+ *  where that track is empty now (a lift). Where other material closed up
+ *  over the place, the ruler's cut point and the list say it instead
+ *  (ADR 0169) — a box there would name the clip now in it as removed. */
+export function useTrackReviewGhosts(trackId: string): readonly ReviewGhost[] {
+  const overlay = useOverlay()
+  const ghosts = useReview(s => selectHighlight(s).ghosts)
+  const mine = useMemo(() => {
+    if (!overlay || ghosts.length === 0) return NO_GHOSTS
+    const on = ghosts.filter(g => g.trackId === trackId)
+    return on.length === 0 ? NO_GHOSTS : on
+  }, [overlay, ghosts, trackId])
+  const layers = useProjectStore(s => (mine.length === 0 ? null : trackLayers(s.summary, trackId)))
+  return useMemo(() => {
+    if (mine.length === 0 || layers === null) return mine
+    const open = mine.filter(g => !layers.some(l => l.t_start_us < g.tEndUs && l.t_end_us > g.tStartUs))
+    return open.length === mine.length ? mine : open.length === 0 ? NO_GHOSTS : open
+  }, [mine, layers])
+}
+
+/** The layers of track `trackId` in `summary`, or null without it. */
+function trackLayers(summary: ReturnType<typeof useProjectStore.getState>['summary'], trackId: string): readonly { t_start_us: number; t_end_us: number }[] | null {
+  if (!summary) return null
+  for (const c of Object.values(summary.compositions)) for (const t of c.tracks) if (t.id === trackId) return t.layers
+  return null
+}
+
+/** A marker's review mark on the editor's marker lane, or null. */
+export function useMarkerReviewMark(markerId: string): ReviewClipMark | null {
+  const overlay = useOverlay()
+  return useReview(s => (overlay ? selectHighlight(s).markers.get(markerId) ?? null : null))
+}
+
+/** Removed markers to leave a trace of on one composition's marker lane. */
+export function useCompositionMarkerGhosts(compositionId: string | null): readonly ReviewMarkerGhost[] {
+  const overlay = useOverlay()
+  const ghosts = useReview(s => selectHighlight(s).markerGhosts)
+  return useMemo(() => {
+    if (!overlay || compositionId === null || ghosts.length === 0) return NO_MARKER_GHOSTS
+    const mine = ghosts.filter(g => g.compositionId === compositionId)
+    return mine.length === 0 ? NO_MARKER_GHOSTS : mine
+  }, [overlay, ghosts, compositionId])
+}
+
+/** Trim cut marks on the clip's current lane, in time order. */
+export function useTrackReviewCuts(trackId: string): readonly ReviewCut[] {
+  const overlay = useOverlay()
+  const cuts = useReview(s => selectHighlight(s).cuts)
+  return useMemo(() => {
+    if (!overlay || cuts.length === 0) return NO_CUTS
+    const mine = cuts.filter(c => c.trackId === trackId)
+    return mine.length === 0 ? NO_CUTS : mine.sort((a, b) => a.tUs - b.tUs)
+  }, [overlay, cuts, trackId])
+}
+
+/** Changed ranges on one composition as the review bands paint them: the
+ *  user's own only while the user-changes switch is on, or within a selected
+ *  call's. The one reading the bands and the range walk share. */
+export function compositionChangeRanges(
+  ranges: readonly ReviewRangeMark[], compositionId: string | null, showUser: boolean,
+): readonly ReviewRangeMark[] {
+  if (compositionId === null || ranges.length === 0) return NO_RANGES
+  const mine = ranges.filter(r => r.compositionId === compositionId && (showUser || !r.user))
+  return mine.length === 0 ? NO_RANGES : mine
+}
+
+/** Whether the user's own ranges are on the bands: the switch, or a call's. */
+export const rangesShowUser = (s: Pick<ReviewState, 'showUser' | 'activity'>): boolean =>
+  s.showUser || s.activity?.status === 'ready'
+
+/** Changed ranges on one composition — the review bands. Not gated by the
+ *  overlay: the agent view has no overlay switch. */
+export function useCompositionChangeRanges(compositionId: string | null): readonly ReviewRangeMark[] {
+  const ranges = useReview(s => selectHighlight(s).ranges)
+  const showUser = useReview(rangesShowUser)
+  return useMemo(() => compositionChangeRanges(ranges, compositionId, showUser), [ranges, compositionId, showUser])
+}
+
+// ── Approve all / revert all ──────────────────────────────────────────────────
+
+export type ReviewAction = 'approve' | 'revert'
+
+/** Run one review action against the held view. It names that view's
+ *  version: main acts only while it is still current, so a change committed
+ *  after the list on screen is never approved or reverted unseen. The reply
+ *  is the fresh view either way and lands in the store straight away, so the
+ *  tab updates and every highlight goes in the same render. True when the
+ *  action applied. */
+async function act(action: ReviewAction,
+  run: (version: ReviewVersion, includeUser: boolean) => Promise<ReviewActionResult>,
+  context: string,
+): Promise<boolean> {
+  let applied = false
+  const ok = await tryMutate(async () => {
+    const { view, showUser } = useReview.getState()
+    if (view === null) return
+    const r = await run(view.version, showUser)
+    useReview.getState().apply(r.view, showUser)
+    applied = r.applied
+    useReview.setState({ actionStale: r.applied ? null : action })
+  }, context)
+  return ok && applied
+}
+
+/** Approve the held view: the baseline becomes the current state. */
+export function approveAllChanges(): Promise<boolean> {
+  return act('approve', (version, include_user) => reviewApproveAll({ version, include_user }), 'review_approve_all')
+}
+
+/** Revert the held view: the baseline is restored, undoably. */
+export function revertAllChanges(): Promise<boolean> {
+  return act('revert', (version, include_user) => reviewRevertAll({ version, include_user }), 'review_revert_all')
+}
+
+// ── Per-activity highlight ────────────────────────────────────────────────────
+//
+// Selecting an activity row (expanding it) shows what that call did; the
+// selection follows the agent panel's state: expanding another row replaces it
+// (a row without history ops clears it), collapsing the row, switching tabs or
+// a project change clears it. The editor timeline still paints only under the
+// Review overlay; the agent view's mini timeline always does.
+
+/** Bumped on every selection change; a reply for an older one is dropped. */
+let activityToken = 0
+
+/** Highlight what activity `a` did. Refetching the same row keeps its current
+ *  highlight on screen until the reply lands. */
+export async function showActivityChanges(a: Pick<AgentActivity, 'id' | 'history_ids' | 'effect'>): Promise<void> {
+  if (a.history_ids.length === 0) { clearActivityChanges(); return }
+  const token = ++activityToken
+  const held = useReview.getState().activity
+  const base = held?.activityId === a.id && held.status !== 'loading' ? held : { status: 'loading' as const, reverted: false, count: 0, highlight: EMPTY_HIGHLIGHT }
+  useReview.setState({ activity: { ...base, activityId: a.id, historyIds: [...a.history_ids], effect: a.effect } })
+  try {
+    const v = await reviewActivityView(a.history_ids)
+    if (token !== activityToken) return
+    const cur = useReview.getState().activity!
+    useReview.setState({ activity: v.available
+      ? { ...cur, status: 'ready', reverted: v.reverted, count: v.changes.length, highlight: buildReviewHighlight(v.changes, v.decorations, v.ranges) }
+      : { ...cur, status: 'unavailable', reverted: false, count: 0, highlight: EMPTY_HIGHLIGHT } })
+  } catch {
+    if (token === activityToken) useReview.setState({ activity: null })
+  }
+}
+
+/** Back to the review highlight. */
+export function clearActivityChanges(): void {
+  activityToken += 1
+  if (useReview.getState().activity !== null) useReview.setState({ activity: null })
+}
+
+const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i])
+
+/** The selection rules, driven by the agent panel's store. */
+useAgentActivity.subscribe((s, prev) => {
+  if (s.snapshot?.workspace_id !== prev.snapshot?.workspace_id || s.tab !== prev.tab) { clearActivityChanges(); return }
+  const activities = s.snapshot?.activities ?? []
+  if (s.expanded !== prev.expanded) {
+    const opened = activities.filter(a => s.expanded[a.id] && !prev.expanded[a.id])
+    const pick = opened.at(-1)
+    if (pick) { void showActivityChanges(pick); return }
+  }
+  const held = useReview.getState().activity
+  if (held === null) return
+  const a = activities.find(x => x.id === held.activityId)
+  if (!a || !s.expanded[a.id]) { clearActivityChanges(); return }
+  if (!sameIds(a.history_ids, held.historyIds) || a.effect !== held.effect) void showActivityChanges(a)
+})
+
+let activityHosts = 0
+/** The agent panel hosts the selection: when the last one unmounts, nothing
+ *  is left to show or clear it, so the highlight goes with it. */
+export function useActivityHighlightHost(): void {
+  useEffect(() => {
+    activityHosts += 1
+    return () => { activityHosts -= 1; if (activityHosts === 0) clearActivityChanges() }
+  }, [])
+}
+
+/** Test hook: forget every consumer and the held view. */
+export function resetReviewForTests(): void {
+  teardown?.(); teardown = null; consumers = 0; pending = false; again = false
+  activityToken += 1
+  useReview.setState({ view: null, viewListsUser: false, actionStale: null, highlight: EMPTY_HIGHLIGHT, showUser: false, activity: null })
+}

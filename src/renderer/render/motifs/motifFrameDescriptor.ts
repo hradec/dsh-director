@@ -1,0 +1,108 @@
+import type { TimingFields } from '../../../shared/timeMapping';
+import { contentAtUs } from '../../layerTiming';
+import type { MotifView } from "../../ipc";
+import { canonicalizePropsLenient, resolveMotifContentDurationUs, type Motif } from "./catalog";
+import { overlayMotifProps } from "./previewOverlay";
+import {
+  frameTimeSec,
+  motifContentFrame,
+  motifFrameCacheKey,
+} from "./motifFrames";
+
+/// Everything a request for one Motif frame needs: its cache identity and the
+/// capture inputs (`acquireMotifFrame`). `contentDurationUs/srcInUs/
+/// contentDurationFrames` are carried for planning.
+export interface MotifFrameDescriptor {
+  cacheKey: string;
+  motifId: string;
+  /// The manifest's content hash; empty for a built-in without one.
+  contentHash: string;
+  /// The composition fps `tSec` is computed on.
+  fpsNum: number;
+  fpsDen: number;
+  contentFrame: number;
+  contentDurationFrames: number;
+  contentDurationUs: number;
+  srcInUs: number;
+  renderW: number;
+  renderH: number;
+  canonicalProps: Record<string, unknown>;
+  tSec: number;
+  /// True when a pending params-page patch was folded into this descriptor
+  /// (layerId given AND the layer has one). The sprite routes such frames to
+  /// the small overlay lane instead of the committed-content LRU, so gesture
+  /// churn can't evict frames other layers depend on.
+  overlayActive: boolean;
+}
+
+/// The cache identity + render inputs for one motif frame at `tInLayerUs`.
+/// Single source of truth shared by the on-demand sprite path and the
+/// prewarmer, so they can never disagree on (cacheKey, contentFrame).
+/// `durationUs` is the LAYER width (used only for uncapped motifs).
+/// Always returns a descriptor — the lenient canonicalize never fails. The
+/// `| null` return type is kept for defensive typing; callers' null guards are
+/// safe no-ops.
+///
+/// `layerId`, when given, opts this call into the preview overlay: any pending
+/// (uncommitted) props for that layer are layered over `view.props` first, so
+/// the frame AND the cache key both describe what the user is dragging. Callers
+/// that must describe the COMMITTED state — the disk baker, bake status, the
+/// baked-key GC, the export bake — omit it, and a live preview can therefore
+/// never write a transient frame to disk or move a progress bar.
+export function motifFrameDescriptor(
+  // Only the non-animated identity fields — the cache key must not (and
+  // cannot) vary with per-frame transform/opacity resolution, so both the
+  // raw IPC view and the per-frame resolved view satisfy this.
+  view: Pick<MotifView, "props" | "src_in_us" | "media_keys"> & TimingFields,
+  tInLayerUs: number,
+  durationUs: number,
+  fpsNum: number,
+  fpsDen: number,
+  motif: Motif,
+  layerId?: string,
+): MotifFrameDescriptor | null {
+  // Single choke point for props: the overlay merge happens here, immediately
+  // ahead of the canonicalize that feeds both the frame inputs and the cache
+  // key, so no downstream consumer can see one without the other.
+  const props = layerId === undefined ? view.props : overlayMotifProps(layerId, view.props);
+  // `overlayMotifProps` returns `view.props` UNCHANGED (same identity) when the
+  // layer has no pending patch — so an identity change IS the "overlay applied"
+  // signal, independent of what the canonicalize keeps or drops.
+  const overlayActive = props !== view.props;
+  // Render path is resilient: lenient canonicalize (drop unknown / fill defaults
+  // / fall back on invalid) so a layer whose Motif schema changed under it (an
+  // in-place update) still renders rather than blanking.
+  const canonicalProps = canonicalizePropsLenient(props, motif.manifest);
+  const cap = resolveMotifContentDurationUs(motif.manifest, props);
+  const contentDurationUs = cap ?? view.content_window?.out_us ?? durationUs;
+  // Windowing (`src_in`) applies ONLY to layer-capped Motifs (`max_duration*`).
+  // A `content_duration_s` holdable always plays from content frame 0 (its
+  // in-animation, then a clamped/held tail); a wholly-uncapped Motif animates
+  // over the layer width from 0. Neither windows.
+  const windowed = motif.manifest.content_duration_s == null && cap != null;
+  const srcInUs = view.content_window ? contentAtUs({ ...view, kind: "Motif" }, 0) : windowed ? view.src_in_us : 0;
+  const { frame, contentDurationFrames } = motifContentFrame(
+    view.time_map ? tInLayerUs * view.time_map.rate.num / view.time_map.rate.den : tInLayerUs, srcInUs, contentDurationUs, fpsNum, fpsDen,
+  );
+  const [renderW, renderH] = motif.manifest.size;
+  const cacheKey = motifFrameCacheKey({
+    motifId: motif.manifest.id,
+    version: motif.manifest.version,
+    ...(motif.manifest.content_hash !== undefined && { contentHash: motif.manifest.content_hash }),
+    canonicalProps, renderW, renderH, fpsNum, fpsDen,
+    durationFrames: contentDurationFrames,
+    ...(view.media_keys && { mediaKeys: view.media_keys }),
+  });
+  return {
+    cacheKey, motifId: motif.manifest.id, contentHash: motif.manifest.content_hash ?? '', fpsNum, fpsDen,
+    contentFrame: frame, contentDurationFrames, contentDurationUs, srcInUs,
+    renderW, renderH, canonicalProps,
+    tSec: frameTimeSec(frame, fpsNum, fpsDen),
+    overlayActive,
+  };
+}
+
+/// The same content at another content frame.
+export function atFrame(d: MotifFrameDescriptor, frame: number): MotifFrameDescriptor {
+  return frame === d.contentFrame ? d : { ...d, contentFrame: frame, tSec: frameTimeSec(frame, d.fpsNum, d.fpsDen) };
+}

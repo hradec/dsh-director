@@ -1,0 +1,320 @@
+/* ============================================================
+   History Panel — the edit stack as a navigable timeline.
+
+   Layout: a three-row grid. Row 1 is the checkpoint section
+   (present and empty, so adding it never reflows the stack),
+   row 2 the lock badge, row 3 the scrolling stack.
+   Oldest at the top, newest at the bottom, matching the Agent
+   record panel's chronology and its sticky-to-bottom scroll.
+
+   Visual language follows agent.css's record rows: no drawn row
+   borders, hover as a tint, state carried by text colour.
+   ============================================================ */
+
+/* Flex, not grid: the lock badge is conditional, and a fixed grid-row track
+   list would hand the stack a content-sized row whenever the badge is absent —
+   killing its scroll. */
+.history-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  font-size: var(--font-size-body);
+}
+
+/* The checkpoint section (create / restore / delete). Its own block above the
+   stack, separated by a rule: checkpoints are NOT stack rows — restore records
+   a new entry instead of moving the cursor, so a shared list would lie about
+   what a click does (spec decision 9). */
+.history-checkpoints {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: calc(4 * var(--ui-px));
+  padding: calc(8 * var(--ui-px)) calc(12 * var(--ui-px));
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.history-checkpoints-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(8 * var(--ui-px));
+}
+
+.history-checkpoints-title {
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* Session-only warning. Checkpoints are absent from serialize.ts /
+   persistence.ts and `replace_state` clears them — a user who reads them as
+   durable saves loses work, so this line is load-bearing, not chrome. */
+.checkpoint-session-note {
+  margin: 0;
+  color: var(--color-amber-400);
+  font-size: var(--font-size-caption);
+}
+
+/* Capped: a session can accumulate many checkpoints and the stack below is the
+   Panel's main event — the list scrolls rather than pushing it off-screen. */
+.history-checkpoint-list {
+  display: flex;
+  flex-direction: column;
+  gap: calc(2 * var(--ui-px));
+  max-height: calc(132 * var(--ui-px));
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.history-checkpoint-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+  padding: calc(2 * var(--ui-px)) 0;
+}
+
+.history-checkpoint-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Delete confirmation — the `settings-panel` skin MediaPool's remove-media
+   confirmation uses, narrowed: this dialog carries two short lines, not a
+   reference list. */
+.checkpoint-delete-dialog {
+  width: min(var(--dialog-width-prompt), calc(100vw - calc(32 * var(--ui-px))));
+}
+
+.history-lock-badge {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+  padding: calc(6 * var(--ui-px)) calc(12 * var(--ui-px));
+  background: #2a1a0a;
+  border-bottom: 1px solid #4a2c10;
+  font-size: var(--font-size-caption);
+  color: var(--color-amber-400);
+}
+
+.history-lock-reason {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-stack {
+  /* offsetParent for the sticky-follow scroll math in HistoryPanel.tsx —
+     row offsetTop must be measured against this scroller, not the page. */
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: calc(4 * var(--ui-px)) 0;
+}
+
+.history-empty {
+  padding: calc(16 * var(--ui-px)) calc(12 * var(--ui-px));
+  color: var(--color-gray-500);
+  font-style: italic;
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+  width: 100%;
+  padding: calc(4 * var(--ui-px)) calc(12 * var(--ui-px));
+  border: 0;
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  text-align: left;
+}
+
+button.history-row {
+  cursor: pointer;
+}
+
+button.history-row:hover:not(:disabled) {
+  background: var(--surface-tint);
+}
+
+button.history-row:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+button.history-row:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* The cursor row: where the project actually is right now. */
+.history-row[data-state="current"] {
+  background: var(--selection-bg);
+  border-left-color: var(--selection);
+  font-weight: 500;
+}
+
+/* Redo tail. Greyed but still clickable — the grey IS the warning; the next
+   edit truncates these silently, with no dialog (spec decision 6). */
+.history-row[data-state="future"] {
+  color: var(--color-gray-500);
+}
+
+/* Eviction header: everything before the top row was discarded. Not a jump
+   target — those snapshots no longer exist. */
+.history-evicted-row {
+  display: block;
+  padding: calc(6 * var(--ui-px)) calc(12 * var(--ui-px));
+  color: var(--color-gray-500);
+  font-size: var(--font-size-caption);
+  font-style: italic;
+  border-bottom: 1px dashed var(--border-soft);
+}
+
+.history-row-time {
+  color: var(--color-gray-500);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.history-row-actor {
+  display: inline-flex;
+  align-items: center;
+  color: var(--color-gray-500);
+}
+
+.history-row-actor[data-actor="agent"] {
+  color: var(--color-amber-400);
+}
+
+.history-row-body {
+  display: flex;
+  align-items: baseline;
+  gap: calc(6 * var(--ui-px));
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* SHRINK ORDER inside `.history-row-body`, and the reason it is stated rather
+   than left to default: flexbox distributes shrinkage in proportion to each
+   item's BASE size, so a long `.history-row-entities` string outbids the
+   operation label for width. Measured in Chromium: `Added shot markers` needs
+   136 px, and beside a 47-cut name list it was handed 13 px in a 250 px body
+   and still only 33 px in a 600 px one — the operation, the row's whole point,
+   reduced to `A…` by its own decoration, at EVERY width. Widening the panel is
+   no escape, because the names' base size grows with the cut count.
+   The label therefore absorbs ZERO shrink while the entities span carries a
+   large `flex-shrink` (below): the names give up every pixel and collapse to
+   nothing before the label loses anything.
+   `flex-shrink: 0` and not merely a small share of the shrink, because a share
+   is never zero — at `999` against the names the label still gave up ~0.18 px,
+   and `text-overflow` fires on ANY overflow. In zh-CN that rounded
+   `添加镜头标记` down to `添加镜头标…`: one 12 px glyph gone and an ellipsis
+   drawn, from a deficit too small to see in a measurement.
+   `max-width: 100%` and not `flex: none`, because an item sized to its own
+   content never overflows itself — `text-overflow` would never fire and the
+   parent's `overflow: hidden` would hard-clip with no `…` at all
+   (`Split clip and closed the g`, which reads as a finished phrase). Capped
+   at the row instead, the label re-arms its own ellipsis for the one case that
+   deserves it: a panel too narrow for the operation name itself. */
+.history-row-label {
+  flex-shrink: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Entity names resolved in main against the snapshot that still holds the
+   ref — the whole reason a delete row can say more than a raw uuid. */
+.history-row-entities {
+  /* Yields all of it before the label loses a character — see the shrink-order
+     note above. Kept explicit rather than left to default so that a third span
+     added to this row later still ranks below the names. The full list is on
+     the span's `title`, since the ellipsis is the only thing in the row that
+     says more exists. */
+  flex-shrink: 999;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted-foreground);
+}
+
+/* ── Folded agent runs ─────────────────────────────────────── */
+
+.history-group-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.history-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(18 * var(--ui-px));
+  height: calc(18 * var(--ui-px));
+  margin-left: calc(4 * var(--ui-px));
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-gray-500);
+  cursor: pointer;
+}
+
+.history-group-toggle:hover {
+  background: var(--hover-neutral);
+  color: var(--foreground);
+}
+
+.history-group-toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.history-group-row {
+  padding-left: calc(4 * var(--ui-px));
+}
+
+.history-group-steps {
+  flex: none;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}
+
+/* The aggregate is FACT (counted from the run's own label keys), unlike the
+   agent's self-reported reason, which is intent — and which the Agent panel
+   and status bar already show (spec decision 11). */
+.history-group-aggregate {
+  /* Same yield rule as `.history-row-entities`: this is the group header's
+     decoration and the client name is its subject. `.history-group-steps` is
+     already `flex: none`, so the order here is aggregate, then steps and
+     client together. */
+  flex-shrink: 999;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}
+
+/* Expanded steps stay individually clickable — folding is a rendering
+   affordance over a run, never a collapse of it. */
+.history-entry-row.is-nested {
+  padding-left: calc(30 * var(--ui-px));
+}

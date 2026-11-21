@@ -1,0 +1,274 @@
+// App-level preference types, shared by the Electron main process (owner of
+// persistence) and the renderer (consumer via ipc). One definition → no
+// main↔renderer drift. Mirrors the on-disk JSON shape exactly; field names are
+// snake_case to match the file written historically by the Rust addon, so
+// existing users' app_settings.json keeps working after the move to TS.
+
+import { DEFAULT_PREVIEW_GRID, type PreviewGridSettings } from "./preview-grid";
+import type { PausePreset, PausePresetChange } from "./pause-presets";
+import { DEFAULT_LAYOUT_THEME, type LayoutTheme } from './layout-theme';
+import { DEFAULT_RESOURCE_POLICY, resolveResourcePolicy } from './resource-policy';
+import { PERFORMANCE_DEFAULTS, type PerformanceSettings } from "./performance-settings";
+import { DEFAULT_PERFORMANCE_POLICY, BASELINE_BUDGETS, type PerformancePolicy, type PerformancePolicyPatch, type PerformanceTestProfile } from './performance-policy';
+
+export type DisplayMode = "AbRoll" | "AllTracks";
+
+/// Preview playback resolution — the user-owned quality/throughput dial every
+/// mainstream NLE carries (Premiere's Full / ½ / ¼). Names the FRACTION, not
+/// the divisor: `renderer/render/decoder/playbackResolution.ts` is the one
+/// place it becomes a number.
+export type PlaybackResolution = "full" | "half" | "quarter";
+
+/// Media-pool card arrangement: `large` keeps the legacy one-card-per-row
+/// full-width cards; `grid` packs fixed-size cards into as many columns as
+/// the panel width fits; `list` renders compact file-manager-style rows.
+export type MediaPoolLayout = "large" | "grid" | "list";
+
+/// Which axis the BARE mouse wheel moves the timeline along. `horizontal` walks
+/// time (Premiere's `Timeline Mouse Scrolling` default, and Resolve's);
+/// `vertical` walks the track stack (After Effects', Media Composer's). Shift
+/// always means "the other axis", so this one value flips both gestures at once
+/// rather than introducing a third mapping to learn.
+export type TimelineWheelAxis = "horizontal" | "vertical";
+
+export interface AppSettings {
+  export_presets?: import('./export-presets').ExportPreset[];
+  default_export_preset_id?: string;
+  /** Remember the UI export collision policy across projects; MCP uses its own policy. */
+  export_auto_overwrite?: boolean;
+  /** Download application updates automatically and install on normal exit. Defaults on. */
+  auto_install_updates_on_quit?: boolean;
+  /** A release the user chose to skip: no passive notice, automatic download or
+   *  install-on-exit for exactly this version. Help → Check for Updates still offers it. */
+  skipped_update_version?: string;
+  /** Codes of environment notices (AppNotice) the user dismissed. A dismissal
+   *  lasts while its notice stands: main drops a code once its notice is absent
+   *  (`pruneDismissedNotices`), so a later return shows it again. */
+  dismissed_notices?: string[];
+  /** One app-wide typography and dialog sizing preset; absent in old files. */
+  layout_theme?: LayoutTheme;
+  resource_policy?: import('./resource-policy').ResourcePolicy;
+  resource_allocation?: import('./resource-policy').ResourceAllocation;
+  /** Machine-local resource budgets; absent in older settings files. */
+  performance?: PerformanceSettings;
+  /** Budget intent; when present, performance is its derived runtime view. */
+  performance_budget?: import('./performance-budgets').PerformanceBudgets | null;
+  performance_policy?: PerformancePolicy | null;
+  performance_automatic_budget?: import('./performance-budgets').PerformanceBudgets;
+  performance_test_profile?: PerformanceTestProfile | null;
+  /** Derived on this machine; never used as persisted authority. */
+  performance_test_compatible?: boolean;
+  performance_calibration?: import('./playback-calibration').CalibrationRecommendation | null;
+  performance_calibration_tier?: 'less' | 'standard' | 'maximum';
+  pause_presets?: PausePreset[];
+  display_mode: DisplayMode;
+  /// Half-width of the symmetric playhead window in microseconds (default
+  /// 10_000_000 = 10 s). Clamped on write to [1 s, 5 min].
+  delta_window_us: number;
+  /// Snap moved timeline layers to nearby layer boundaries and playhead.
+  tail_snap_enabled: boolean;
+  /// Pixel threshold for boundary snapping. Clamped on write.
+  tail_snap_strength_px: number;
+  /// Snap the preview gizmo's move and resize gestures to the composition's
+  /// edges and centre lines, to other staged layers' bounding boxes, and to
+  /// the alignment grid's lines while `preview_grid.enabled`. Deliberately
+  /// separate from `tail_snap_enabled`: the two domains differ by an order of
+  /// magnitude in target density (every clip boundary on every visible track
+  /// vs six composition lines, a handful of layers and the grid's nearest
+  /// line per axis), so one threshold cannot be tuned for both.
+  preview_snap_enabled: boolean;
+  /// SCREEN-pixel snap radius for the preview gizmo — the same unit as
+  /// `tail_snap_strength_px`, and the reason the solver divides it by the
+  /// contain fit's scale before comparing in composition space. Composition
+  /// pixels would feel different on a 1080p and a 4K composition and would
+  /// drift as the panel is resized. Clamped on write.
+  preview_snap_strength_px: number;
+  /// The preview's alignment grid. See `shared/preview-grid.ts`.
+  preview_grid: PreviewGridSettings;
+  /// When true, the frames Motif layers use on the timeline are baked to disk
+  /// in the background (L2), including ones nothing has played yet. Frames a
+  /// preview or export captures are stored either way. Default false. See
+  /// docs/motifs.md.
+  prebake_motifs: boolean;
+  /// When false, the preview compositor skips all effect filters (LOD
+  /// toggle for scrub performance). Default true.
+  preview_effects_enabled: boolean;
+  /// Preview decode engine: `auto` picks the best engine per clip (FFmpeg when
+  /// its component is present, else WebCodecs); `ffmpeg` (Standard) plays every
+  /// format; `webcodecs` (Lite) is lightweight but supports fewer formats.
+  decode_engine: "auto" | "ffmpeg" | "webcodecs";
+  /// Preview playback resolution. `full` ships every decoded frame at source
+  /// size; `half`/`quarter` have the native decoder downscale each frame
+  /// BEFORE it crosses IPC, which is where a 4K software-lane preview spends
+  /// 12.44 MB per frame. Preview only — export always decodes full size.
+  /// App-level, like `decode_engine`: it describes THIS machine's headroom.
+  playback_resolution: PlaybackResolution;
+  /// Media-pool card arrangement (see MediaPoolLayout). App-level: it's a
+  /// browsing preference of this user, not a property of any project.
+  media_pool_layout: MediaPoolLayout;
+  /// Which axis the bare wheel scrolls the timeline along (see
+  /// TimelineWheelAxis). App-level like `media_pool_layout`: it describes this
+  /// user's pointing device and the NLE their hands came from, not anything
+  /// about a project.
+  timeline_wheel_axis: TimelineWheelAxis;
+  /// Keep the playhead inside the timeline's visible span by paging the view
+  /// when it reaches an edge (`renderer/timeline/followPlayhead.ts`). On, it
+  /// still yields while the user has scrolled the view away
+  /// (`renderer/timeline/hooks/useFollowPlayhead.ts`). Off means the view only
+  /// ever moves because the user moved it.
+  timeline_follow_playhead: boolean;
+  /// Remove an unlocked, non-reserved track when an edit empties it. App-level;
+  /// changing this preference does not sweep tracks that are already empty.
+  auto_delete_empty_tracks: boolean;
+  /// Show the timeline's marker lane (`renderer/timeline/MarkerLane.tsx`) — the
+  /// ROW, not merely its contents. One switch owns the whole surface: off, the
+  /// lane's 20 px go back to the tracks, and the reflow that costs is the point
+  /// rather than a side effect. A canvas-noise control and nothing more:
+  /// `add_markers` can spray hundreds in one commit, and this silences them.
+  ///
+  /// `M` force-enables it, so authoring a mark brings the row back with it.
+  ///
+  /// App-level because it is a view preference of this user, not project content
+  /// — so the markers themselves are untouched, and neither the agent-mode mini
+  /// timeline nor the search palette answers to it.
+  markers_visible: boolean;
+  /// Draw the broadcast title-safe / action-safe rectangles over the preview
+  /// (`renderer/preview/SafeAreaGuides.tsx`). A property of the frame, not of a
+  /// selection, so unlike the transform gizmo it needs no selected layer.
+  /// App-level for the same reason `markers_visible` is: it describes how THIS
+  /// user wants the preview annotated, and it changes no pixel that reaches an
+  /// export.
+  safe_area_guides_visible: boolean;
+  /// Absolute path to the user-configurable data root that owns all large,
+  /// app-managed, relocatable content (motifs/, cache/, downloads/). Empty /
+  /// unset means "use the default" — the main-process resolver
+  /// (dataRoot.ts) substitutes `<userData>/data`. It CANNOT itself live under
+  /// the data root (bootstrap chicken-and-egg), so it stays in app_settings.json
+  /// under userData. Optional on disk: absent on every pre-existing file.
+  data_root?: string;
+  /// Persisted UI language as a locale code (e.g. "en-US", "zh-CN"). The SINGLE
+  /// source of truth for UI language.
+  /// Optional: unset means "auto-detect from the OS on first launch" (i18next's
+  /// navigator detection) — set only once the user explicitly picks one via the
+  /// locale toggle. Valid values are the renderer's SUPPORTED_LOCALES; an
+  /// unknown code is tolerated (i18next falls back), so main does not validate
+  /// the set. Kept off disk when unset, like data_root.
+  language?: string;
+  /// Family for newly authored Text layers. Unset uses the bundled chain.
+  default_text_font?: string;
+}
+
+/// Patch shape — every field optional. The store merges into the current
+/// settings, persists atomically, and returns the post-patch snapshot. Use
+/// this for one-field flips (e.g., `{ display_mode: "AllTracks" }`) instead of
+/// round-tripping the whole struct.
+export interface AppSettingsPatch {
+  export_preset_change?: import('./export-presets').ExportPresetChange;
+  default_export_preset_id?: string;
+  export_auto_overwrite?: boolean;
+  auto_install_updates_on_quit?: boolean;
+  /** Empty string un-skips. */
+  skipped_update_version?: string;
+  /** Adds one notice code to `dismissed_notices`; repeating it changes nothing. */
+  dismiss_notice?: string;
+  layout_theme?: LayoutTheme;
+  resource_policy?: import('./resource-policy').ResourcePolicyPatch | null;
+  /** Merge individual budgets; null restores all performance defaults. */
+  performance?: Partial<PerformanceSettings> | null;
+  performance_budget?: Partial<import('./performance-budgets').PerformanceBudgets> | null;
+  performance_policy?: PerformancePolicyPatch;
+  performance_action?: 'restore_defaults' | 'restore_auto' | 'restore_tested' | 'clear_test';
+  performance_test_recommendation?: import('./playback-calibration').CalibrationRecommendation;
+  performance_calibration?: import('./playback-calibration').CalibrationRecommendation | null;
+  performance_calibration_tier?: 'less' | 'standard' | 'maximum';
+  /** A single atomic library edit; never replace another window's whole list. */
+  pause_preset_change?: PausePresetChange;
+  display_mode?: DisplayMode;
+  delta_window_us?: number;
+  tail_snap_enabled?: boolean;
+  tail_snap_strength_px?: number;
+  preview_snap_enabled?: boolean;
+  preview_snap_strength_px?: number;
+  preview_grid?: Partial<PreviewGridSettings>;
+  prebake_motifs?: boolean;
+  preview_effects_enabled?: boolean;
+  decode_engine?: "auto" | "ffmpeg" | "webcodecs";
+  playback_resolution?: PlaybackResolution;
+  media_pool_layout?: MediaPoolLayout;
+  timeline_wheel_axis?: TimelineWheelAxis;
+  timeline_follow_playhead?: boolean;
+  auto_delete_empty_tracks?: boolean;
+  markers_visible?: boolean;
+  safe_area_guides_visible?: boolean;
+  /// New data-root path. An empty string clears it back to unset (→ default).
+  data_root?: string;
+  /// New UI language (a SUPPORTED_LOCALES code). An empty string clears it back
+  /// to unset (→ auto-detect on next launch).
+  language?: string;
+  /// Empty string restores the bundled default.
+  default_text_font?: string;
+}
+
+export const APP_SETTINGS_DEFAULTS: AppSettings = {
+  export_presets: [],
+  default_export_preset_id: 'builtin:match',
+  export_auto_overwrite: false,
+  auto_install_updates_on_quit: true,
+  layout_theme: DEFAULT_LAYOUT_THEME,
+  resource_policy: { ...DEFAULT_RESOURCE_POLICY },
+  resource_allocation: resolveResourcePolicy(DEFAULT_RESOURCE_POLICY),
+  performance: PERFORMANCE_DEFAULTS,
+  performance_budget: BASELINE_BUDGETS,
+  performance_policy: DEFAULT_PERFORMANCE_POLICY,
+  performance_automatic_budget: BASELINE_BUDGETS,
+  performance_test_profile: null,
+  performance_test_compatible: false,
+  performance_calibration: null,
+  performance_calibration_tier: 'standard',
+  pause_presets: undefined,
+  display_mode: "AbRoll",
+  delta_window_us: 10_000_000,
+  tail_snap_enabled: true,
+  tail_snap_strength_px: 12,
+  // Same numbers as the timeline's pair on purpose — "snap strength" already
+  // means a screen-pixel radius in this app, so there is no second dial to
+  // learn. On by default, like the timeline's.
+  preview_snap_enabled: true,
+  preview_snap_strength_px: 12,
+  preview_grid: DEFAULT_PREVIEW_GRID,
+  prebake_motifs: false,
+  preview_effects_enabled: true,
+  decode_engine: "auto",
+  playback_resolution: "full",
+  media_pool_layout: "large",
+  // Horizontal, matching Premiere's `Timeline Mouse Scrolling` default and
+  // Resolve's Edit page. On a clip-along-time timeline the horizontal axis is
+  // the one that always overflows, and the OS convention this overrides — Shift
+  // for the horizontal axis — is invisible: a lane that only moves under a
+  // modifier reads as jammed (the same discovery problem `useHorizontalWheel`
+  // solves for the Quick Actions strip). `vertical` is here for the
+  // track-count-first habit After Effects and Media Composer teach.
+  timeline_wheel_axis: "horizontal",
+  // On, like every mainstream NLE ships it: a playhead that walks off-screen
+  // mid-playback is the surprising state, not the followed one.
+  timeline_follow_playhead: true,
+  auto_delete_empty_tracks: true,
+  // On, like every NLE that has markers ships it: a mark nobody can see is
+  // indistinguishable from one that was never written.
+  markers_visible: true,
+  // OFF, unlike the two toggles above: safe-area guides are a broadcast-delivery
+  // aid, and every NLE that draws them ships them hidden. The additive-boolean
+  // trap does not apply in this direction — an app_settings.json written before
+  // the field existed reads as false, which is the state its user already had.
+  safe_area_guides_visible: false,
+  data_root: undefined,
+  language: undefined,
+  default_text_font: undefined,
+};
+
+export const DELTA_WINDOW_MIN_US = 1_000_000;
+export const DELTA_WINDOW_MAX_US = 300_000_000;
+export const TAIL_SNAP_STRENGTH_MIN_PX = 2;
+export const TAIL_SNAP_STRENGTH_MAX_PX = 80;
+export const PREVIEW_SNAP_STRENGTH_MIN_PX = 2;
+export const PREVIEW_SNAP_STRENGTH_MAX_PX = 80;

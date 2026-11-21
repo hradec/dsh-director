@@ -1,0 +1,241 @@
+import { useTranslation } from 'react-i18next';
+import { useEffect, useMemo, useState } from 'react';
+import { CirclePlus, DiamondPlus, Eye, Plus, Spline, Trash2 } from 'lucide-react';
+import { setPosition, updateLayerParamTrack, type LayerSummary } from '../ipc';
+import { PATH_PROGRESS, X, Y } from '../keyframe/descriptors';
+import { InspectorAnimField } from './InspectorAnimField';
+import { InspectorRow } from './InspectorRow';
+import { PropSegmented } from './PropSegmented';
+import { usePathEditingStore } from '../state/pathEditingStore';
+import { staticPosition, type PathPosition, type PathNode, type PositionAnimation } from '../../shared/position';
+import { evaluatePosition } from '../render/position';
+import { PositionConversionFields, type ConversionKind } from './PositionConversionFields';
+import { Button } from '@/components/ui/button';
+import { insertPathNode, setPathNodeMode } from '../../shared/pathGeometry';
+import { AppSelect } from '../components/AppSelect';
+import { progressAtParameter } from '../render/pathProgress';
+import { upsertKeyframe } from '../keyframe/edits';
+import { AppIcon } from "@/components/AppIcon";
+
+/// ADR 0060's node budget. The add/insert actions stop at it rather than
+/// letting the actor refuse a gesture the panel offered.
+const MAX_NODES = 128;
+
+/// One node action. An icon with its name on `aria-label` + `title`: four
+/// word-labelled buttons in a row read as four equal-weight decisions, and the
+/// row's one decision is Edit / Done.
+function NodeAction({ label, disabled, onClick, children }: {
+    label: string;
+    disabled: boolean;
+    onClick: () => void;
+    children: React.ReactNode;
+}) {
+    return <Button size="icon-xs" variant="ghost" aria-label={label} title={label} disabled={disabled} onClick={onClick}>
+    {children}
+  </Button>;
+}
+
+/// Position: the XY ⇄ Path mode choice, the values of whichever mode is
+/// active, and — in Path mode — the path's own node controls.
+///
+/// The mode switcher is the ONLY entry to changing representation, and it
+/// branches on what the data allows: static X/Y become a stationary single-node path
+/// immediately (one undo), keyframed X/Y have to be fitted, and leaving a
+/// multi-node path converts to editable XY curves (or explicit frame baking).
+/// A single node returns directly to static XY.
+/// So no control is ever silently unavailable while a second one
+/// elsewhere is the real route.
+export function PositionFields(props: {
+    layer: LayerSummary;
+    tInLayerUs: number;
+    playheadInSpan: boolean;
+    onMutated: () => Promise<void>;
+}) {
+    const { layer, tInLayerUs } = props;
+    const { t } = useTranslation();
+    const edit = usePathEditingStore();
+    const [error, setError] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [conversion, setConversion] = useState<ConversionKind | null>(null);
+    // Memoised on `layer.params` so identity tracks the stored params rather
+    // than the render: the reset below keys on it, and a fresh object every
+    // render would close the conversion the user is filling in.
+    const position = useMemo<PositionAnimation | null>(
+        () => ('x' in layer.params
+            ? layer.params.position ?? { mode: 'XY' as const, x: layer.params.x, y: layer.params.y }
+            : null),
+        [layer.params],
+    );
+    // A selection change, an edit elsewhere or an undo invalidates an open
+    // conversion: it was fitted against geometry that no longer exists.
+    useEffect(() => { setConversion(null); }, [layer.id, position]);
+    if (!position)
+        return null;
+    const path = position.mode === 'Path' ? position : null;
+    const editing = edit.layerId === layer.id;
+    const nodes = path?.path.nodes ?? [];
+    const selected = path && editing ? nodes.findIndex(n => n.id === edit.nodeId) : -1;
+    const nodeProgress = nodes.map((_, index) => progressAtParameter(path!.path, index));
+    const percent = (value: number) => `${Number((value * 100).toFixed(2))}%`;
+    const arriveAtNode = async () => {
+        if (!path || selected < 0 || !props.playheadInSpan || busy) return;
+        setBusy(true);
+        setError('');
+        try {
+            // Retain the static start when the first arrival is later in the clip.
+            // Existing keys keep their identities and easing.
+            const track = path.progress.mode === 'Static' && tInLayerUs > 0
+                ? upsertKeyframe(path.progress, 0, path.progress.value)
+                : path.progress;
+            await updateLayerParamTrack(layer.id, PATH_PROGRESS.paramKey,
+                upsertKeyframe(track, tInLayerUs, nodeProgress[selected]!));
+            await props.onMutated();
+        } catch (e) {
+            setError(String(e));
+        } finally {
+            setBusy(false);
+        }
+    };
+    // A span action needs a node with something after it.
+    const inSpan = selected >= 0 && selected < nodes.length - 1;
+    const change = async (next: PositionAnimation, geometryOnly = false) => {
+        setBusy(true);
+        setError('');
+        try {
+            await setPosition(layer.id, next, geometryOnly);
+            await props.onMutated();
+            return true;
+        }
+        catch (e) {
+            setError(String(e));
+            return false;
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    /// Changing representation preserves the static position. The user authors
+    /// the route and progress animation separately after entering Path mode.
+    const create = async () => {
+        const p = evaluatePosition(position, tInLayerUs);
+        const nodes: PathNode[] = [{ tangent_mode: 'Corner', id: crypto.randomUUID(), point: p, in_handle: { x: 0, y: 0 }, out_handle: { x: 0, y: 0 }, segment: 'Line' }];
+        const next: PathPosition = { mode: 'Path', path: { nodes }, progress: { mode: 'Static', value: 0 } };
+        if (await change(next))
+            edit.setLayer(layer.id);
+    };
+    const chooseMode = async (next: PositionAnimation['mode']) => {
+        if (busy) return;
+        if (next === position.mode) {
+            setConversion(null);
+            return;
+        }
+        // Static X/Y carry no timing to preserve, so a path can be built
+        // outright; anything animated has to be fitted and measured first.
+        if (next === 'Path' && position.mode === 'XY' && position.x.mode === 'Static' && position.y.mode === 'Static')
+            void create();
+        else if (next === 'XY' && position.mode === 'Path' && position.path.nodes.length === 1) {
+            // Progress cannot move a single node, even when it has keyframes.
+            const { x, y } = position.path.nodes[0]!.point;
+            if (await change(staticPosition(x, y)))
+                edit.setLayer(null);
+        }
+        else
+            setConversion(next === 'Path' ? 'to_path' : 'to_xy');
+    };
+    const updateNodes = (nodes: PathNode[]) => path && void change({ ...path, path: { nodes } }, true);
+    const toggleCurve = () => {
+        if (!path || !inSpan)
+            return;
+        const cubic = path.path.nodes[selected]!.segment === 'Line';
+        updateNodes(path.path.nodes.map((n, i) => i === selected ? { ...n, tangent_mode: 'Corner', segment: cubic ? 'Cubic' : 'Line', out_handle: cubic ? { x: 60, y: -60 } : n.out_handle } : i === selected + 1 && cubic ? { ...n, in_handle: { x: -60, y: -60 } } : n));
+    };
+    const insert = async () => {
+        if (!path || !inSpan) return;
+        const id = crypto.randomUUID();
+        if (await change({ ...path, path: insertPathNode(path.path, selected, 0.5, id) }, true)) edit.setNode(id);
+    };
+    const append = () => {
+        const last = nodes.at(-1);
+        if (!last) return;
+        updateNodes([...nodes, { ...last, tangent_mode: 'Corner', id: crypto.randomUUID(), point: { x: last.point.x + 100, y: last.point.y }, in_handle: { x: 0, y: 0 }, out_handle: { x: 0, y: 0 }, segment: 'Line' }]);
+    };
+    return <div className="position-fields" data-testid="position-fields">
+    <InspectorRow label={t('property_panel.position')} reserveStopwatch>
+      <PropSegmented
+        label={t('property_panel.position')}
+        value={conversion ? (conversion === 'to_path' ? 'Path' : 'XY') : position.mode}
+        options={[{ value: 'XY' as const, label: t('motion_path.mode_xy') }, { value: 'Path' as const, label: t('motion_path.mode_path') }]}
+        onSelect={chooseMode}/>
+      {/* XY mode draws no trajectory unless asked (`MotionPathOverlay` returns
+          null for an unedited XY position), so this is the only way to see the
+          motion on canvas. Path mode always draws it, so the toggle there
+          would be a no-op — Edit/Done owns that flag instead. */}
+      {!path && <Button size="icon-xs" variant={editing ? 'secondary' : 'ghost'} aria-pressed={editing} aria-label={t('motion_path.show')} title={t('motion_path.show')} onClick={() => edit.setLayer(editing ? null : layer.id)}>
+        <AppIcon icon={Eye} size="label" aria-hidden/>
+      </Button>}
+    </InspectorRow>
+    <div className="position-fields-body">
+    {path
+      ? <InspectorAnimField {...props} desc={PATH_PROGRESS}/>
+      : <InspectorRow label={t('motion_path.mode_xy')}>
+          <InspectorAnimField {...props} desc={X} layout="cell"/>
+          <InspectorAnimField {...props} desc={Y} layout="cell"/>
+        </InspectorRow>}
+    {conversion
+      ? <PositionConversionFields kind={conversion} position={position} layerId={layer.id} durationUs={layer.t_end_us - layer.t_start_us} busy={busy} onApply={change} onClose={() => setConversion(null)}/>
+      : path && <div className="position-path-controls">
+        <InspectorRow label={t('motion_path.path')} reserveStopwatch>
+          <span className="position-path-count">{t('motion_path.nodes', { count: nodes.length })}</span>
+          <Button size="xs" variant="ghost" aria-pressed={editing} disabled={busy} onClick={() => edit.setLayer(editing ? null : layer.id)}>
+            {editing ? t('motion_path.done') : t('motion_path.edit')}
+          </Button>
+        </InspectorRow>
+        <InspectorRow label={t('motion_path.node')} reserveStopwatch>
+          <AppSelect
+            ariaLabel={t('motion_path.node')}
+            value={selected >= 0 ? nodes[selected]!.id : ''}
+            disabled={busy}
+            options={[
+              { value: '', label: t('motion_path.choose_node'), disabled: true },
+              ...nodes.map((node, index) => ({ value: node.id, label: t('motion_path.node_progress', { index: index + 1, progress: percent(nodeProgress[index]!) }) })),
+            ]}
+            onValueChange={id => { if (!editing) edit.setLayer(layer.id); edit.setNode(id); }}/>
+        </InspectorRow>
+        {selected >= 0 && <>
+          <div className="position-path-arrival">
+            <Button size="xs" variant="secondary" title={t('motion_path.arrival_hint')} disabled={busy || !props.playheadInSpan} onClick={() => void arriveAtNode()}>
+              <AppIcon icon={DiamondPlus} size="label" aria-hidden/>
+              {t('motion_path.arrive_here')}
+            </Button>
+            <p className="prop-hint">{t(props.playheadInSpan ? 'motion_path.arrival_caption' : 'motion_path.arrival_outside')}</p>
+          </div>
+          <InspectorRow label={t('motion_path.node_mode')} reserveStopwatch>
+            <AppSelect
+              ariaLabel={t('motion_path.node_mode')}
+              value={nodes[selected]!.tangent_mode}
+              disabled={busy}
+              options={[{ value: 'Corner', label: t('motion_path.mode_corner') }, { value: 'Smooth', label: t('motion_path.mode_smooth') }, { value: 'Auto', label: t('motion_path.mode_auto') }]}
+              onValueChange={mode => void change({ ...path, path: setPathNodeMode(path.path, selected, mode as PathNode['tangent_mode']) }, true)}/>
+          </InspectorRow>
+        </>}
+        {editing && <>
+          <div className="position-path-toolbar">
+            <span className="position-path-selection">{selected >= 0
+              ? t('motion_path.node_of', { index: selected + 1, count: nodes.length })
+              : t('motion_path.select_node')}</span>
+            <div className="prop-well-toolbar">
+            <NodeAction label={t('motion_path.add')} disabled={busy || nodes.length >= MAX_NODES} onClick={append}><AppIcon icon={Plus} size="label" aria-hidden/></NodeAction>
+            {selected >= 0 && <>
+              <NodeAction label={t('motion_path.insert')} disabled={busy || !inSpan || nodes.length >= MAX_NODES} onClick={() => void insert()}><AppIcon icon={CirclePlus} size="label" aria-hidden/></NodeAction>
+              <NodeAction label={t('motion_path.curve')} disabled={busy || !inSpan} onClick={toggleCurve}><AppIcon icon={Spline} size="label" aria-hidden/></NodeAction>
+              <NodeAction label={t('motion_path.remove')} disabled={busy || nodes.length < 2} onClick={() => updateNodes(nodes.filter((_, i) => i !== selected))}><AppIcon icon={Trash2} size="label" aria-hidden/></NodeAction>
+            </>}
+            </div>
+          </div>
+          <p className="prop-hint" title={t('motion_path.insert_hint')}>{t('motion_path.insert_caption')}</p>
+        </>}
+      </div>}
+    {error && <p role="alert" className="prop-hint text-destructive">{error}</p>}
+    </div>
+  </div>;
+}

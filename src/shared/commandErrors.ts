@@ -1,0 +1,258 @@
+// The structured refusal vocabulary: raised by the main-process state actor,
+// serialized as `Error(JSON.stringify(CommandError))` across IPC (Electron
+// flattens custom Error props, so the structure rides `message`), and parsed
+// back by the renderer (renderer/errors/parseCommandError.ts).
+//
+// Lives in shared/ because both sides need the types and the project-reference
+// graph forbids the direct route: tsconfig.main already references
+// tsconfig.web (for renderer/eval), so a renderer import from main/state
+// would cycle. main/state/errors.ts re-exports these so its consumers keep
+// their './errors' import path.
+//
+// The primitive aliases below are structural twins of main/state/model.ts
+// (Uuid/TimeUs/Rational) and renderer/grid.ts (GridDomain, re-exported from
+// here); TypeScript's structural typing makes them interchangeable.
+
+export type Uuid = string
+export type TimeUs = number
+export interface Rational { num: number; den: number }
+
+/** Which lattice a time lives on. Diagnostics only — see renderer/grid.ts. */
+export type GridDomain = 'frame' | 'sample'
+
+// ── ValidationError — the variants raised by main/state/validate.ts ──
+export type ValidationError =
+  | { rule: 'InvalidCanvas'; width: number; height: number }
+  | { rule: 'InvalidFps'; num: number; den: number }
+  | { rule: 'DuplicateTransitionId'; transition: Uuid }
+  | { rule: 'TransitionSelfReference'; transition: Uuid; layer: Uuid }
+  | { rule: 'TransitionLayerMissing'; transition: Uuid; layer: Uuid }
+  | { rule: 'TransitionCrossTrack'; transition: Uuid; from: Uuid; to: Uuid }
+  | { rule: 'TransitionUnsupportedLayerKind'; transition: Uuid; layer: Uuid }
+  // `transition` is null when an overlap-placement add refuses `d > min(len_A,
+  // len_B)` BEFORE the transition id is minted (the id contract: a refused add
+  // burns no id, so there is no id to name yet). validate.ts always names one.
+  | { rule: 'TransitionDurationOutOfRange'; transition: Uuid | null; duration: TimeUs }
+  | { rule: 'TransitionDurationMismatch'; transition: Uuid; duration: TimeUs; overlap: TimeUs }
+  // The borrowed-tail counter out of its lane: `0 ≤ extended_us ≤ duration_us`.
+  // Structural (validate-only) — no layer edit can corrupt the counter, so
+  // reconcile never drops on it (see validateTransitions).
+  | { rule: 'TransitionExtendedOutOfRange'; transition: Uuid; extended: TimeUs; duration: TimeUs }
+  | { rule: 'LayerInMultipleTransitions'; layer: Uuid }
+  | { rule: 'DuplicateLayerId'; layer: Uuid }
+  | { rule: 'InvalidLayerRange'; layer: Uuid; t_start: TimeUs; t_end: TimeUs }
+  // Timeline time starts at zero. Deliberately its OWN rule rather than a `i >= 0`
+  // clause folded into the grid predicate below: a negative time can be perfectly
+  // canonical (-1_000_000 is frame -30 at 30 fps), so reporting it as "off grid"
+  // would send a caller chasing the wrong fix. Repaired (lifted to 0) on load,
+  // rejected on edit — the same asymmetry the grid rules use and for the same
+  // reason: `replaceState` shares this validator with `project_open`, so a hard rule
+  // with no matching load repair makes an already-written project unopenable.
+  | { rule: 'NegativeLayerStart'; layer: Uuid; t_start: TimeUs }
+  // ── Grid backstop (docs/data-model.md § Timeline-field alignment). `fps` rides
+  // along because "off grid" is meaningless without the lattice it is off:
+  // 2_999_999 is off grid at 30/1 and canonical at 1000000/1. A caller that hits
+  // either variant asked for a sub-quantum time, and `snap_to` is the nearest
+  // lattice point — the value it should have sent — so the retry is mechanical
+  // instead of the caller re-deriving `round(i * 1e6 * den / num)` from `fps`.
+  //
+  // On `OffGridLayerBoundary` there are TWO lattices (spec R2-D6): `grid` names
+  // which one, and `fps` carries that lattice's rational — so for an Audio layer it
+  // reads `48000/1`, the 48 kHz mix lattice, NOT a frame rate. Without `grid` a
+  // caller could not tell a 48 kHz audio rejection from an absurd 48000 fps comp.
+  | { rule: 'OffGridLayerBoundary'; layer: Uuid; field: 't_start_us' | 't_end_us'; t: TimeUs; fps: Rational; grid: GridDomain; snap_to: TimeUs }
+  | { rule: 'OffGridTime'; entity: 'Composition' | 'Marker'; id: Uuid | null; field: string; t: TimeUs; fps: Rational; snap_to: TimeUs }
+  | { rule: 'MissingMedia'; layer: Uuid; media: Uuid }
+  | { rule: 'InvalidSrcRange'; layer: Uuid; src_in: TimeUs; src_out: TimeUs }
+  | { rule: 'SrcRangeExceedsMedia'; layer: Uuid; src_in: TimeUs; src_out: TimeUs; media_duration: TimeUs }
+  | { rule: 'LayerOverlap'; track: Uuid; a: Uuid; a_start: TimeUs; a_end: TimeUs; b: Uuid; b_start: TimeUs; b_end: TimeUs }
+  | { rule: 'DuplicateLinkId'; link: Uuid }
+  | { rule: 'LinkBelowMinSize'; link: Uuid; members: number }
+  | { rule: 'LinkMemberMissing'; link: Uuid; layer: Uuid }
+  | { rule: 'LayerInMultipleLinks'; layer: Uuid; first: Uuid; second: Uuid }
+  // ── Composition container (ADR 0052 §3–§6) ──
+  | { rule: 'RootMissing'; root_id: Uuid }
+  | { rule: 'CompositionIdMismatch'; key: Uuid; id: Uuid }
+  | { rule: 'CompositionMissing'; layer: Uuid; composition: Uuid }
+  | { rule: 'RootReferenced'; layer: Uuid }
+  // The reference chain that closes on itself: `path[0] === path.at(-1)`.
+  | { rule: 'CompositionCycle'; path: Uuid[] }
+  // Single lattice: a Group's fps / sample_rate / channels equal the root's, or
+  // its `src_*` would sit on a different grid from the parent's `t_*`.
+  | { rule: 'CompositionLatticeMismatch'; composition: Uuid; field: 'fps' | 'sample_rate' | 'channels' }
+  // Project-wide like `DuplicateLayerId`: a marker-addressed op derives its
+  // composition from the marker id, so the id must name one marker in the
+  // whole project.
+  | { rule: 'DuplicateMarkerId'; marker: Uuid }
+  // ── Marker anchoring ──
+  // An anchored marker's layer is one of its OWN composition's layers, checked
+  // against that composition's layer set exactly as `Link.members` are. A
+  // cross-composition tie is unrepresentable rather than merely odd: the two
+  // timelines share no origin, so no `t_us` can be derived from it.
+  | { rule: 'MarkerAnchorNotInComposition'; marker: Uuid; layer: Uuid; composition: Uuid }
+  // The anchor layer must carry a source window (VideoClip | Audio |
+  // CompositionRef) — the derivation reads `params.src_in_us`. `kind` names
+  // what was found, because the fix is a different layer, not a different time.
+  | { rule: 'MarkerAnchorLayerHasNoSourceWindow'; marker: Uuid; layer: Uuid; kind: string }
+  // ── Project Motifs: a Motif layer renders the project's own copy, so its
+  // `motif_id` is a key of the project's Motif table; a key is a folder name
+  // and a `motif://` host (`isProjectMotifKey`).
+  | { rule: 'MotifNotInProject'; layer: Uuid; motif_id: string }
+  | { rule: 'InvalidMotifKey'; motif_id: string }
+
+// ── CommandError — the full mutation-error vocabulary. Individual dispatch
+// arms construct only the variants they need. ──
+export type CommandError =
+  | { error: 'RetimeRejected'; reason: Record<string, unknown> }
+  | { error: 'TrackNotFound'; track: Uuid }
+  | { error: 'LayerNotFound'; layer: Uuid }
+  | { error: 'LayerLocked'; layer: Uuid }
+  | { error: 'CompositionNotFound'; composition: Uuid }
+  // ── Composition scope (ADR 0052; spec § Invariants). A layer-addressed op
+  // derives its composition from the layer id, so the only way to name another
+  // composition is through a DESTINATION — a target track, a restack anchor —
+  // and that is refused: a layer changes composition only by pre-compose /
+  // ungroup. `from` is the layer's composition, `to` the destination's.
+  | { error: 'CrossCompositionMove'; layer: Uuid; from: Uuid; to: Uuid }
+  // A set op (delete_layers, move_layers_to_new_track, paste_layers,
+  // set_layers_enabled, links_*) addresses ONE composition: `expected` is the
+  // first member's, `layer` the member found in `composition` instead.
+  | { error: 'CrossCompositionSet'; layer: Uuid; composition: Uuid; expected: Uuid }
+  | { error: 'WrongLayerKind'; layer: Uuid; expected: string }
+  | { error: 'MarkerNotFound'; marker: Uuid }
+  | { error: 'TransitionNotFound'; transition: Uuid }
+  | { error: 'TransitionLayersNotAdjacent'; from: Uuid; to: Uuid; duration: TimeUs }
+  | { error: 'TransitionUnsupportedLayerKind'; layer: Uuid; kind: string }
+  | { error: 'TransitionInsufficientHandle'; layer: Uuid; available_us: TimeUs }
+  // remove_transition's restore move is blocked: `layer` (the incoming layer or
+  // one of its link siblings) cannot land on its destination because a
+  // non-moving layer occupies it — the user may have filled the vacated gap,
+  // and the system never makes room.
+  | { error: 'TransitionRestoreCollision'; layer: Uuid }
+  // Overlap-placement add refused: the participants share a link, so moving
+  // the incoming layer would drag the outgoing one along and the overlap never
+  // opens. Never falls back to extend silently — the caller unlink-s or asks
+  // for placement 'extend' explicitly.
+  | { error: 'TransitionParticipantsShareLink'; from: Uuid; to: Uuid }
+  | { error: 'CheckpointNotFound'; checkpoint: Uuid }
+  | { error: 'MediaNotFound'; media: Uuid }
+  | { error: 'MediaInUse'; media: Uuid; referenced_by: Uuid[] }
+  | { error: 'MotifNotFound'; motif_id: string }
+  | { error: 'MotifInUse'; motif_id: string; referenced_by: Uuid[] }
+  | { error: 'TrackPositionOutOfRange'; position: number; len: number }
+  | { error: 'TrackNotEmpty'; track: Uuid }
+  | { error: 'TrackNotRemovable'; track: Uuid }
+  /** A reserved A roll / B roll track keeps its place in the stack: `move_track`
+   *  refuses it, as `restack_layer` keeps it fixed and the timeline offers no
+   *  drag for it. */
+  | { error: 'TrackReserved'; track: Uuid }
+  | { error: 'TrackLocked'; track: Uuid }
+  // ── Ripple delete (docs/features.md#ripple-delete). A ripple closes the span
+  // a deletion vacated, so every refusal below is about the span — `hole` is
+  // the half-open `[s, e)` interval being closed, which is the deleted layer's
+  // own footprint clipped to its remaining neighbours, NOT the layer's length.
+  // All four are predicted BEFORE any write: the planner is pure and the
+  // renderer runs it against its mirror to grey the row with the same
+  // sentence. ──
+  // A remaining layer STARTS inside the span. The hole must be clean, so the
+  // ripple refuses instead of sliding the layer onto its neighbour: the remedy
+  // is to add it to the selection (its own hole then merges in) or to delete
+  // without ripple. A layer that merely reaches into the span from before `s` is
+  // anchored ahead of the cut and does not refuse.
+  | { error: 'RippleInsideHole'; layer: Uuid; hole: { s: TimeUs; e: TimeUs } }
+  // A landing is occupied: `moving` shifted left onto `blocking` on `track`. When
+  // both shifted, `moving` is the later-starting one. The system never makes
+  // room (the `TransitionRestoreCollision` precedent); a transition's overlap is
+  // authorized only while both its participants shift by the same amount.
+  | { error: 'RippleCollision'; moving: Uuid; blocking: Uuid; track: Uuid }
+  // A link with a member REACHING ACROSS the cut — starting before `s` and ending
+  // after it — while another member starts at or after `e`. A link means "these
+  // move together", so shifting only the downstream half is not on offer and
+  // there is no out-of-sync badge to fall back on. A member that ends at or
+  // before `s` is wholly upstream and does not count: a split leaves every piece
+  // of a linked clip in one link, and closing the gap between the pieces before
+  // the cut and the pieces after it is what the ripple is for. Members inside
+  // the deleted set are ignored — they are gone.
+  | { error: 'RippleLinkStraddles'; link: Uuid; hole: { s: TimeUs; e: TimeUs } }
+  /** `shift_layers { from_t_us }`: the time (or the lane filter) splits a link,
+   *  so the sweep would move one member and not another. */
+  | { error: 'ShiftLinkStraddles'; link: Uuid; from_t_us: TimeUs }
+  // A locked layer would have to move. The lock reading is lenient throughout:
+  // only a layer that actually shifts blocks, so locking a logo at the head does
+  // not disable ripple for the rest of the film. A locked TRACK holding a mover
+  // is the plain `TrackLocked`, and a locked track with nothing downstream does
+  // not block at all.
+  | { error: 'RippleLockedLayer'; layer: Uuid }
+  // `[s, e)` is not a gap on `track` (docs/features.md#ripple-delete): a layer
+  // reaches into it, or an edge is not a layer boundary — the right edge must
+  // be where a layer starts, the left where one ends or composition time 0.
+  // The span the renderer selected is what closes, never "whatever is free
+  // there now": the mirror can lag the actor, and a gap that moved under the
+  // click is refused rather than silently re-measured.
+  | { error: 'GapNotFound'; track: Uuid; s: TimeUs; e: TimeUs }
+  | { error: 'SplitOutsideLayer'; layer: Uuid; at_t: TimeUs }
+  | { error: 'LinkLockedMember'; link: Uuid; locked_layer: Uuid; touched: Uuid }
+  // `window` is the absolute range the edge MAY land in, on the layer's own grid,
+  // so the retry is mechanical; `edge` says which one. Both present whenever the
+  // refusal comes from a strict (agent) trim, absent on the legacy clamp-to-zero path.
+  | { error: 'TrimEdgeOutOfRange'; layer: Uuid; new_t: TimeUs; cur_start: TimeUs; cur_end: TimeUs; edge?: 'In' | 'Out'; window?: { lo: TimeUs; hi: TimeUs } }
+  | { error: 'LayerParamsKindMismatch'; layer: Uuid; actual: string; patch: string }
+  | { error: 'LinkNotFound'; link: Uuid }
+  | { error: 'LayerAlreadyLinked'; layer: Uuid; existing: Uuid }
+  | { error: 'LinkCreateNeedsTwoLayers'; got: number }
+  | { error: 'LayerNotInLink'; link: Uuid; layer: Uuid }
+  // ── Groups (ADR 0052; spec § Group semantics) ──
+  // One locked layer refuses the WHOLE set — for pre-compose and for every op
+  // that carries a set into another composition. Never the unlocked half: that
+  // would leave a split set nobody asked for and a refusal the caller cannot act
+  // on. A locked TRACK is the plain `TrackLocked`. The name is Group-flavoured
+  // and the rule is not, and it stays that way: a wire error code is spelled in
+  // two locales and four files, and a reader gains nothing by the rename.
+  | { error: 'GroupLockedMember'; layer: Uuid }
+  // Ungroup refuses a Group layer whose transform / opacity / effects are not the
+  // identity: expanding would discard them silently. `reason` names the first
+  // non-plain field so the caller can clear it or keep the Group.
+  | { error: 'GroupNotPlain'; layer: Uuid; reason: 'transform' | 'opacity' | 'effects' }
+  // `compositions_delete` on a composition some Group layer still references.
+  | { error: 'CompositionInUse'; composition: Uuid; ref_count: number }
+  // The root is never renamed or deleted: it has no name in the UI and export
+  // renders it.
+  | { error: 'RootComposition'; composition: Uuid }
+  | { error: 'NothingToUndo' }
+  | { error: 'NothingToRedo' }
+  | { error: 'HistoryLocked'; reason: string }
+  | { error: 'ValidationFailed'; detail: ValidationError }
+  | { error: 'EmptyKeyframeTrack'; layer: Uuid; param_key: string }
+  | { error: 'UnknownKeyframeParam'; layer: Uuid; param_key: string }
+  | { error: 'EffectNotFound'; effect: Uuid }
+  | { error: 'EffectIndexOutOfRange'; index: number; len: number }
+  // ── Audio effects (ADR 0063) ──
+  // The `audio.*` namespace and Audio layers are the same set: audio effects
+  // are offline conform bakes, visual effects are realtime Pixi filters, and
+  // the two share only the `Effect` struct. `layer_kind` is what was found, so
+  // the fix — a different layer, or a different kind — is readable from the
+  // refusal. Unknown NON-audio kinds are still accepted anywhere (ADR 0027).
+  | { error: 'EffectKindNotApplicable'; kind: string; layer_kind: string }
+  // An audio effect is a whole-clip operation, so its params are static only.
+  // Raised by both effect-param write entries, `set_keyframe` included.
+  | { error: 'AudioEffectParamStatic'; effect: Uuid; param: string }
+  // ── Composition rate lock (spec R2-D1) ──
+  // An fps change re-snaps every layer edge, Motif `src_in_us`, the composition
+  // duration and every marker: each edit point moves by up to half a new frame and
+  // a short layer can collapse and reject the whole operation. So the rate is
+  // immutable once the timeline holds a layer. Scope and escape hatch:
+  // docs/features.md #undo-stack-scope.
+  //
+  // `layer_count` is the blocking condition made legible, and `current` tells the
+  // caller what rate it is stuck with without a second round trip.
+  //
+  // `locked_by` names the SCOPE that blocked, because the judgement spans the
+  // stored history, not just the live state (see setComposition): `current` = the
+  // timeline holds layers right now, `history` = it doesn't, but some snapshot or
+  // checkpoint does, so undo could still resurrect old-grid layers. The two carry
+  // the same remedy (empty the timeline, then reopen the project — `replace_state`
+  // resets the stack) and differ only in what the message can honestly say; with
+  // `history`, `layer_count` is 0 and must NOT be read as "nothing is blocking".
+  | { error: 'FpsLockedByContent'; current: Rational; requested: Rational; layer_count: number; locked_by: 'current' | 'history' }
+  | { error: 'InvalidArgument'; field: string; detail: string }
+  | { error: 'Backend'; detail: string }

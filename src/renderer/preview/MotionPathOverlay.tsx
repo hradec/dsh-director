@@ -1,0 +1,206 @@
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { setPosition, type LayerSummary, type CompositionSummary } from '../ipc';
+import { usePathEditingStore } from '../state/pathEditingStore';
+import { type PositionAnimation, type PathPosition, type Point } from '../../shared/position';
+import { evaluatePosition, setPositionPreview, previewPosition, subscribePositionPreviews, positionPreviewRevision } from '../render/position';
+import { getGizmoProbe } from './gizmoProbeRegistry';
+import { observeClientRect, type ClientRectCache } from './layoutRectCache';
+import { containFit } from './gizmoGeometry';
+import { useFocusedPlayheadReader } from '../state/playheadProjection';
+import { logMutationFailure } from '../errors/tryMutate';
+import { transformOverrideFor } from '../render/transformOverrides';
+import { editPathNode, insertPathNode, nearestPathLocation } from '../../shared/pathGeometry';
+export function MotionPathOverlay({ layer, composition }: {
+    layer: LayerSummary;
+    composition: CompositionSummary;
+}) {
+    const editing = usePathEditingStore(s => s.layerId === layer.id);
+    useSyncExternalStore(subscribePositionPreviews, positionPreviewRevision);
+    const selected = usePathEditingStore(s => s.nodeId);
+    const svg = useRef<SVGSVGElement>(null), group = useRef<SVGGElement>(null), marker = useRef<SVGCircleElement>(null);
+    const [draft, setDraft] = useState<PathPosition | null>(null);
+    const [busy, setBusy] = useState(false);
+    const drag = useRef<{
+        source: PathPosition;
+        node: number;
+        part: 'point' | 'in_handle' | 'out_handle';
+    } | null>(null);
+    const source: PositionAnimation | null = 'x' in layer.params ? (layer.params.position ?? { mode: 'XY', x: layer.params.x, y: layer.params.y }) : null;
+    const current = draft ?? (source ? previewPosition(source) : null);
+    const live = useRef(current);
+    live.current = current;
+    // The anchor walk is hoisted here; the loop only does arithmetic. Resolving
+    // an anchor inside a rAF loop is what `playheadProjection.ts` forbids.
+    const reader = useFocusedPlayheadReader();
+    const readerRef = useRef(reader);
+    readerRef.current = reader;
+    /// Stands in for the MARKUP in the draw loop's signature, so a render is
+    /// always followed by a written frame. Freshly mounted nodes carry their
+    /// DECLARED attributes — a handle circle's unscaled `r`, the svg's own
+    /// `visibility: hidden` — and the loop is what turns those into the live
+    /// values, so it may not skip a frame just because the geometry held still.
+    /// Nothing here re-renders per frame, so a counter is enough.
+    const renderRef = useRef(0);
+    renderRef.current += 1;
+    useEffect(() => () => { if (source)
+        setPositionPreview(source, null); }, [source]);
+    useEffect(() => {
+        const cancel = (e: KeyboardEvent) => {
+            const d = drag.current;
+            if (e.key !== 'Escape' || !d)
+                return;
+            e.preventDefault();
+            e.stopPropagation();
+            drag.current = null;
+            live.current = d.source;
+            setDraft(null);
+            setPositionPreview(d.source, null);
+        };
+        window.addEventListener('keydown', cancel, true);
+        return () => window.removeEventListener('keydown', cancel, true);
+    }, []);
+    useEffect(() => {
+        let raf = 0;
+        /// The svg mounts and unmounts UNDER this loop — the component returns
+        /// null while there is no path to draw, and that decision does not
+        /// restart the effect — so the cached box follows whichever element is
+        /// there now. Cached at all because a layout read on the per-frame path
+        /// lands in the same frame as the timeline playhead's `style.left`
+        /// write and reflows the whole document (`layoutRectCache.ts`).
+        let ownCache: ClientRectCache | null = null;
+        let observed: SVGSVGElement | null = null;
+        const ownRect = (el: SVGSVGElement): DOMRect => {
+            if (observed !== el || !ownCache) {
+                ownCache?.dispose();
+                ownCache = observeClientRect(el);
+                observed = el;
+            }
+            return ownCache.rect();
+        };
+        /// What the last written frame was drawn from. Identical inputs write
+        /// nothing: a DOM write between the playhead's own write and the next
+        /// read is what turns a still overlay into a reflow.
+        let drawn: string | null = null;
+        const draw = () => {
+            raf = requestAnimationFrame(draw);
+            const rect = getGizmoProbe()?.canvasRect();
+            const root = svg.current;
+            const g = group.current;
+            if (!rect || !root || !g)
+                return;
+            const fit = containFit(rect, composition.width, composition.height);
+            if (!fit)
+                return;
+            const own = ownRect(root);
+            const delta = transformOverrideFor(layer.id);
+            const now = readerRef.current();
+            const visible = now >= layer.t_start_us && now < layer.t_end_us;
+            const at = live.current ? evaluatePosition(live.current, now - layer.t_start_us) : null;
+            const signature = `${renderRef.current};${rect.left},${rect.top},${rect.width},${rect.height};${own.left},${own.top};${fit.scale},${fit.offX},${fit.offY};${delta?.dx ?? 0},${delta?.dy ?? 0};${visible ? 1 : 0};${at ? `${at.x},${at.y}` : ''}`;
+            if (signature === drawn)
+                return;
+            drawn = signature;
+            g.setAttribute('transform', `translate(${fit.offX - own.left + (delta?.dx ?? 0) * fit.scale} ${fit.offY - own.top + (delta?.dy ?? 0) * fit.scale}) scale(${fit.scale})`);
+            for (const circle of g.querySelectorAll<SVGCircleElement>('[data-handle-radius]'))
+                circle.setAttribute('r', String(Number(circle.dataset.handleRadius) / fit.scale));
+            root.style.visibility = visible ? 'visible' : 'hidden';
+            if (at && marker.current) {
+                marker.current.setAttribute('cx', String(at.x));
+                marker.current.setAttribute('cy', String(at.y));
+                marker.current.setAttribute('r', String(5 / fit.scale));
+            }
+        };
+        draw();
+        return () => {
+            cancelAnimationFrame(raf);
+            ownCache?.dispose();
+        };
+    }, [composition.width, composition.height, layer.id, layer.t_start_us, layer.t_end_us]);
+    const route = useMemo(() => {
+        if (!current)
+            return '';
+        if (current.mode === 'XY')
+            return Array.from({ length: 129 }, (_, i) => { const p = evaluatePosition(current, (layer.t_end_us - layer.t_start_us) * i / 128); return `${i ? 'L' : 'M'}${p.x} ${p.y}`; }).join(' ');
+        return current.path.nodes.map((n, i) => {
+            if (!i)
+                return `M${n.point.x} ${n.point.y}`;
+            const a = current.path.nodes[i - 1]!;
+            return a.segment === 'Line' ? `L${n.point.x} ${n.point.y}` : `C${a.point.x + a.out_handle.x} ${a.point.y + a.out_handle.y} ${n.point.x + n.in_handle.x} ${n.point.y + n.in_handle.y} ${n.point.x} ${n.point.y}`;
+        }).join(' ');
+    }, [current, layer.t_start_us, layer.t_end_us]);
+    if (!source || (!editing && source.mode === 'XY'))
+        return null;
+    const pointer = (e: {clientX: number; clientY: number}): Point | null => {
+        const rect = getGizmoProbe()?.canvasRect();
+        const fit = rect ? containFit(rect, composition.width, composition.height) : null;
+        return fit ? { x: (e.clientX - fit.offX) / fit.scale, y: (e.clientY - fit.offY) / fit.scale } : null;
+    };
+    const begin = (e: React.PointerEvent<SVGCircleElement>, node: number, part: 'point' | 'in_handle' | 'out_handle') => {
+        if (e.button !== 0 || source.mode !== 'Path' || busy || previewPosition(source) !== source)
+            return;
+        e.stopPropagation();
+        e.preventDefault();
+        usePathEditingStore.getState().setNode(source.path.nodes[node]!.id);
+        drag.current = { source, node, part };
+        e.currentTarget.setPointerCapture(e.pointerId);
+    };
+    const move = (e: React.PointerEvent<SVGCircleElement>) => {
+        const d = drag.current, p = pointer(e);
+        if (!d || !p)
+            return;
+        const node = d.source.path.nodes[d.node]!;
+        const value = d.part === 'point' ? p : { x: p.x - node.point.x, y: p.y - node.point.y };
+        const next: PathPosition = { ...d.source, path: editPathNode(d.source.path, d.node, d.part, value) };
+        live.current = next;
+        setDraft(next);
+        setPositionPreview(d.source, next);
+    };
+    const end = async (e: React.PointerEvent<SVGCircleElement>) => {
+        const d = drag.current;
+        drag.current = null;
+        if (!d)
+            return;
+        e.currentTarget.releasePointerCapture(e.pointerId);
+        try {
+            if (e.type !== 'pointercancel' && live.current && live.current !== d.source) {
+                setBusy(true);
+                await setPosition(layer.id, live.current, true);
+            }
+        }
+        catch (error) {
+            logMutationFailure(error, 'Edit motion path');
+        }
+        finally {
+            setPositionPreview(d.source, null);
+            setDraft(null);
+            setBusy(false);
+        }
+    };
+    const handle = (node: number, part: 'point' | 'in_handle' | 'out_handle', p: Point) => <circle key={`${node}-${part}`} data-testid={`path-${node}-${part}`} data-handle-radius={part === 'point' ? 6 : 4} cx={p.x} cy={p.y} r={part === 'point' ? 6 : 4} fill={part === 'point' ? '#fff' : '#65d8ff'} stroke="#17394b" strokeWidth={1} vectorEffect="non-scaling-stroke" style={{ pointerEvents: editing && !busy ? 'all' : 'none', cursor: 'move' }} onPointerDown={e => begin(e, node, part)} onPointerMove={move} onPointerUp={e => void end(e)} onPointerCancel={e => void end(e)}/>;
+    const insertAt = async (e: React.MouseEvent) => {
+        if (!editing || busy || source.mode !== 'Path' || previewPosition(source) !== source) return;
+        const point = pointer(e); if (!point) return;
+        const location = nearestPathLocation(source.path, point);
+        if (!location || location.t < 0.0001 || location.t > 0.9999) return;
+        e.preventDefault(); e.stopPropagation();
+        const id = crypto.randomUUID();
+        try {
+            setBusy(true);
+            await setPosition(layer.id, { ...source, path: insertPathNode(source.path, location.segment, location.t, id) }, true);
+            usePathEditingStore.getState().setNode(id);
+        } catch(error) { logMutationFailure(error, 'Insert motion path node'); }
+        finally { setBusy(false); }
+    };
+    return <svg ref={svg} data-testid="motion-path-overlay" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'hidden', visibility: 'hidden' }}>
+    <g ref={group}>
+      <path d={route} fill="none" stroke="#111" strokeWidth={4} vectorEffect="non-scaling-stroke"/>
+      <path d={route} fill="none" stroke="#65d8ff" strokeWidth={2} vectorEffect="non-scaling-stroke"/>
+      {editing && source.mode === 'Path' && current === source && <path data-testid="path-insert-hit" d={route} fill="none" stroke="transparent" strokeWidth={12} vectorEffect="non-scaling-stroke" style={{pointerEvents: busy ? 'none' : 'stroke', cursor: 'copy'}} onDoubleClick={e => void insertAt(e)}/>}
+      {editing && current?.mode === 'Path' && (draft || current === source) && current.path.nodes.map((n, i) => <g key={n.id}>
+        {handle(i, 'point', n.point)}
+        {n.id === selected && (['in_handle', 'out_handle'] as const).filter(part => (part === 'out_handle' ? n.segment === 'Cubic' && i < current.path.nodes.length - 1 : i > 0 && current.path.nodes[i - 1]!.segment === 'Cubic') && (n[part].x !== 0 || n[part].y !== 0)).map(part => { const p = { x: n.point.x + n[part].x, y: n.point.y + n[part].y }; return <g key={part}><line x1={n.point.x} y1={n.point.y} x2={p.x} y2={p.y} stroke="#65d8ff" strokeWidth={1} vectorEffect="non-scaling-stroke"/>{handle(i, part, p)}</g>; })}
+      </g>)}
+      <circle ref={marker} fill="#ffca66" stroke="#111" strokeWidth={1} vectorEffect="non-scaling-stroke"/>
+    </g>
+  </svg>;
+}

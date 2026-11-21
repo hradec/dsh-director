@@ -1,0 +1,471 @@
+// Main-thread harness for the export Worker. Drives one export from
+// "user clicked export" to "video chunks durably written" — Worker spawning,
+// project snapshot serialization, OffscreenCanvas transfer, progress
+// streaming, and chunk backpressure.
+//
+// See docs/render.md — "Export Worker".
+//
+// Callers provide a writeChunk sink for the video-only fMP4 and get final
+// frame counters. Audio export and mux/transcode run on the Rust side after
+// this resolves.
+
+import { convertFileSrc } from "@/bridge/ipc";
+import { openVideoSinkPort } from "../../ipc";
+import { openDecodeSession } from "../../ipc/decodeSession";
+import { loadBundledFontBytes, resolveFontsForFamilies } from "../fonts/registry";
+
+import type { MediaSummary, ProjectSummary } from "../../ipc";
+import { rendererOS } from "../../platform";
+import { resolveDecode } from "../decodeRoute";
+import { referencedVideoMediaIds } from "../activeVideoLayers";
+import { forEachLayer } from "../compositionWalk";
+import { rootCompositionOf } from "../../ipc/compositions";
+import { exportMotifPlanner } from "../exportMotifSource";
+import { motifLayersToBake } from "../exportBake";
+import { MotifFrameProducer } from "./motifStream";
+import { acquireExportResources } from '../resourceClient';
+import { exportFrameCount } from "./frameGrid";
+import { resolveSourceColor, type SourceColor } from "../decoder/ffprobeColorSpace";
+import { hwExportDecodeAllowed, takesTenBitLane, type ExportDecodeRouting } from "../exportDecodeRouting";
+import type { SinkPixFmt } from "../../../shared/export-resources";
+import type {
+  ExportEvent,
+  ExportProjectSnapshot,
+  ExportRequest,
+} from "./protocol";
+
+export interface RunExportInit {
+  /// The admitted plan (`admitExportResources`) and its token. Every claim
+  /// this run makes, the worker's working set first, borrows from it.
+  resourcePlan: import("../../../shared/export-resources").ExportResourcePlan;
+  finalizationToken: string;
+  /// Live project summary from the Zustand store.
+  summary: ProjectSummary;
+  /// Media lookup, also from the store. Required for asset URL
+  /// pre-resolution.
+  mediaById: ReadonlyMap<string, MediaSummary>;
+  /// Time range to render (microseconds). Defaults to whole project.
+  startUs?: number;
+  endUs?: number;
+  /// Encoder config. Absent ⇒ `defaultEncoderConfig`; ExportPanel can override
+  /// per preset.
+  encoderConfig?: VideoEncoderConfig;
+  /// Output frame rate (rational). Overrides composition fps for the frame
+  /// grid + capture cadence. Absent ⇒ composition fps.
+  outputFps?: { num: number; den: number };
+  /// Seconds between forced keyframes. Absent ⇒ 1 second.
+  keyframeIntervalSec?: number;
+  /// Optional progress callback. Fires with (framesEncoded,
+  /// totalFrames) on every progress event.
+  onProgress?: (encoded: number, total: number) => void;
+  /// Sink for each sequential output-file slice (fMP4, append-only). Called in
+  /// order; must resolve once the slice is durably written (the Worker awaits
+  /// the ack before releasing the next write → backpressure). Streaming to disk
+  /// avoids buffering the whole MP4 in one ArrayBuffer (V8's ~2GB cap OOM'd
+  /// long exports at finalize).
+  writeChunk: (data: ArrayBuffer) => Promise<void>;
+  /// Optional cancel signal — the Worker checks at each frame
+  /// boundary.
+  signal?: AbortSignal;
+  /// Output bit depth (8 = existing pipeline; 10 = f16/WebGL2 + native-encode).
+  /// Absent ⇒ 8.
+  bitDepth?: 8 | 10;
+  /// Present ⇒ the worker packs frames to this format and streams them to the
+  /// native ffmpeg sink instead of WebCodecs-encoding.
+  nativeSinkPixFmt?: SinkPixFmt;
+  /// Present ⇒ no encoder: every frame in the range comes back through
+  /// `onStill` as a JPEG `width` px wide (`render_frames`). `writeChunk` is
+  /// never called. `effects: false` composites with clip effects skipped
+  /// (`render_frames { without: ["effects"] }`); an export never sets it.
+  stills?: { width: number; quality?: number; effects?: boolean };
+  onStill?: (still: { index: number; tUs: number; width: number; height: number; jpeg: ArrayBuffer }) => void;
+  /// Per-media decode routing table (see exportDecodeRouting.ts). Native
+  /// entries decode their ORIGINAL via the napi session; everything else
+  /// (and every media when absent) takes the in-worker WebCodecs path.
+  decodeRouting?: ExportDecodeRouting;
+}
+
+export interface RunExportResult {
+  /// (encoded, total). After a clean run, encoded === total.
+  framesEncoded: number;
+  totalFrames: number;
+}
+
+/// Composition-sized H.264 default used when the caller doesn't supply a
+/// config. Matches the proxy spec we already have: High profile, Level 4.2,
+/// yuv420p — universally hardware-decodable downstream.
+/// Framerate must follow the export's output fps (passed in; composition fps
+/// when `outputFps` is absent), not a constant — a fixed value would mis-time
+/// non-30fps exports.
+function defaultEncoderConfig(
+  width: number,
+  height: number,
+  framerate: number,
+): VideoEncoderConfig {
+  return {
+    codec: "avc1.640028",
+    width,
+    height,
+    bitrate: 8_000_000,
+    framerate,
+    hardwareAcceleration: "prefer-hardware",
+  };
+}
+
+export async function runExport(init: RunExportInit): Promise<RunExportResult> {
+  init.signal?.throwIfAborted();
+  const summary = init.summary;
+  // Export renders the ROOT, whatever composition the editor has open
+  // (compositionAnchorStore.ts); the Groups placed on it enter through the
+  // recursive walk (`render/compositionWalk.ts`), not through this id.
+  const comp = rootCompositionOf(summary);
+  const fpsNum = comp.fps_num;
+  const fpsDen = comp.fps_den;
+  const startUs = init.startUs ?? 0;
+  const endUs = init.endUs ?? comp.duration_us;
+
+  // 1. Pre-resolve asset URLs for every media item. The Worker has no renderer
+  // bridge so it can't call `convertFileSrc` itself. Only REFERENCED video
+  // sources must have a ready export path — the export-readiness gate in App
+  // (decodability probe + route-correction + auto-wait) guarantees that before
+  // calling here; the throw below is a defensive assertion, not the
+  // user-facing decodability path.
+  const referenced = referencedVideoMediaIds(summary, startUs, endUs);
+  const proxyAssetUrls: Record<string, string> = {};
+  const originalAssetUrls: Record<string, string> = {};
+  const mediaDims: Record<string, { width: number | null; height: number | null }> = {};
+  const mediaStartPtsUs: Record<string, number | null> = {};
+  // Per-media resolved colour, applied to WHATEVER the export decodes — the
+  // original trivially, and a YCbCr source's proxy PRESERVES its colorimetry
+  // (the recipe never converts its matrix/range, and since full-proxy
+  // version 7 asserts the source tags + a colr atom outright). mediabunny's own
+  // container tag still outranks this per-field in `withDefaultColorSpace`,
+  // so a self-describing proxy reads its colr and an older colr-less one
+  // falls back to the source's colour.
+  const mediaColor: Record<string, SourceColor> = {};
+  const routes = init.decodeRouting?.routes ?? {};
+  for (const m of init.mediaById.values()) {
+    const exportPath = resolveDecode(m).exportPath;
+    // Native-routed media decode their ORIGINAL via the napi session: they
+    // need no export proxy and deliberately skipped the readiness gate's
+    // full-proxy wait (`proxyWaitScope` in exportDecodeRouting.ts; ADR 0033),
+    // so the assertion exempts them.
+    const nativeRouted = routes[m.id]?.engine === "native";
+    if (m.kind === "Video" && referenced.has(m.id) && !exportPath && !nativeRouted) {
+      throw new Error(
+        `Internal: "${m.label}" has no export-ready source (the readiness gate should have prevented this).`,
+      );
+    }
+    if (exportPath) proxyAssetUrls[m.id] = convertFileSrc(exportPath);
+    originalAssetUrls[m.id] = convertFileSrc(m.path);
+    mediaDims[m.id] = { width: m.width, height: m.height };
+    mediaStartPtsUs[m.id] = m.video_start_pts_us ?? m.start_pts_us ?? null;
+    mediaColor[m.id] = resolveSourceColor(m);
+  }
+
+  // ── Native export-decode routing ───────────────────────────────────────────
+  // Consume the frozen routing table: native entries carry the absolute
+  // ORIGINAL file path the napi session opens (the resolver owns the
+  // population rule — setting × component × route; see exportDecodeRouting.ts).
+  // No table / no native entries ⇒ `nativeDecode` undefined ⇒ the in-worker
+  // WebCodecs path, unchanged.
+  const originalFilePaths: Record<string, string> = {};
+  const nativeDecodeMediaIds: string[] = [];
+  for (const id of referenced) {
+    const r = routes[id];
+    if (r?.engine !== "native") continue;
+    originalFilePaths[id] = r.sourcePath;
+    nativeDecodeMediaIds.push(id);
+  }
+
+  const snapshot: ExportProjectSnapshot = {
+    width: comp.width,
+    height: comp.height,
+    fpsNum,
+    fpsDen,
+    durationUs: comp.duration_us,
+    summary,
+    proxyAssetUrls,
+    originalAssetUrls,
+    mediaDims,
+    mediaStartPtsUs,
+    mediaColor,
+    originalFilePaths,
+  };
+
+  // 3. Encoder config. Output fps follows the caller's override, else
+  // composition fps. The default config's framerate must match.
+  const outFpsNum = init.outputFps?.num ?? fpsNum;
+  const outFpsDen = init.outputFps?.den ?? fpsDen;
+  const encoderConfig =
+    init.encoderConfig ??
+    defaultEncoderConfig(comp.width, comp.height, outFpsNum / outFpsDen);
+
+  // Resolve asynchronous setup before owning a worker. A failed font read or
+  // cancellation here must not leave an idle worker behind.
+  const hasMotifs = motifLayersToBake(summary, startUs, endUs, fpsNum, fpsDen).length > 0;
+  const userFamilies = collectTextFontFamilies(summary);
+  const userBytes = await resolveFontsForFamilies(userFamilies);
+  const fontBytes = { ...(await loadBundledFontBytes()), ...userBytes };
+  init.signal?.throwIfAborted();
+
+  // 4. Spawn the Worker. Vite resolves the URL at bundle time via
+  // `new URL(..., import.meta.url) + type: "module"`.
+  // The composition/encoder working frames and the motif stream buffer are
+  // borrowed from the admitted plan, which sized them, before either the
+  // canvas or worker allocates its buffers.
+  // A native sink's frames reach main on their own port, through a sender
+  // worker that does the cross-process copy off the compositing thread
+  // (docs/export-ipc-transport.md). Terminating the sender closes the port.
+  // Opened before the export Worker exists, whose `ready` must not be missed.
+  let sender: Worker | null = null;
+  let frames: MessagePort | undefined;
+  if (init.nativeSinkPixFmt) {
+    const sink = await openVideoSinkPort();
+    const channel = new MessageChannel();
+    sender = new Worker(new URL("./sinkSender.ts", import.meta.url), { type: "module" });
+    sender.postMessage({ frames: channel.port2, sink }, [channel.port2, sink]);
+    frames = channel.port1;
+  }
+  const motifBufferBytes = init.resourcePlan.motifBufferBytes;
+  let releaseResources: () => void;
+  try { releaseResources = await acquireExportResources(init.resourcePlan.workerMiB, 0, init.finalizationToken, init.signal); }
+  catch (error) { sender?.terminate(); throw error; }
+  let worker: Worker;
+  try { init.signal?.throwIfAborted(); worker = new Worker(
+    new URL("./exportWorker.ts", import.meta.url),
+    { type: "module" },
+  ); } catch (error) { releaseResources(); sender?.terminate(); throw error; }
+  try {
+  const offscreen = new OffscreenCanvas(comp.width, comp.height);
+  // Attach immediately: a warm worker can report ready as soon as this turn
+  // yields. Missing either this message or its load error would strand export.
+  const workerReady = new Promise<void>((resolve, reject) => {
+    function onMsg(e: MessageEvent<ExportEvent>) {
+      if (e.data.type !== "ready") return;
+      detach();
+      resolve();
+    }
+    function onErr(e: ErrorEvent) {
+      detach();
+      reject(new Error(e.message || "export worker errored"));
+    }
+    function detach() {
+      worker.removeEventListener("message", onMsg);
+      worker.removeEventListener("error", onErr);
+    }
+    worker.addEventListener("message", onMsg);
+    worker.addEventListener("error", onErr);
+  });
+  // Keep load failures handled even if subsequent synchronous setup throws.
+  workerReady.catch(() => {});
+
+  // 5. Build the tenBitMedia map: the sources the 10-bit lane decodes
+  // (`takesTenBitLane`). Only populated on the 10-bit path; the Worker uses
+  // this to route those sources through the 10-bit lane.
+  const tenBitMedia: Record<string, boolean> = {};
+  if (init.bitDepth === 10) {
+    for (const m of init.mediaById.values()) {
+      if (takesTenBitLane(m)) {
+        tenBitMedia[m.id] = true;
+      }
+    }
+  }
+
+  // 6. Build the start request; post once the ready latch resolves.
+  const startReq: Extract<ExportRequest, { type: "start" }> = {
+    type: "start",
+    project: snapshot,
+    startUs,
+    endUs,
+    encoderConfig,
+    outputFpsNum: outFpsNum,
+    outputFpsDen: outFpsDen,
+    keyframeIntervalSec: init.keyframeIntervalSec ?? 1,
+    canvas: offscreen,
+    motifStream: hasMotifs,
+    frameWindows: init.resourcePlan.frameWindows,
+    bitDepth: init.bitDepth ?? 8,
+    // Platform gate for the 8-bit WebCodecs decode lane (the Worker can't
+    // read the OS itself) — see hwExportDecodeAllowed for the allowlist.
+    allowHwExportDecode: hwExportDecodeAllowed(rendererOS),
+    ...(init.nativeSinkPixFmt && frames ? { nativeSink: { pixFmt: init.nativeSinkPixFmt, frames, readbackFrames: init.resourcePlan.readbackFrames } } : {}),
+    ...(init.stills ? { stills: { width: init.stills.width, quality: init.stills.quality ?? 0.85, ...(init.stills.effects === false ? { effects: false } : {}) } } : {}),
+    ...(Object.keys(tenBitMedia).length > 0 ? { tenBitMedia } : {}),
+    // The routing table's native slice (see above); absent when nothing
+    // routes native so the WebCodecs path is unchanged. `outFormat` follows
+    // the export's composite bit depth (table-wide).
+    ...(init.decodeRouting && nativeDecodeMediaIds.length > 0
+      ? {
+          nativeDecode: {
+            mediaIds: nativeDecodeMediaIds,
+            outFormat: init.decodeRouting.outFormat,
+            window: 6,
+          },
+        }
+      : {}),
+    fonts: fontBytes,
+  };
+
+  let framesEncoded = 0;
+  let totalFrames = 0;
+
+  return await new Promise<RunExportResult>((resolve, reject) => {
+    let disposed = false;
+    const resourceWaits = new AbortController();
+    const workerResources = new Map<string, () => void>();
+    const motifProducer = hasMotifs ? new MotifFrameProducer({
+      maxBytes: motifBufferBytes,
+      maxFrames: init.resourcePlan.motifFrames ?? 3,
+      totalFrames: exportFrameCount(Math.max(0, startUs), Math.min(comp.duration_us, endUs), outFpsNum, outFpsDen),
+      plan: exportMotifPlanner(summary, Math.max(0, startUs), outFpsNum, outFpsDen, init.finalizationToken),
+      send: packet => worker.postMessage({ type: "motif:frame", packet } satisfies ExportRequest,
+        [...new Set(Object.values(packet.frames).map(frame => frame.bitmap))]),
+      fail: error => { cleanup(); reject(error); },
+    }) : null;
+    const decodeSessions = new Set<string>();
+    const cleanup = () => {
+      if (disposed) return;
+      disposed = true;
+      resourceWaits.abort();
+      motifProducer?.dispose();
+      init.signal?.removeEventListener("abort", onAbort);
+      // A handle closes its own native decode session when it is disposed, but
+      // a Worker terminated here may never get to: end every session this
+      // export opened (a no-op for one already closed), so none outlives it.
+      for (const sessionId of decodeSessions) window.api.exportDecode.close({ sessionId });
+      worker.terminate();
+      sender?.terminate();
+      for (const release of workerResources.values()) release();
+      workerResources.clear();
+      releaseResources();
+    };
+
+    const onAbort = () => {
+      worker.postMessage({ type: "cancel" } satisfies ExportRequest);
+      cleanup();
+      reject(new Error("export cancelled"));
+    };
+    init.signal?.addEventListener("abort", onAbort, { once: true });
+    if (init.signal?.aborted) { onAbort(); return; }
+
+    worker.onerror = (e: ErrorEvent) => {
+      cleanup();
+      reject(new Error(e.message || "export worker errored"));
+    };
+
+    // Post start once the ready latch resolves (it usually already has by now).
+    // Rejection = the worker failed to load/parse before ever reporting ready.
+    workerReady.then(
+      () => {
+        if (disposed) return;
+        try {
+          worker.postMessage(startReq, [offscreen, ...Object.values(fontBytes), ...(frames ? [frames] : [])]);
+          motifProducer?.start();
+        } catch (error) { cleanup(); reject(error); }
+      },
+      (err: unknown) => {
+        cleanup();
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+
+    worker.onmessage = (e: MessageEvent<ExportEvent>) => {
+      const ev = e.data;
+      if (disposed) return;
+      if (ev.type === "motif:consumed") {
+        motifProducer?.release(ev.index);
+      } else if (ev.type === "progress") {
+        framesEncoded = ev.framesEncoded;
+        totalFrames = ev.totalFrames;
+        init.onProgress?.(framesEncoded, totalFrames);
+      } else if (ev.type === "still") {
+        init.onStill?.({ index: ev.index, tUs: ev.tUs, width: ev.width, height: ev.height, jpeg: ev.jpeg });
+      } else if (ev.type === "chunk") {
+        // Append the slice to disk, then ack so the Worker releases the next
+        // write. Errors abort the export. Serialized by the Worker (one
+        // pending write at a time), so no ordering bookkeeping needed here.
+        init
+          .writeChunk(ev.data)
+          .then(() => {
+            if (!disposed) worker.postMessage({ type: "chunk-ack" } satisfies ExportRequest);
+          })
+          .catch((err: unknown) => {
+            cleanup();
+            reject(err instanceof Error ? err : new Error(String(err)));
+          });
+      } else if (ev.type === "done") {
+        // E2E-only: surface the worker's perf counters for the harness to read
+        // (stripped from prod by the static env check).
+        if (import.meta.env.VITE_WEFTCUT_E2E === "1" && ev.perf) {
+          (window as unknown as { __weftcutExportPerf?: unknown }).__weftcutExportPerf =
+            { ...ev.perf, resourcePlan: init.resourcePlan, motif: motifProducer?.stats };
+        }
+        cleanup();
+        resolve({ framesEncoded, totalFrames });
+      } else if (ev.type === "error") {
+        cleanup();
+        reject(new Error(ev.message));
+      } else if (ev.type === "nd:open") {
+        // Native export-decode: open the session in main and hand its port to
+        // the Worker, which talks to the session directly from then on. An
+        // open failure reaches the Worker's handle (`ensureReady` rejects →
+        // the export aborts).
+        decodeSessions.add(ev.sessionId);
+        openDecodeSession(ev.sessionId, () => window.api.exportDecode.open({
+          sessionId: ev.sessionId,
+          path: ev.path,
+          outFormat: ev.outFormat,
+          window: ev.window,
+          color: ev.color,
+          finalizationToken: init.finalizationToken,
+        })).then(
+          ({ info, port }) => {
+            // The export ended while this open was in flight, so its cleanup
+            // could not reach the session yet.
+            if (disposed) { port.close(); window.api.exportDecode.close({ sessionId: ev.sessionId }); return; }
+            worker.postMessage({ type: "nd:openResult", reqId: ev.reqId, ok: true, info, port } satisfies ExportRequest, [port]);
+          },
+          (err: unknown) => {
+            if (disposed) return;
+            worker.postMessage({
+              type: "nd:openResult",
+              reqId: ev.reqId,
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+            } satisfies ExportRequest);
+          },
+        );
+      } else if (ev.type === "nd:close") {
+        window.api.exportDecode.close({ sessionId: ev.sessionId });
+        decodeSessions.delete(ev.sessionId);
+      } else if (ev.type === 'resource:acquire') {
+        void acquireExportResources(ev.memoryMiB, ev.threads, init.finalizationToken, resourceWaits.signal).then(release => {
+          if (disposed) { release(); return; }
+          workerResources.set(ev.id, release);
+          worker.postMessage({ type: 'resource:result', id: ev.id } satisfies ExportRequest);
+        }, error => {
+          if (!disposed) worker.postMessage({ type: 'resource:result', id: ev.id, error: String(error) } satisfies ExportRequest);
+        });
+      } else if (ev.type === 'resource:release') {
+        workerResources.get(ev.id)?.(); workerResources.delete(ev.id);
+      }
+    };
+  });
+  } finally { worker.terminate(); sender?.terminate(); releaseResources(); }
+}
+
+/// Collect distinct font_family strings from every Text layer the export can
+/// reach — the root's and every Group's. Feeds `resolveFontsForFamilies` so the
+/// export Worker receives any user-chosen OS fonts pre-resolved as bytes
+/// (main-thread IPC only). A layer the walk gates out (disabled, or on a
+/// disabled track) draws no glyphs, so its family is not needed.
+function collectTextFontFamilies(summary: ProjectSummary): string[] {
+  const families: string[] = [];
+  forEachLayer(summary, summary.root_id, ({ layer }) => {
+    if (layer.params.kind === "Text" && layer.params.font_family) {
+      families.push(layer.params.font_family);
+    }
+  });
+  return [...new Set(families)];
+}

@@ -1,0 +1,152 @@
+// Raw IPC views carry AnimTrack<T>; sprites consume plain scalars. The
+// Compositor calls these once per layer per frame with the layer-LOCAL
+// time (keyframe t_us is relative to the layer's t_start_us). One
+// resolution point — preview and the export Worker share it, so
+// keyframed properties hold preview==export by construction.
+//
+// Fallback constants mirror the view builder's per-property defaults
+// (`src/main/state/summary.ts`) when a track is absent (x/y/rotation -> 0,
+// scale/opacity -> 1, text WHITE, color BLACK).
+import { textAnimationAt } from "../../shared/textAnimation";
+import type {
+  ColorView,
+  CompositionRefView,
+  ImageOverlayView,
+  MotifView,
+  Rgba,
+  TextView,
+  VideoClipView,
+} from "../ipc";
+import { resolveAnimated, resolveAnimatedColor } from "./animated";
+import { DEFAULT_ANCHOR } from "./anchorPivot";
+import { evaluatePosition, previewPosition } from './position';
+import { evaluateMotionPath } from '../eval';
+
+/// The transform tracks every visual view resolves, so a new one can't be added
+/// to some kinds and forgotten on others.
+type TransformTrackKey =
+  | "x"
+  | "y"
+  | "scale_x"
+  | "scale_y"
+  | "rotation_deg"
+  | "anchor_x"
+  | "anchor_y"
+  | "opacity";
+
+/// The resolved scalars, spliced over the raw view's track fields.
+interface ResolvedTransform {
+  x: number;
+  y: number;
+  scale_x: number;
+  scale_y: number;
+  rotation_deg: number;
+  /// LANDMINE: this must fall back to `DEFAULT_ANCHOR` and nothing else. The box
+  /// drawn by the on-canvas gizmo derives from the same constant; a local `?? 0`
+  /// here is exactly how the box and the picture once pivoted around different
+  /// points, with neither looking broken alone (anchorPivot.ts).
+  anchor_x: number;
+  anchor_y: number;
+  opacity: number;
+}
+
+// `scale_linked` is also omitted from every transform-bearing Resolved view:
+// it is EDITING intent (which the inspector/timeline read off the raw view),
+// not a render input — by the time tracks are resolved to scalars the twin
+// pair is already two equal numbers.
+export interface ResolvedVideoClipView
+  extends Omit<VideoClipView, TransformTrackKey | "scale_linked">,
+    ResolvedTransform {}
+export interface ResolvedImageOverlayView
+  extends Omit<ImageOverlayView, TransformTrackKey | "scale_linked">,
+    ResolvedTransform {}
+export interface ResolvedTextView
+  extends Omit<TextView, TransformTrackKey | "color" | "scale_linked">,
+    ResolvedTransform {
+  color: Rgba;
+}
+export interface ResolvedColorView extends Omit<ColorView, "color"> {
+  color: Rgba;
+}
+export interface ResolvedMotifView
+  extends Omit<MotifView, TransformTrackKey | "scale_linked">,
+    ResolvedTransform {}
+/// A Group layer's view: the source window stays as authored, the transform
+/// resolves like every other visual kind's — the composite is one picture.
+export interface ResolvedCompositionRefView
+  extends Omit<CompositionRefView, TransformTrackKey | "scale_linked">,
+    ResolvedTransform {}
+
+const WHITE: Rgba = { r: 255, g: 255, b: 255, a: 255 };
+const BLACK: Rgba = { r: 0, g: 0, b: 0, a: 255 };
+
+/// The transform+opacity resolution shared by all four visual kinds. One
+/// function rather than a copy per kind, so the anchor pair can't diverge into
+/// a silent kind-specific pivot difference.
+function resolveTransform(
+  v: Pick<VideoClipView, TransformTrackKey | 'position' | 'path_progress'>,
+  tInLayerUs: number,
+): ResolvedTransform {
+  return {
+    ...(v.position && previewPosition(v.position)!==v.position
+      ? evaluatePosition(previewPosition(v.position),tInLayerUs)
+      : v.position?.mode==='Path'
+        ? evaluateMotionPath(v.position.path,resolveAnimated(v.path_progress??v.position.progress,tInLayerUs,0))
+        : { x: resolveAnimated(v.x,tInLayerUs,0), y: resolveAnimated(v.y,tInLayerUs,0) }),
+    scale_x: resolveAnimated(v.scale_x, tInLayerUs, 1),
+    scale_y: resolveAnimated(v.scale_y, tInLayerUs, 1),
+    rotation_deg: resolveAnimated(v.rotation_deg, tInLayerUs, 0),
+    anchor_x: resolveAnimated(v.anchor_x, tInLayerUs, DEFAULT_ANCHOR),
+    anchor_y: resolveAnimated(v.anchor_y, tInLayerUs, DEFAULT_ANCHOR),
+    opacity: resolveAnimated(v.opacity, tInLayerUs, 1),
+  };
+}
+
+export function resolveVideoClipView(v: VideoClipView, tInLayerUs: number): ResolvedVideoClipView {
+  return { ...v, ...resolveTransform(v, tInLayerUs), ...resolveFades(v) };
+}
+
+export function resolveImageOverlayView(
+  v: ImageOverlayView,
+  tInLayerUs: number,
+): ResolvedImageOverlayView {
+  return { ...v, ...resolveTransform(v, tInLayerUs) };
+}
+
+/// `durUs` is the layer's length, which the entrance and exit presets play
+/// against (`shared/textAnimation.ts`); without it the presets are not applied.
+export function resolveTextView(v: TextView, tInLayerUs: number, durUs?: number): ResolvedTextView {
+  const resolved: ResolvedTextView = {
+    ...v,
+    ...resolveTransform(v, tInLayerUs),
+    color: resolveAnimatedColor(v.color, tInLayerUs, WHITE),
+  };
+  if ((v.intro || v.outro) && durUs !== undefined) {
+    const chars = [...v.content].length;
+    const a = textAnimationAt(v.intro, v.outro, tInLayerUs, durUs, v.font_size_px, chars);
+    resolved.opacity *= a.opacity;
+    resolved.y += a.dy;
+    if (a.visibleChars !== null) resolved.content = [...v.content].slice(0, a.visibleChars).join("");
+  }
+  return resolved;
+}
+
+export function resolveColorView(v: ColorView, tInLayerUs: number): ResolvedColorView {
+  return { ...v, color: resolveAnimatedColor(v.color, tInLayerUs, BLACK) };
+}
+
+export function resolveMotifView(v: MotifView, tInLayerUs: number): ResolvedMotifView {
+  return { ...v, ...resolveTransform(v, tInLayerUs) };
+}
+
+export function resolveCompositionRefView(
+  v: CompositionRefView,
+  tInLayerUs: number,
+): ResolvedCompositionRefView {
+  return { ...v, ...resolveTransform(v, tInLayerUs) };
+}
+
+function resolveFades(v: import('../../shared/timeMapping').TimingFields & { fade_in_us?: number; fade_out_us?: number }) {
+  return v.fade_phase ? { fade_in_us: (v.fade_in_us ?? 0) + v.fade_phase.in.num / v.fade_phase.in.den,
+    fade_out_us: (v.fade_out_us ?? 0) + v.fade_phase.out.num / v.fade_phase.out.den } : {};
+}

@@ -1,0 +1,240 @@
+import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { tryMutate } from "../errors/tryMutate";
+import { ChevronDown, ChevronRight, Eye, EyeOff, GripVertical, Lock, LockOpen, Music } from "lucide-react";
+import { deleteTrack, renameTrack, updateTrackFlags, type TrackSummary } from "../ipc";
+import { AppInput } from "../components/AppInput";
+import { trackDisplayName } from "../lib/trackName";
+import { handCaretToEditor } from "../menu/Menu";
+import { useComposition } from "../state/projectStore";
+import { trackHeaderControls } from "./geometry";
+import { beginTrackRename, endRename, useEditingTrackId } from "./renameStore";
+import { TrackContextMenu } from "./TrackContextMenu";
+import type { TrackMove } from "./trackReorder";
+import { AppIcon } from "@/components/AppIcon";
+
+export interface TrackOrdering {
+  disabled: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onDragStart: (event: React.PointerEvent) => void;
+  onMove: (move: TrackMove) => Promise<void>;
+}
+
+function FlagButton({ active, activeClass, label, onToggle, children }: {
+  active: boolean;
+  activeClass: string;
+  label: string;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-pressed={active}
+      onClick={onToggle}
+      className={`inline-flex size-[calc(18*var(--ui-px))] items-center justify-center rounded-[4px] text-[length:var(--font-size-fine)] font-semibold transition-colors ${
+        active ? activeClass : "text-muted-foreground/60 hover:bg-secondary hover:text-foreground"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/// One sticky header cell per track row: name + the eye/lock flag
+/// toggles. Flag changes go through the unrecorded `update_track_flags`
+/// path (never enter undo history) while the name goes through the RECORDED
+/// `rename_track`, so one undo can revert a name without touching a control the
+/// editor set; `onMutated` re-fetches the summary.
+/// pointerdown must not bubble into the timeline root's seek path.
+export function TrackHeader({ compositionId, track, height, isRevealed, isExpanded, hasKeyframes, onToggleExpand, onMutated, ordering }: {
+  ordering?: TrackOrdering | undefined;
+  /// The composition this header's timeline shows, from the Panel that renders
+  /// it — a lane's number counts within its own timeline, and two timelines can
+  /// stand open at once.
+  compositionId: string | null;
+  track: TrackSummary;
+  height: number;
+  isRevealed: boolean;
+  /// True when this track's keyframe sub-lanes are expanded (twirl points down).
+  isExpanded: boolean;
+  /// True when at least one layer on the track has a keyframed property —
+  /// the twirl is disabled (grayed) otherwise.
+  hasKeyframes: boolean;
+  onToggleExpand: () => void;
+  onMutated: () => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  // The name a lane's positional number counts against is its slot in the
+  // COMPOSITION's own track vector, read from the mirror rather than from the
+  // rows this header renders beside: the timeline's row list is filtered in
+  // A/B Roll, so numbering off it would renumber every lane when the user
+  // toggles the filter.
+  const tracks = useComposition(compositionId)?.tracks;
+  const name = trackDisplayName(track, tracks ?? [], t);
+  const toggle = (patch: Parameters<typeof updateTrackFlags>[1]) => async () => {
+    if (await tryMutate(() => updateTrackFlags(track.id, patch), "Update track flag")) {
+      await onMutated();
+    }
+  };
+  const controls = trackHeaderControls(track);
+  // Pure-audio lane = has audio, no visual (eye hidden). Show a music
+  // glyph so the lane reads as audio at a glance.
+  const isAudioLane = controls.hasAudio && !controls.showEye;
+
+  const isEditing = useEditingTrackId() === track.id;
+  const [draft, setDraft] = useState("");
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (!isEditing) return;
+    setDraft(track.label ?? "");
+    // preventScroll: the header column sits inside the timeline's scroll
+    // container, so a plain focus() would scroll this row into view and jolt
+    // the timeline out from under the pointer.
+    inputRef.current?.focus({ preventScroll: true });
+    inputRef.current?.select();
+  }, [isEditing, track.id, track.label]);
+
+  // Close the menu when the timeline scrolls under it — same reason the layer
+  // menu does it: the popup is anchored to fixed cursor coordinates.
+  useEffect(() => {
+    if (menu === null) return;
+    const onScroll = () => setMenu(null);
+    window.addEventListener("scroll", onScroll, true);
+    return () => window.removeEventListener("scroll", onScroll, true);
+  }, [menu]);
+
+  const commitRename = () => {
+    const next = draft.trim();
+    endRename();
+    if (next === (track.label ?? "")) return;
+    // A cleared field commits `null`, which restores the DERIVED name — the
+    // deliberate difference from the layer rename, where an empty value
+    // abandons the edit instead. A lane's derived name is a meaningful default
+    // the editor needs a route back to, and a layer has no equivalent
+    // (docs/data-model.md#track). Do not "fix" the inconsistency.
+    void (async () => {
+      if (await tryMutate(() => renameTrack(track.id, next === "" ? null : next), "Rename track")) {
+        await onMutated();
+      }
+    })();
+  };
+  return (
+    <div
+      data-testid="track-header"
+      data-track-id={track.id}
+      className="flex items-center gap-1 border-b border-border-soft px-1.5"
+      style={{ height }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setMenu({ x: e.clientX, y: e.clientY });
+      }}
+    >
+      {ordering && (
+        <button type="button" data-testid="track-reorder-grip"
+          className="inline-flex h-6 w-3 shrink-0 touch-none items-center justify-center text-muted-foreground/60 hover:text-foreground cursor-grab disabled:cursor-default disabled:opacity-25"
+          disabled={ordering.disabled}
+          aria-label={t("timeline.reorder_track", { name })}
+          title={ordering.disabled ? t(track.role === "a-roll" || track.role === "b-roll" ? "timeline.reorder_track_reserved" : "timeline.reorder_track_locked") : t("timeline.reorder_track", { name })}
+          onPointerDown={(e) => { e.stopPropagation(); ordering.onDragStart(e); }}>
+          <AppIcon icon={GripVertical} size="body" aria-hidden />
+        </button>
+      )}
+      <button
+        type="button"
+        data-testid="kf-lane-twirl"
+        className="inline-flex size-[calc(14*var(--ui-px))] shrink-0 items-center justify-center text-muted-foreground/60 disabled:opacity-30"
+        disabled={!hasKeyframes}
+        aria-label={t("timeline.toggle_keyframe_lanes", { defaultValue: "Expand keyframe lanes" })}
+        aria-expanded={isExpanded}
+        onClick={onToggleExpand}
+      >
+        {isExpanded ? <AppIcon icon={ChevronDown} size="body" aria-hidden /> : <AppIcon icon={ChevronRight} size="body" aria-hidden />}
+      </button>
+      {isAudioLane && (
+        <AppIcon icon={Music} size="caption" aria-hidden className="shrink-0 text-muted-foreground/70" />
+      )}
+      {isEditing ? (
+        <AppInput
+          ref={inputRef}
+          className="min-w-0 flex-1"
+          value={draft}
+          ariaLabel={t("timeline.rename_track_label", { label: name, defaultValue: "Rename {{label}}" })}
+          onValueChange={setDraft}
+          onBlur={commitRename}
+          onKeyDown={(e) => {
+            // The header's own handlers stop clicks from reaching the timeline
+            // root; keystrokes need the same, or typing drives the shortcuts.
+            e.stopPropagation();
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commitRename();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              endRename();
+            }
+          }}
+        />
+      ) : (
+        <span
+          data-testid="track-header-name"
+          className="min-w-0 flex-1 truncate text-[length:var(--font-size-caption)] font-medium text-muted-foreground"
+          title={name}
+          onDoubleClick={() => beginTrackRename(track.id)}
+        >
+          {name}
+          {isRevealed && <span className="font-medium text-blue-400/70"> (revealed)</span>}
+        </span>
+      )}
+      {controls.showEye && (
+        <FlagButton
+          active={!track.enabled}
+          activeClass="bg-secondary text-foreground"
+          label={t("timeline.track_eye_hint", { defaultValue: "Hide this track's output (affects export)" })}
+          onToggle={toggle({ enabled: !track.enabled })}
+        >
+          {track.enabled ? <AppIcon icon={Eye} size="caption" aria-hidden /> : <AppIcon icon={EyeOff} size="caption" aria-hidden />}
+        </FlagButton>
+      )}
+      {/* Mute / Solo belong to audio roles in the Role Mixer. The track header
+          carries visibility and lock; per-role M/S use `update_role_flags`. */}
+      <FlagButton
+        active={track.locked}
+        activeClass="bg-secondary text-foreground"
+        label={t("timeline.track_lock_hint", { defaultValue: "Lock this track against edits" })}
+        onToggle={toggle({ locked: !track.locked })}
+      >
+        {track.locked ? <AppIcon icon={Lock} size="caption" aria-hidden /> : <AppIcon icon={LockOpen} size="caption" aria-hidden />}
+      </FlagButton>
+      {menu && (
+        <TrackContextMenu
+          ordering={ordering}
+          x={menu.x}
+          y={menu.y}
+          canDelete={track.role !== "a-roll" && track.role !== "b-roll"}
+          onDelete={async () => {
+            setMenu(null);
+            if (await tryMutate(() => deleteTrack(track.id), "Delete track")) {
+              await onMutated();
+            }
+          }}
+          onClose={() => setMenu(null)}
+          onRename={() => {
+            setMenu(null);
+            // See `contextMenuFinalFocus`: without this the menu's focus
+            // return blurs the field, and the field commits on blur.
+            handCaretToEditor();
+            beginTrackRename(track.id);
+          }}
+        />
+      )}
+    </div>
+  );
+}

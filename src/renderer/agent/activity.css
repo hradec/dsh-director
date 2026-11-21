@@ -1,0 +1,205 @@
+.agent-activity-panel { font-size: var(--font-size-body); overflow: hidden; background: var(--card); }
+.agent-activity-panel button { display: inline-flex; align-items: center; gap: calc(6 * var(--ui-px)); padding: calc(5 * var(--ui-px)) calc(7 * var(--ui-px)); border-radius: 4px; text-align: left; cursor: pointer; }
+.agent-activity-panel button:hover:not(:disabled) { background: var(--accent); }
+.agent-activity-panel button:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.agent-activity-panel button:disabled { opacity: .45; cursor: default; }
+.agent-activity-panel small { font-size: var(--font-size-micro); color: var(--muted-foreground); }
+/* One status row: service toggle · live state (the session's reason, or what
+   runs) · End · settings. Every text in it keeps to one line. */
+.agent-status-row { display: flex; gap: calc(4 * var(--ui-px)); align-items: center; padding: calc(4 * var(--ui-px)) calc(6 * var(--ui-px)); border-bottom: 1px solid var(--border); min-width: 0; }
+.agent-status-row > button { flex: none; }
+.agent-status-row > .agent-connection-toggle { flex: 0 1 auto; min-width: 0; }
+.agent-connection-toggle > span:not(.agent-service-dot) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-connection-toggle > svg { flex: none; }
+.agent-status-sep { flex: none; color: var(--muted-foreground); }
+.agent-live-state { flex: 1 1 0; min-width: calc(48 * var(--ui-px)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
+.agent-live-state.session { color: var(--foreground); }
+.agent-session-end { font-size: var(--font-size-caption); border: 1px solid var(--border); padding-block: calc(2 * var(--ui-px)) !important; white-space: nowrap; }
+.agent-service-dot { width: calc(7 * var(--ui-px)); height: calc(7 * var(--ui-px)); border-radius: 50%; background: var(--muted-foreground); flex: none; }
+.agent-service-dot.available { background: #66b98b; }
+.agent-connection-details { padding: calc(8 * var(--ui-px)) calc(14 * var(--ui-px)); border-bottom: 1px solid var(--border); overflow-wrap: anywhere; max-height: calc(180 * var(--ui-px)); overflow: auto; }
+.agent-connection-details > div { display: flex; flex-direction: column; gap: calc(3 * var(--ui-px)); margin-block: calc(8 * var(--ui-px)); }
+.agent-connection-details code { font-size: var(--font-size-micro); }
+.agent-history-lock button, .agent-activity-actions button, .agent-activity-details > button { border: 1px solid var(--border); }
+/* The timeline is showing one call's changes (per-activity highlight). */
+.agent-activity-highlight { display: flex; align-items: center; gap: calc(6 * var(--ui-px)); margin: 0 calc(10 * var(--ui-px)) calc(6 * var(--ui-px)); padding: calc(5 * var(--ui-px)) calc(8 * var(--ui-px)); border: 1px solid var(--primary); border-radius: var(--radius-control); color: var(--foreground); font-size: var(--font-size-caption); }
+.agent-activity-highlight > svg { color: var(--primary); flex: none; }
+.agent-activity-highlight > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.agent-activity-note { margin: 0 0 calc(8 * var(--ui-px)); color: var(--muted-foreground); font-size: var(--font-size-micro); }
+.agent-history-lock { display: flex; align-items: center; gap: calc(6 * var(--ui-px)); padding: calc(3 * var(--ui-px)) calc(6 * var(--ui-px)) calc(3 * var(--ui-px)) calc(12 * var(--ui-px)); border-bottom: 1px solid var(--border); }
+.agent-history-lock > svg { flex: none; }
+.agent-history-lock > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-history-lock > button { flex: none; font-size: var(--font-size-caption); padding-block: calc(2 * var(--ui-px)) !important; white-space: nowrap; }
+.agent-activity-toolbar { display: flex; align-items: center; gap: calc(3 * var(--ui-px)); padding: calc(6 * var(--ui-px)) calc(10 * var(--ui-px)); }
+.agent-activity-toolbar button[aria-pressed="true"] { background: var(--accent); color: var(--accent-foreground); }
+.agent-activity-toolbar button:last-child:not([aria-pressed]) { margin-left: auto; }
+.agent-activity-list { flex: 1; min-height: calc(60 * var(--ui-px)); overflow: auto; padding: 0 calc(10 * var(--ui-px)) calc(10 * var(--ui-px)); overflow-anchor: none; }
+.agent-work-group { border-top: 1px solid var(--border); margin-top: calc(6 * var(--ui-px)); }
+.agent-work-heading { width: 100%; padding-block: calc(10 * var(--ui-px)) !important; align-items: flex-start !important; }
+.agent-work-heading > span { flex: 1; min-width: 0; }
+.agent-work-heading strong { display: block; overflow-wrap: anywhere; font-weight: 500; }
+.agent-work-heading small { display: block; margin-top: calc(3 * var(--ui-px)); }
+.agent-activity { padding: calc(3 * var(--ui-px)) 0 calc(7 * var(--ui-px)); border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.agent-activity-main { width: 100%; align-items: flex-start !important; }
+.agent-activity-main > svg { flex: none; margin-top: calc(2 * var(--ui-px)); color: var(--muted-foreground); }
+.agent-activity-copy { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.agent-activity-copy small { display: block; margin-top: calc(3 * var(--ui-px)); }
+.agent-activity-meta { color: var(--muted-foreground); font-size: var(--font-size-micro); white-space: nowrap; margin-top: calc(2 * var(--ui-px)); }
+.agent-activity-status { display: flex; gap: calc(8 * var(--ui-px)); padding-left: calc(27 * var(--ui-px)); font-size: var(--font-size-micro); color: var(--muted-foreground); }
+.agent-effect { border-left: 1px solid var(--border); padding-left: calc(8 * var(--ui-px)); }
+.agent-activity-error { color: var(--destructive); }
+p.agent-activity-error { margin: calc(5 * var(--ui-px)) calc(7 * var(--ui-px)) calc(3 * var(--ui-px)) calc(27 * var(--ui-px)); overflow-wrap: anywhere; white-space: pre-wrap; max-height: calc(140 * var(--ui-px)); overflow: auto; }
+.agent-activity.state-error > .agent-activity-main > svg { color: var(--destructive); }
+.agent-activity.state-running > .agent-activity-main > svg { color: var(--primary); }
+/* Cancelled on purpose: muted, never the failure colour. */
+.agent-activity.state-cancelled > .agent-activity-main > svg { color: var(--muted-foreground); }
+/* A clip-compute row waiting for admission: muted, no spin (ComputeJobStatus). */
+.agent-activity.state-running.is-waiting > .agent-activity-main > svg { color: var(--muted-foreground); }
+.agent-activity-compute { padding-left: calc(27 * var(--ui-px)); }
+.agent-disconnected { display: inline-flex; align-items: center; gap: calc(3 * var(--ui-px)); }
+.agent-activity-actions { margin: calc(5 * var(--ui-px)) 0 0 calc(27 * var(--ui-px)); }
+.agent-activity-details { margin: calc(7 * var(--ui-px)) calc(7 * var(--ui-px)) 0 calc(27 * var(--ui-px)); padding: calc(8 * var(--ui-px)); background: var(--background); border-radius: 4px; }
+.agent-activity-details dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: calc(4 * var(--ui-px)) calc(10 * var(--ui-px)); margin: 0 0 calc(8 * var(--ui-px)); font-size: var(--font-size-micro); }
+.agent-activity-details dt { color: var(--muted-foreground); }
+.agent-activity-details dd { margin: 0; overflow-wrap: anywhere; }
+.agent-activity-details summary { cursor: pointer; padding-top: calc(7 * var(--ui-px)); color: var(--muted-foreground); font-size: var(--font-size-micro); }
+.agent-activity-details pre { font-size: var(--font-size-micro); white-space: pre-wrap; overflow-wrap: anywhere; max-height: calc(220 * var(--ui-px)); overflow: auto; }
+.agent-read-group > button { color: var(--muted-foreground); font-size: var(--font-size-caption); padding-block: calc(8 * var(--ui-px)); }
+.agent-read-group > article { margin-left: calc(12 * var(--ui-px)); }
+.agent-empty { padding: calc(28 * var(--ui-px)) calc(12 * var(--ui-px)); text-align: center; color: var(--muted-foreground); line-height: 1.7; }
+.agent-empty > p { margin: 0; }
+/* An empty list is one block: what lands here, then the retention note the
+   list would close with — which a non-empty list keeps as its footnote. */
+.agent-empty > .agent-empty-subtitle { max-width: calc(280 * var(--ui-px)); margin: calc(6 * var(--ui-px)) auto 0; font-size: var(--font-size-caption); line-height: 1.5; }
+.agent-retention-note { margin: 0; padding: calc(7 * var(--ui-px)) calc(12 * var(--ui-px)); color: var(--muted-foreground); font-size: var(--font-size-micro); line-height: 1.5; }
+/* The retention note closes the list and scrolls with it. */
+.agent-retention-note.agent-list-footnote { padding: calc(10 * var(--ui-px)) calc(7 * var(--ui-px)) 0; }
+/* The user's own changes, after the list (or under its empty message): a
+   muted count and a text switch that lists them. */
+.agent-changes-user-note { margin: 0; padding: calc(10 * var(--ui-px)) calc(7 * var(--ui-px)) 0; color: var(--muted-foreground); font-size: var(--font-size-caption); }
+.agent-empty > .agent-changes-user-note { padding: calc(6 * var(--ui-px)) 0 0; }
+.agent-changes-user-note > button { display: inline; padding: 0; border: 0; background: none; color: var(--primary); font: inherit; cursor: pointer; }
+.agent-changes-user-note > button:hover { text-decoration: underline; }
+.agent-connect-dialog { width: min(var(--dialog-width-settings), 90vw); max-height: 85vh; background: var(--card); color: var(--foreground); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.agent-connect-dialog > header { display: flex; justify-content: space-between; align-items: center; padding: calc(12 * var(--ui-px)) calc(16 * var(--ui-px)); border-bottom: 1px solid var(--border); }
+.agent-connect-dialog-body { padding: calc(16 * var(--ui-px)); max-height: calc(85vh - calc(55 * var(--ui-px))); overflow: auto; font-size: var(--font-size-body); }
+.agent-spin { animation: agent-activity-spin 1.2s linear infinite; }
+@keyframes agent-activity-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .agent-spin { animation: none; } }
+/* Tabs: Activity · Tacks · Changes (one entry per review surface, AGENT_PANEL_TABS). */
+.agent-panel-tabs { display: flex; gap: calc(2 * var(--ui-px)); padding: 0 calc(10 * var(--ui-px)); border-bottom: 1px solid var(--border); }
+.agent-panel-tabs > button { border-radius: 0 !important; border-bottom: 2px solid transparent; color: var(--muted-foreground); padding-block: calc(7 * var(--ui-px)) !important; }
+.agent-panel-tabs > button[aria-selected="true"] { color: var(--foreground); border-bottom-color: var(--selection); }
+.agent-panel-tab-count { min-width: calc(16 * var(--ui-px)); padding: 0 calc(4 * var(--ui-px)); border-radius: 999px; background: color-mix(in srgb, var(--tack) 22%, transparent); color: var(--foreground); font-size: var(--font-size-micro); text-align: center; }
+/* The Tacks tab fills the rest of the panel, as the activity list does. */
+.agent-tacks { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.agent-tack-group-heading { display: flex; align-items: flex-start; gap: calc(4 * var(--ui-px)); }
+.agent-tack-group-heading > .agent-work-heading { flex: 1; min-width: 0; }
+.agent-tack-group-action { margin-top: calc(6 * var(--ui-px)); gap: calc(4 * var(--ui-px)); font-size: var(--font-size-caption); border: 1px solid var(--border); flex: none; }
+/* A group's resolved and dismissed tacks: a subheading inside the group, not
+   a second group heading. It starts at the rows' label column (27px, as the
+   row details do) and is only as wide as its words; its rows hang beneath
+   it, their kind icons on that same column. Clear is a quiet word sized like
+   the subheading — tidying up, below the heading's Resolve all. */
+.agent-tack-closed { margin: calc(2 * var(--ui-px)) 0 calc(4 * var(--ui-px)); }
+.agent-tack-closed-heading { display: flex; align-items: center; justify-content: space-between; gap: calc(4 * var(--ui-px)); padding-left: calc(20 * var(--ui-px)); }
+.agent-tack-closed-heading > button { flex: none; gap: calc(2 * var(--ui-px)); color: var(--muted-foreground); font-size: var(--font-size-caption); padding-block: calc(3 * var(--ui-px)) !important; }
+.agent-tack-closed > .agent-tack { margin-left: calc(20 * var(--ui-px)); }
+.agent-tack { padding: calc(2 * var(--ui-px)) 0 calc(4 * var(--ui-px)); border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); border-radius: var(--radius-control); }
+/* A tack or change row hovers and selects as a Playhead panel row does: one
+   fill over the whole row, the selection's over the hover's, no edge bar.
+   Its main button adds no fill of its own; the row's small actions do. */
+.agent-tack:hover, .agent-change:hover { background: var(--hover-neutral); }
+.agent-tack[data-selected="true"], .agent-change[data-selected="true"] { background: var(--selection-bg); }
+.agent-activity-panel .agent-tack-main:hover:not(:disabled) { background: none; }
+.agent-tack-row { display: flex; align-items: flex-start; gap: calc(2 * var(--ui-px)); }
+.agent-tack-row > button:not(.agent-tack-main) { flex: none; color: var(--muted-foreground); }
+.agent-tack-main { flex: 1; min-width: 0; align-items: flex-start !important; }
+.agent-tack-main > svg { flex: none; margin-top: calc(2 * var(--ui-px)); }
+.agent-tack-kind { color: var(--tack); }
+.agent-tack-kind.kind-issue { color: var(--warning); }
+.agent-tack-kind.kind-note { color: var(--muted-foreground); }
+.agent-tack-status { white-space: nowrap; }
+.agent-tack.status-resolved .agent-activity-copy > span, .agent-tack.status-dismissed .agent-activity-copy > span { color: var(--muted-foreground); }
+.agent-tack.status-dismissed .agent-activity-copy > span { text-decoration: line-through; }
+.agent-tack.unplaced .agent-activity-copy small { font-style: italic; }
+.agent-tack-body { margin: 0 0 calc(8 * var(--ui-px)); white-space: pre-wrap; overflow-wrap: anywhere; max-height: calc(220 * var(--ui-px)); overflow: auto; }
+/* Changes tab (ADR 0115): rows reuse the tack row layout; the class badge
+   carries the review hue, user-only rows (the user-changes switch) are muted. */
+.agent-panel-tab-count.tab-changes { background: color-mix(in srgb, var(--review-modified) 24%, transparent); }
+.agent-changes-approve-all, .agent-changes-revert-all { border: 1px solid var(--border); font-size: var(--font-size-caption); flex: none; }
+/* Revert all and Approve all sit together at the toolbar's end, and wrap as one. */
+.agent-changes-actions { display: flex; flex: none; gap: calc(3 * var(--ui-px)); margin-left: auto; }
+.agent-changes-actions button.agent-changes-approve-all:last-child { margin-left: 0; }
+/* The diff stat (ChangeStatsBar) at the toolbar's start: signed figures in their
+   class hue, a zero one stepped back so the stat keeps its shape. A step under
+   the tab labels above it: the panel's summary, not its heading. */
+.agent-changes-stats { display: flex; flex: none; align-items: baseline; gap: calc(8 * var(--ui-px)); margin: 0 calc(6 * var(--ui-px)) 0 calc(2 * var(--ui-px)); font-size: var(--font-size-label); line-height: 1; font-variant-numeric: tabular-nums; font-weight: 600; }
+.agent-changes-stat.class-added { color: var(--review-added); }
+.agent-changes-stat.class-removed { color: var(--review-removed); }
+.agent-changes-stat.class-modified { color: var(--review-modified); }
+.agent-changes-stat.is-zero { color: var(--muted-foreground); font-weight: 400; }
+/* What there is to watch again (ADR 0169): time, not entities, so it steps
+   out of the class hues and sits apart after a dot. */
+.agent-changes-stat.ranges { color: var(--muted-foreground); font-size: var(--font-size-body); font-weight: 500; }
+/* In a narrow panel the Changes toolbar wraps whole controls to a second row
+   rather than breaking a label. */
+.agent-changes .agent-activity-toolbar { flex-wrap: wrap; row-gap: calc(6 * var(--ui-px)); }
+.agent-changes .agent-activity-toolbar button { white-space: nowrap; }
+/* An approve or revert all that named a list since changed: said in the toolbar. */
+.agent-changes-stale { flex: 1; min-width: 0; text-align: right; color: var(--muted-foreground); font-size: var(--font-size-micro); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-change-group-heading { display: flex; align-items: baseline; justify-content: space-between; gap: calc(8 * var(--ui-px)); margin: 0; padding: calc(10 * var(--ui-px)) calc(7 * var(--ui-px)) calc(4 * var(--ui-px)); font-size: var(--font-size-body); font-weight: 500; }
+.agent-change-group-heading > span { min-width: 0; overflow-wrap: anywhere; }
+.agent-change-group-heading > small { flex: none; }
+.agent-change { padding: calc(2 * var(--ui-px)) 0 calc(4 * var(--ui-px)); border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); border-radius: var(--radius-control); }
+.agent-change .agent-tack-row { align-items: center; padding-left: calc(7 * var(--ui-px)); }
+.agent-change-copy { padding-block: calc(4 * var(--ui-px)); }
+.agent-change-badge { flex: none; min-width: calc(58 * var(--ui-px)); padding: calc(1 * var(--ui-px)) calc(5 * var(--ui-px)); border-radius: var(--radius-control); font-size: var(--font-size-micro); text-align: center; border: 1px solid currentColor; }
+.agent-change-badge.class-added { color: var(--review-added); background: color-mix(in srgb, var(--review-added) 12%, transparent); }
+.agent-change-badge.class-modified { color: var(--review-modified); background: color-mix(in srgb, var(--review-modified) 12%, transparent); }
+.agent-change-badge.class-removed { color: var(--review-removed); background: color-mix(in srgb, var(--review-removed) 12%, transparent); }
+/* The work session that made the change. */
+.agent-change-copy small.agent-change-from { color: var(--muted-foreground); font-size: var(--font-size-micro); }
+.agent-change.source-user { opacity: .7; }
+/* How little the film shows of the change (`ReviewWeight`): a note after the
+   line; quiet, the badge steps back too, its order and class unchanged. */
+.agent-change-weight { color: var(--muted-foreground); }
+.agent-change[data-review-weight="quiet"] .agent-change-badge { opacity: .6; }
+.agent-change.source-user .agent-change-badge { border-style: dashed; }
+.agent-change-mine { flex: none; color: var(--muted-foreground); font-size: var(--font-size-micro); white-space: nowrap; }
+/* The review focus (shared with the timelines): a change row selects as a tack
+   row does. Its main button carries badge and copy; pressed, it is the row's
+   fill that shows it, not the toolbar's pressed fill. */
+.agent-change .agent-tack-row { padding-left: 0; }
+.agent-change-main { align-items: center !important; }
+.agent-tack-row > .agent-change-main[aria-pressed="true"] { color: inherit; background: none; }
+/* Tack states (ADR 0117): an open tack whose range plays differently from
+   when it was written carries a quiet badge; one whose composition is gone
+   sorts to the foot of its group, muted. */
+.agent-tack-outdated { flex: none; margin-top: calc(1 * var(--ui-px)); padding: 0 calc(5 * var(--ui-px)); border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent); border-radius: 999px; color: var(--warning); font-size: var(--font-size-micro); white-space: nowrap; }
+.agent-tack.unplaced:not([data-selected="true"]) { opacity: .7; }
+/* A compute refusal's Settings button and details, under the row's error line. */
+.agent-activity .compute-refusal-actions { margin: 0 calc(7 * var(--ui-px)) calc(3 * var(--ui-px)) calc(27 * var(--ui-px)); }
+/* The changed ranges (RangeBar): one flat row on the panel's ground — play
+   named first, a line (the total, or the focused range), a Group's way out
+   to the film, and the walk around the focused range's count, which goes
+   back to all of them. No hue of its own: the ruler and the
+   framed rows already carry the class. */
+.agent-range-bar { display: flex; align-items: center; gap: calc(2 * var(--ui-px)); margin: 0 calc(10 * var(--ui-px)) calc(6 * var(--ui-px)); padding: calc(2 * var(--ui-px)); background: var(--background); border-radius: var(--radius-control); font-size: var(--font-size-caption); }
+.agent-range-bar-line { flex: 1; min-width: 0; padding-inline: calc(4 * var(--ui-px)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-range-bar-spots { display: flex; align-items: center; flex: none; }
+.agent-activity-panel .agent-range-bar .agent-range-bar-spot { padding-inline: calc(4 * var(--ui-px)); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.agent-activity-panel .agent-range-bar .agent-range-bar-spot:hover { background: var(--hover-neutral); }
+.agent-activity-panel .agent-range-bar button { flex: none; display: inline-flex; align-items: center; gap: calc(4 * var(--ui-px)); padding: calc(3 * var(--ui-px)); border-radius: var(--radius-control); color: var(--muted-foreground); }
+.agent-activity-panel .agent-range-bar button:hover:not([aria-disabled]) { color: var(--foreground); }
+.agent-activity-panel .agent-range-bar button[aria-disabled="true"] { opacity: .4; cursor: default; background: none; }
+.agent-activity-panel .agent-range-bar .agent-range-bar-play { padding-inline: calc(6 * var(--ui-px)); color: var(--foreground); }
+.agent-activity-panel .agent-range-bar .agent-range-bar-film { padding-inline: calc(6 * var(--ui-px)); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Its changes' rows framed as one group — one neutral ground, joined where
+   they follow each other — and the rest stepped back. */
+.agent-changes[data-range-focus] .agent-change:not([data-in-range]) { opacity: .5; }
+.agent-change[data-in-range] { background: color-mix(in srgb, var(--hover-neutral) 60%, transparent); }
+.agent-change[data-in-range]:hover { background: var(--hover-neutral); }
+.agent-change[data-in-range][data-selected="true"] { background: var(--selection-bg); }
+.agent-change[data-in-range]:has(+ .agent-change[data-in-range]) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.agent-change[data-in-range] + .agent-change[data-in-range] { border-top-left-radius: 0; border-top-right-radius: 0; }

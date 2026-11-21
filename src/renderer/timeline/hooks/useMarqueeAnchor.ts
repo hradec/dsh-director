@@ -1,0 +1,233 @@
+// The marquee gesture: one pointerdown handler that track editing surfaces opt
+// into explicitly. A whitelist rather than a root-level funnel, so a future
+// clickable child does not have to remember to `stopPropagation` out of it.
+//
+// Owns the box's whole lifecycle — arm, track, edge auto-scroll, release,
+// cancel — and knows neither what the box selects nor what a selection is:
+// those leave through the `MarqueeAnchor` callbacks. The rectangle itself lives
+// in `../marqueeStore.ts`, which also defines what a `MarqueeKind` means.
+
+import {
+  createContext,
+  useCallback,
+  useContext,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+} from "react";
+
+import { headerColumnPx } from "../geometry";
+import { activeTool } from "../../state/toolStore";
+import {
+  clearMarquee,
+  setMarqueeBox,
+  type MarqueeBox,
+  type MarqueeKind,
+} from "../marqueeStore";
+
+/// Pointer travel that turns a press into a box. Below it the gesture is a
+/// background click and each anchor surface's own click semantics stand.
+///
+/// Displacement, not a delay like `useLayerDrag`'s
+/// `UNSELECTED_CLIP_DRAG_ARM_MS`: nothing sits under the pointer that a wobble
+/// could move, so there is nothing for a timer to protect.
+const ARM_TRAVEL_PX = 3;
+
+// Edge auto-scroll band and speed, matching `hooks/usePointerReorder.ts` so a
+// drag that reaches a scroll host's edge behaves the same everywhere.
+const EDGE_BAND_PX = 28;
+const EDGE_SPEED_PX = 12;
+
+/// Where a background click landed, for the surface that decides what it means.
+/// `trackId` is the lane the press started on — null from the background and
+/// a sub-lane, which name no clip lane — and `canvasX` is the
+/// press's x in the `timeline-canvas` overlay space, sharing the ruler's axis
+/// (x = 0 is t = 0). Together they are what a lane click needs to resolve to the
+/// gap under it; the gesture itself still knows nothing of gaps.
+export interface BackgroundPress {
+  trackId: string | null;
+  canvasX: number;
+}
+
+/// What the gesture needs and no anchor surface has.
+export interface MarqueeAnchor {
+  /// `timeline-canvas` — the element the box's coordinates are relative to.
+  canvasRef: RefObject<HTMLElement | null>;
+  /// The timeline's scroll root, the canvas's scrolling ancestor.
+  scrollRootRef: RefObject<HTMLElement | null>;
+  /// Every box the gesture publishes. The hit-test lives on the far side of
+  /// this seam, so the gesture's lifecycle is provable without it.
+  onBox: (box: MarqueeBox, kind: MarqueeKind) => void;
+  /// Taken at pointerdown, before anything is drawn or selected; returns the
+  /// undo the cancel path replays. What a selection IS stays on the far side of
+  /// this seam — the gesture holds an opaque thunk, never a selection shape.
+  takeSnapshot: () => () => void;
+  /// A press released below `ARM_TRAVEL_PX`: the timeline's background click,
+  /// which means whatever the anchored surface's population says it means —
+  /// hence `kind`, and hence `press`, since on a lane it can mean "select the
+  /// gap here". Deliberately not a degenerate `onBox`: a zero-area box already
+  /// means "took nothing", and what clearing means must not ride on that
+  /// coincidence.
+  onBackgroundClick: (kind: MarqueeKind, press: BackgroundPress) => void;
+}
+
+/// A context rather than props: the anchor surfaces are up to three components
+/// away from the Timeline that owns all three values, and threading two refs
+/// plus a callback down each chain would put marquee plumbing into the
+/// signature of every component in between. The provider MUST memoize its
+/// value — an object rebuilt per render re-renders every consumer.
+export const MarqueeAnchorContext = createContext<MarqueeAnchor | null>(null);
+
+/// Start a marquee from `e`. Exported for the Timeline, which provides the
+/// context and so cannot consume it; every other surface goes through
+/// `useMarqueeAnchor`. `trackId` is the lane the press is on, for the
+/// background click; a surface on no lane passes none.
+export function beginMarquee(
+  anchor: MarqueeAnchor,
+  kind: MarqueeKind,
+  e: ReactPointerEvent,
+  trackId: string | null = null,
+): void {
+  if (e.button !== 0) return;
+  // Event-time read, deliberately not a subscription: blade mode hijacks the
+  // timeline's pointer surface, and `useActiveTool()` here would re-render all
+  // anchor surfaces on every tool switch (`state/toolStore.ts`).
+  if (activeTool() === "blade") return;
+  const canvas = anchor.canvasRef.current;
+  if (canvas === null) return;
+  // So a lane's anchor does not also fire the scroll body's.
+  e.stopPropagation();
+  // A sweep must not also start a native text selection. Focus is unaffected:
+  // `focus/useFocusRegions.ts` runs its pointerdown listener in the capture
+  // phase at `window` precisely because gestures cancel the default action.
+  e.preventDefault();
+
+  const restoreSnapshot = anchor.takeSnapshot();
+
+  const startRect = canvas.getBoundingClientRect();
+  const x0 = e.clientX - startRect.left;
+  const y0 = e.clientY - startRect.top;
+  const startClientX = e.clientX;
+  const startClientY = e.clientY;
+  const host = anchor.scrollRootRef.current;
+
+  let armed = false;
+  let lastClientX = startClientX;
+  let lastClientY = startClientY;
+  let speed = 0;
+  let raf = 0;
+
+  // The canvas rect is re-read per publish, never cached: it moves with the
+  // host's scroll, which is what makes the box keep growing under a pointer
+  // held still in the edge band.
+  const publish = () => {
+    const rect = canvas.getBoundingClientRect();
+    const box: MarqueeBox = {
+      x0,
+      y0,
+      x1: lastClientX - rect.left,
+      y1: lastClientY - rect.top,
+    };
+    setMarqueeBox(box, kind);
+    anchor.onBox(box, kind);
+  };
+
+  // A rAF pump so holding the pointer at the edge keeps scrolling, instead of
+  // advancing one step per pointermove event.
+  const pump = () => {
+    raf = 0;
+    if (host === null || speed === 0) return;
+    const before = host.scrollLeft;
+    host.scrollLeft += speed;
+    if (host.scrollLeft !== before) publish();
+    raf = requestAnimationFrame(pump);
+  };
+  // Horizontal only. The timeline's vertical extent is a handful of lanes,
+  // while `computeTimelineExtent` leaves the horizontal one unbounded.
+  const updateAutoScroll = () => {
+    if (host === null) return;
+    const rect = host.getBoundingClientRect();
+    // The left band starts after the sticky header column, which overlays the
+    // host's left edge: measured from `rect.left` it would sit under chrome the
+    // pointer never reaches while it is over a lane.
+    if (lastClientX < rect.left + headerColumnPx() + EDGE_BAND_PX) {
+      speed = -EDGE_SPEED_PX;
+    } else if (lastClientX > rect.right - EDGE_BAND_PX) {
+      speed = EDGE_SPEED_PX;
+    } else {
+      speed = 0;
+    }
+    if (speed !== 0 && raf === 0) raf = requestAnimationFrame(pump);
+  };
+
+  const onMove = (ev: PointerEvent) => {
+    lastClientX = ev.clientX;
+    lastClientY = ev.clientY;
+    if (!armed) {
+      const travel = Math.hypot(
+        ev.clientX - startClientX,
+        ev.clientY - startClientY,
+      );
+      if (travel < ARM_TRAVEL_PX) return;
+      armed = true;
+    }
+    publish();
+    updateAutoScroll();
+  };
+  const onKey = (ev: KeyboardEvent) => {
+    if (ev.key === "Escape") cancel();
+  };
+  const teardown = () => {
+    speed = 0;
+    if (raf !== 0) cancelAnimationFrame(raf);
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", release);
+    window.removeEventListener("pointercancel", cancel);
+    window.removeEventListener("keydown", onKey);
+    clearMarquee();
+  };
+  /// Escape — and an abort, which is not a release either — puts the selection
+  /// back where the press found it.
+  const cancel = () => {
+    teardown();
+    restoreSnapshot();
+  };
+  /// A release KEEPS whatever the last move computed; there is no separate
+  /// commit step. One that never armed is the background click.
+  const release = () => {
+    teardown();
+    // `x0` and not the release point: the press decided where the click is,
+    // and a release a pixel or two away is still that click.
+    if (!armed) anchor.onBackgroundClick(kind, { trackId, canvasX: x0 });
+  };
+
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", release);
+  // A browser-aborted gesture must not stay armed, or the next unrelated
+  // pointerup reads as this one's release.
+  window.addEventListener("pointercancel", cancel);
+  window.addEventListener("keydown", onKey);
+}
+
+/// Arms one anchor surface. `kind` is the surface's own answer to "which
+/// population does a box started here take" — never re-derived from geometry.
+/// `trackId` is the lane the surface IS, when it is one; it rides along to the
+/// background click and nowhere else.
+export function useMarqueeAnchor({
+  kind,
+  trackId = null,
+}: {
+  kind: MarqueeKind;
+  trackId?: string | null;
+}): {
+  onPointerDown: (e: ReactPointerEvent) => void;
+} {
+  const anchor = useContext(MarqueeAnchorContext);
+  const onPointerDown = useCallback(
+    (e: ReactPointerEvent) => {
+      if (anchor === null) return;
+      beginMarquee(anchor, kind, e, trackId);
+    },
+    [anchor, kind, trackId],
+  );
+  return { onPointerDown };
+}

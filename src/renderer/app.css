@@ -1,0 +1,341 @@
+/* Tailwind v4 entry. Lives in its own file so the legacy feature stylesheet
+   (styles.css) stays untouched. Cascade contract: everything Tailwind emits
+   here is layered (@layer theme/base/utilities), while styles.css is
+   unlayered — so legacy rules always win where both target the same element.
+   Preflight resets therefore only show through where legacy CSS relied on
+   UA defaults. */
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Exact-hex pins for the Tailwind ramp shades the legacy stylesheet
+   references as var(--color-*). The default v4 palette defines these in
+   oklch (same design colors, but conversion can round a channel by one);
+   pinning the legacy hex guarantees the token sweep is rendering-
+   identical and that every referenced variable is emitted. */
+@theme {
+    --color-gray-300: #d1d5db;
+    --color-gray-500: #6b7280;
+    --color-gray-600: #4b5563;
+    --color-gray-900: #111827;
+    --color-slate-200: #e2e8f0;
+    --color-slate-300: #cbd5e1;
+    --color-slate-400: #94a3b8;
+    --color-slate-500: #64748b;
+    --color-slate-600: #475569;
+    --color-slate-700: #334155;
+    --color-slate-800: #1e293b;
+    --color-slate-900: #0f172a;
+    --color-blue-100: #dbeafe;
+    --color-blue-200: #bfdbfe;
+    --color-blue-300: #93c5fd;
+    --color-blue-400: #60a5fa;
+    --color-blue-700: #1d4ed8;
+    --color-blue-800: #1e40af;
+    --color-red-200: #fecaca;
+    --color-red-300: #fca5a5;
+    --color-red-500: #ef4444;
+    --color-red-700: #b91c1c;
+    --color-amber-200: #fde68a;
+    --color-amber-300: #fcd34d;
+    --color-amber-400: #fbbf24;
+    --color-amber-500: #f59e0b;
+    --color-green-300: #86efac;
+    --color-green-900: #14532d;
+    --color-emerald-400: #34d399;
+    --color-violet-300: #c4b5fd;
+    --color-purple-300: #d8b4fe;
+    --color-sky-300: #7dd3fc;
+    --color-pink-300: #f9a8d4;
+    --color-zinc-200: #e4e4e7;
+    --color-zinc-300: #d4d4d8;
+    --color-zinc-400: #a1a1aa;
+}
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    /* Legacy status-bar/log stylesheets reference var(--font-ui); alias it to
+       the app font stack so the property resolves instead of silently
+       falling back through the cascade. */
+    --font-ui: var(--font-sans);
+    --color-border-soft: var(--border-soft);
+    --color-surface-sunken: var(--surface-sunken);
+    --color-surface-raised: var(--surface-raised);
+    --color-track-lane: var(--track-lane);
+    /* Match the legacy stack in styles.css :root — WeftCut deliberately uses
+       the system font; swapping fonts is a separate design decision. */
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+    /* Window-chrome band — ONE height for every caption bar the app shows: the
+       editor header (.app-header), the startup strip (.startup-titlebar) and
+       agent mode's drag row (.agent-titlebar). Shared so the bar never changes
+       height as the app moves between those surfaces; sized to a bar's own
+       fallback, each one drifts independently.
+       42.5px is .app-header's content-driven height (8px + the 25.5px search
+       box + 8px + the 1px rule) — it stays that header's floor, and the other
+       two bars, with no content tall enough to size to, take it outright. The
+       max() keeps every bar tall enough to CONTAIN the macOS traffic lights,
+       which the OS draws over it; env() is unset on Win/Linux and in macOS
+       fullscreen, so the literal rules there.
+       LANDMINE: src/main/index.ts derives trafficLightPosition.y from this same
+       number ((H - 14) / 2). Change one, recompute the other — the e2e
+       window-chrome spec fails if they drift apart. */
+    --app-chrome-height: max(42.5px, env(titlebar-area-height, 0px)); /* fixed-px: window chrome */
+
+    /* Spacing between the items a caption bar carries (search box, locale
+       toggle, agent-mode's exit pill). The caption buttons add 4px of their own
+       breathing room on top — .window-controls in startup.css keeps a 4px left
+       margin on every bar — so the last pill always clears the buttons by 16px,
+       whichever surface it is on. Horizontal counterpart to
+       --app-chrome-height: the three bars share the rhythm, not just the
+       height. */
+    --app-chrome-gap: 12px; /* fixed-px: window chrome */
+
+    /* Distance from a caption bar's outer edge to its first/last item. The
+       left edge always takes it (or the macOS traffic-light band, whichever is
+       wider); the right edge takes it only on macOS, where no caption buttons
+       fill that corner — off macOS the buttons sit flush against the window
+       edge instead. One number so the editor header, the startup strip, agent
+       mode and the perf HUD all leave the same margin. */
+    --app-chrome-inset: 16px; /* fixed-px: window chrome */
+
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.205 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: oklch(0.922 0 0);
+    --border-soft: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    /* 6px base → sm/md/lg = 3.6/4.8/6px, matching the 3/4/6px clusters in
+       styles.css (45×4px, 40×3px, 17×6px). */
+    --radius: 0.375rem;
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: oklch(0.205 0 0);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: oklch(0.708 0 0);
+}
+
+/* WeftCut's dark-only application palette (html.dark is hardwired in
+   index.html). Surface and stroke steps are intentionally centralized here;
+   feature styles consume roles instead of maintaining local near-black ramps. */
+.dark {
+    --background: #0c0e12;
+    --foreground: #e5e7eb;
+    --card: #111419;
+    --card-foreground: #e5e7eb;
+    --popover: #1c2028;
+    --popover-foreground: #e5e7eb;
+    --primary: #2563eb;
+    --primary-foreground: #ffffff;
+    --secondary: #222731;
+    --secondary-foreground: #e5e7eb;
+    --muted: #222731;
+    --muted-foreground: #9ca3af;
+    --accent: #2e3541;
+    --accent-foreground: #f3f4f6;
+    --destructive: #f87171;
+    --border: #363e4b;
+    /* Structural hairline dividers (panel header rules, track seams) —
+       deliberately softer than the control border above. */
+    --border-soft: #252a34;
+    --input: #363e4b;
+    --ring: #3b82f6;
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: #111419;
+    --sidebar-foreground: #e5e7eb;
+    --sidebar-primary: #2563eb;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #222731;
+    --sidebar-accent-foreground: #f3f4f6;
+    --sidebar-border: #252a34;
+    --sidebar-ring: #3b82f6;
+
+    /* ── Polish layer (dark NLE) ───────────────────────────────────────────
+       Semantic tokens added on top of the shadcn base above. Legacy CSS
+       scattered ~10 near-black hexes, 4 blues, and hand-written alpha values;
+       these collapse those into one greppable ladder. */
+
+    /* Depth ladder — recessed well → workspace → panel/card → raised content
+       → floating overlay. Adjacent steps are deliberately visible on large
+       regions without turning the editor slate-blue. The preview canvas sits
+       on --background (not pure #000) so dark footage edges stay visible. */
+    --surface-sunken: #08090b;   /* thumbnail slots, code wells, inset editors */
+    --surface-raised: #181c23;   /* rows/cards lifted above a panel, hover rests */
+
+    /* Timeline track lane — one step above --background so row seams and the
+       scroll gutter read as distinct surfaces instead of one flat black. */
+    --track-lane: #14171d;
+
+    /* Single selection / active / focus accent. --ring (#3b82f6) is the one
+       true accent; these are its standard translucent derivations so selected
+       backgrounds and outlines stop drifting between three blues. */
+    --selection: var(--ring);
+    --selection-bg: rgba(59, 130, 246, 0.16);
+    --selection-border: rgba(59, 130, 246, 0.5);
+    --focus-ring: 0 0 0 2px color-mix(in srgb, var(--ring) 50%, transparent);
+
+    /* Neutral state layer — translucent white overlays for hover/press on
+       otherwise-transparent controls, replacing scattered rgba(255,255,255,α). */
+    --hover-neutral: rgba(255, 255, 255, 0.06);
+    --hover-neutral-strong: rgba(255, 255, 255, 0.10);
+    /* Pressed state — one step above the hover overlays. */
+    --active-neutral: rgba(255, 255, 255, 0.16);
+    /* Faintest lift — quiet row hovers, inset wells, and hairline seams that
+       must stay below --hover-neutral. */
+    --surface-tint: rgba(255, 255, 255, 0.04);
+    /* Strokes that sit on near-black / monitor surfaces, where the solid
+       --border reads too strong. The strong variant is the hover step. */
+    --border-on-dark: rgba(255, 255, 255, 0.15);
+    --border-on-dark-strong: rgba(255, 255, 255, 0.3);
+
+    /* Status hues — shared feedback colors. Bake status (properties panel +
+       motif dots), keyframe markers, and media badges all drew these as
+       one-off literals; they now share one ramp. --destructive (above) stays
+       the error role. Translucent badge fills derive via color-mix from
+       these, e.g. color-mix(in srgb, var(--destructive) 85%, transparent). */
+    --success: #46c46a;
+    --warning: #f0a020;
+    /* Keyframe diamonds, armed stopwatches, and pending badges — a domain
+       accent, not a warning; kept distinct from --warning on purpose. */
+    --keyframe: #facc15;
+    /* Tacks — agent review marks (ADR 0115): the Review lane chips, the mini
+       timeline band and the agent panel's Tacks tab. A hue no marker default,
+       selection, playhead or status role uses, so a tack never reads as one. */
+    --tack: #2dd4bf;
+    /* Ink on a solid --tack fill: a selected Review lane chip, a group chip's
+       count. */
+    --tack-foreground: #0b1f1c;
+    /* Review changes (ADR 0115): an unreviewed agent change on the editor
+       timeline (clip edges, ghosts, the Group badge), the mini timeline's change
+       band and the Changes tab's class badges. Added is green and modified amber
+       as in every diff view; removed takes the error hue. Their own roles, not
+       aliases of the status hues: a review mark is not a bake or meter state. */
+    --review-added: #4ade80;
+    --review-modified: #fbbf24;
+    --review-removed: #f87171;
+    /* Ink on a solid review fill: the "before" / "removed" corner labels, the
+       Group badge. */
+    --review-foreground: #101014;
+    /* The review focus on a change (agent/reviewFocus.ts): the wash over its
+       time range, the ring round its clips or ghost, its mini timeline mark.
+       Neutral on purpose — the class hues above already sit on those clips,
+       and a ring in one of them would read as one more class. A focused tack
+       uses --tack. */
+    --review-focus: #e2e8f0;
+
+    /* Elevation — three levels for floating chrome. On near-black surfaces
+       the 1px --border every menu/popover/dialog already carries does most
+       of the separation; the shadow only lifts, so blurs stay tight. The
+       log drawer casts upward and keeps a literal matched to its level. */
+    --shadow-menu: 0 4px 16px rgba(0, 0, 0, 0.35);
+    --shadow-popover: 0 8px 28px rgba(0, 0, 0, 0.45);
+    --shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.55);
+
+    /* Stacking. Dockview's resize sash is z-index: 99 and is not ours to
+       move, so every app-owned overlay has to clear it: one that does not
+       lets a sash crossing it steal the hover and the clicks, which reads as
+       a dead button, or as a backdrop that will not dismiss because the drag
+       it started resized the dock instead. Ordered as they stack when open
+       together. A dialog's popup is its backdrop +1, and a dialog opened
+       from a dialog takes the next pair up. */
+    --layer-log-console: 100;
+    --layer-status-panel: 101;
+    --layer-dialog: 110;
+    --layer-menu: 1000;
+
+    /* Motion — two speeds, shared easing, so hover/focus transitions stop
+       ranging across 80/100/120/160/180ms with mixed easings. Continuous
+       data-driven transitions (meter/progress width updates) deliberately
+       stay Nms linear literals, and choreographed keyframe animations keep
+       their own timing. */
+    --transition-fast: 90ms ease-out;
+    --transition-base: 150ms ease-out;
+
+    /* Radius roles — zero-drift against the dominant legacy values (control
+       inputs/buttons/badges were 4px, cards/thumbs 6px, panels 8px). Only the
+       stray 3px controls shift (+1px) to end the 3px/4px wobble. Pills stay a
+       literal 999px. Kept separate from shadcn's sm/md/lg ramp so consuming a
+       token never silently rescales a control. */
+    --radius-control: 4px;
+    --radius-card: 6px;
+    --radius-panel: 8px;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    }
+  html {
+    @apply font-sans;
+    }
+}

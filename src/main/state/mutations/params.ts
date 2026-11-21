@@ -1,0 +1,733 @@
+import { sourceIn, sourceOut, layerRate, layerRateNumber, writeSourceWindow } from '../../../renderer/layerTiming'
+import { approximateTime, exactTime, subtractTime, addTime, multiplyTime } from '../../../renderer/timeMapping'
+import { canonicalCrop, cropProblem, type CropRect } from '../../../shared/crop'
+import type { Animated, AudioParams, AudioRole, ColorParams, CompositionRefParams, ImageOverlayParams, Layer, MotifParams, Project, Rgba, TextAlign, TextAnimPreset, TextParams, Uuid, VAlign, VideoClipParams , Shadow} from '../model'
+import { CommandFailure } from '../errors'
+import { TEXT_INTROS, TEXT_OUTROS } from '../../../shared/textAnimation'
+import { snapFrameFloor, snapFrameCeil, gridForLayerKind, snapOnGrid } from '../snap'
+import { authoredExtentPx, authoredValue, quantizeTrack } from '../quantize'
+import { checkLayerEditable, applyDurationAutofit, requireLayer } from './helpers'
+import { checkAudioEffectParamStatic } from './effects'
+import { normalizeKeyframes } from './animated'
+import { solveAutoTangents } from '../../../shared/tangents'
+import { positionTrack, setPositionTrack } from '../../../shared/position'
+// `isColorParam` is the ONE home of "which value type this param key
+// carries" — in the shared record module, so this lens layer and the MCP
+// parser read the same predicate and neither depends on the other.
+import { isColorParam, MAX_RESIDENT_KEYFRAMES, type TrackValue } from '../../../shared/keyframe'
+import { effectParamDefault } from '../../../shared/effects/params'
+import type { MotifManifests } from '../../../shared/motifs/catalog'
+import { canonicalizeProps, MotifPropError, resolveMotifMaxDurUs } from '../../../shared/motifs/catalog'
+import { mediaPropProblem } from '../../../shared/motifs/mediaProp'
+import { graphicRoleProblem } from '../../../shared/graphicRole'
+
+/** Internally-tagged ("kind") param patch. Every field optional bar kind;
+ *  absent = "don't touch".
+ *
+ *  Text carries no `scale_x`/`scale_y` on purpose: an agent asking for a bigger
+ *  title gets a bigger BOX, because the box lays glyphs out and scale magnifies
+ *  the rendered result (ADR 0049). `box_w`/`box_h` are the one pair where
+ *  `null` is a value distinct from absent — see the `case 'Text'` merge — and
+ *  `graphic_role` (Text, ImageOverlay, Motif) is another: null clears the tag. */
+export type LayerParamsPatch =
+  | { kind: 'Text'; content?: string; font_family?: string; font_size_px?: number; font_weight?: number; italic?: boolean; shadow?: Shadow | null; color?: Rgba; x?: number; y?: number; opacity?: number; rotation_deg?: number; anchor_x?: number; anchor_y?: number; align?: TextAlign; valign?: VAlign; box_w?: number | null; box_h?: number | null; line_height?: number; letter_spacing?: number; outline_width?: number; outline_color?: Rgba; graphic_role?: string | null; intro?: TextAnimPreset | null; outro?: TextAnimPreset | null }
+  | { kind: 'VideoClip'; crop?: CropRect | null; src_in_us?: number; src_out_us?: number; x?: number; y?: number; scale_x?: number; scale_y?: number; opacity?: number; rotation_deg?: number; anchor_x?: number; anchor_y?: number; flip_h?: boolean; flip_v?: boolean; fade_in_us?: number; fade_out_us?: number }
+  | { kind: 'ImageOverlay'; x?: number; y?: number; scale_x?: number; scale_y?: number; opacity?: number; rotation_deg?: number; anchor_x?: number; anchor_y?: number; fade_in_us?: number; fade_out_us?: number; graphic_role?: string | null }
+  | { kind: 'Motif'; x?: number; y?: number; scale_x?: number; scale_y?: number; opacity?: number; rotation_deg?: number; anchor_x?: number; anchor_y?: number; src_in_us?: number; motif_id?: string; props?: Record<string, unknown>; graphic_role?: string | null }
+  | { kind: 'Color'; color?: Rgba; width?: number; height?: number }
+  | { kind: 'Audio'; src_in_us?: number; src_out_us?: number; gain_db?: number; pan?: number; fade_in_us?: number; fade_out_us?: number; mute?: boolean; role?: AudioRole }
+  /** A Group layer (ADR 0052 §4). The media-bearing set minus what v1 leaves
+   *  out: no `speed` (AE's time-remap), no `crop`, no `flip_*`, no ref-level
+   *  audio gain. `src_in_us`/`src_out_us` take NO upper bound here — overhang
+   *  past the composition's duration is legal in state and clamped at the
+   *  gesture (ADR 0052 §6), so this path can set the window a trim drag would
+   *  not.
+   *
+   *  No kind's patch writes `blend_mode`: every kind stores it, always Normal,
+   *  and no renderer draws another mode yet. Rendering, UI and MCP land
+   *  together when one does. */
+  | { kind: 'CompositionRef'; src_in_us?: number; src_out_us?: number; x?: number; y?: number; scale_x?: number; scale_y?: number; opacity?: number; rotation_deg?: number; anchor_x?: number; anchor_y?: number }
+
+const stat = <T>(value: T): Animated<T> => ({ mode: 'Static', value })
+
+/** `authoredValue` lifted over the patch convention that absent = "don't touch".
+ *
+ *  Every arm below resolves ALL of its numerics through this before its first
+ *  assignment, never inline at the assignment. `authoredValue` can refuse (a
+ *  ranged field, out of range), and a refused patch must leave the project
+ *  byte-identical — the same ordering rule the text-box mode check states in
+ *  full. Inline, an out-of-range `opacity` would land after `content` and
+ *  `color` had already been written. */
+const authored = (key: string, v: number | undefined): number | undefined =>
+  v === undefined ? undefined : authoredValue(key, v)
+
+/** The transform numerics VideoClip / ImageOverlay / Motif all carry, resolved
+ *  together so that ALL of them can refuse before ANY of them is written. */
+interface AuthoredTransform {
+  x?: number; y?: number; scale_x?: number; scale_y?: number; opacity?: number; rotation_deg?: number; anchor_x?: number; anchor_y?: number
+}
+
+function authoredTransform(patch: {
+  x?: number; y?: number; scale_x?: number; scale_y?: number; opacity?: number; rotation_deg?: number; anchor_x?: number; anchor_y?: number
+}): AuthoredTransform {
+  /** A shape predicate on scale, not a range — which is why it is not in
+   *  PARAM_PRECISION. A NEGATIVE factor is a mirror and deliberately
+   *  first-class (`gizmoGeometry` is written to be flip-aware), so the only
+   *  illegal value is ZERO: at zero the box collapses, `localDelta` answers
+   *  null, and there is no lever left to scale back by.
+   *
+   *  Tested AFTER rounding, because rounding is what reaches the degenerate
+   *  value: 0.0004 passes any raw `!== 0` test and then records as 0. */
+  const scale = (key: 'scale_x' | 'scale_y'): number | undefined => {
+    const q = authored(key, patch[key])
+    if (q === 0) {
+      throw new CommandFailure({ error: 'InvalidArgument', field: key,
+        detail: `${key} cannot be 0 — a zero axis collapses the layer with no way to scale it back. Got ${patch[key]}, which records as 0; send a small non-zero factor, or a negative one to mirror.` })
+    }
+    return q
+  }
+  return {
+    x: authored('x', patch.x),
+    y: authored('y', patch.y),
+    scale_x: scale('scale_x'),
+    scale_y: scale('scale_y'),
+    opacity: authored('opacity', patch.opacity),
+    // The rest of the static transform: unbounded by design (a turn is a turn,
+    // a pivot may sit outside the box), quantised like every other numeric.
+    rotation_deg: authored('rotation_deg', patch.rotation_deg),
+    anchor_x: authored('anchor_x', patch.anchor_x),
+    anchor_y: authored('anchor_y', patch.anchor_y),
+  }
+}
+
+/** The Text enums, as values — the patch arrives from MCP as untyped JSON, so the
+ *  types alone guard nothing at runtime. Listed here and not in `model.ts` because
+ *  this is the only site that needs them as data. */
+const TEXT_ALIGNS: readonly TextAlign[] = ['Left', 'Center', 'Right']
+const VALIGNS: readonly VAlign[] = ['Top', 'Middle', 'Bottom']
+
+/** apply_params_patch — kind-matched field merge. Refuses a discriminant
+ *  mismatch and a value the kind cannot store (an enum outside its variants, a
+ *  zero scale, a face outside its range, a Path-mode x/y). Animated fields
+ *  collapse to Static(v), overwriting any keyframe track. Motif props merge
+ *  field-wise; only a rebind (a new `motif_id`) replaces them. */
+/** A source-window write on a media-bearing kind. `src_in_us` alone is a SLIP:
+ *  the window moves and keeps its length, so the span and what it plays still
+ *  agree — the Motif rule. With `src_out_us` beside it the window is written as
+ *  sent; `src_out_us` alone moves only the end (a Group's window may overhang
+ *  its composition, ADR 0052 §6). */
+function writeWindow(layer: Layer, q: VideoClipParams | AudioParams | CompositionRefParams, srcIn: number | undefined, srcOut: number | undefined): void {
+  if (srcIn !== undefined && srcOut === undefined) {
+    const span = subtractTime(sourceOut(layer), sourceIn(q))
+    writeSourceWindow(q, exactTime(srcIn), addTime(exactTime(srcIn), span))
+    return
+  }
+  if (srcIn !== undefined) q.src_in_us = srcIn
+  if (srcOut !== undefined) q.src_out_us = srcOut
+}
+
+export function applyParamsPatch(layer: Layer, patch: LayerParamsPatch): void {
+  const p = layer.params
+  if ('transform' in p && p.transform.position.mode === 'Path' && ('x' in patch || 'y' in patch)) throw new CommandFailure({ error:'InvalidArgument',field:'position',detail:'This layer follows a path. Translate or edit its path, or explicitly bake to XY.' })
+  if (p.kind !== patch.kind) {
+    throw new CommandFailure({ error: 'LayerParamsKindMismatch', layer: layer.id, actual: p.kind, patch: patch.kind })
+  }
+  // Checked before any arm writes, so a refused role leaves the layer untouched.
+  if ('graphic_role' in patch && patch.graphic_role !== undefined) {
+    const problem = graphicRoleProblem(patch.graphic_role)
+    if (problem) throw new CommandFailure({ error: 'InvalidArgument', field: 'graphic_role', detail: problem })
+  }
+  // The presets are directional: FadeOut does not enter and Typewriter does
+  // not leave (`shared/textAnimation.ts`).
+  if (patch.kind === 'Text') {
+    if (patch.intro !== undefined && patch.intro !== null && !(TEXT_INTROS as readonly string[]).includes(patch.intro))
+      throw new CommandFailure({ error: 'InvalidArgument', field: 'intro', detail: `intro must be one of ${TEXT_INTROS.join(', ')} or null — got ${JSON.stringify(patch.intro)}` })
+    if (patch.outro !== undefined && patch.outro !== null && !(TEXT_OUTROS as readonly string[]).includes(patch.outro))
+      throw new CommandFailure({ error: 'InvalidArgument', field: 'outro', detail: `outro must be one of ${TEXT_OUTROS.join(', ')} or null — got ${JSON.stringify(patch.outro)}` })
+  }
+  switch (patch.kind) {
+    case 'Text': {
+      const t = p as TextParams
+      // MCP hands this layer untyped JSON (`parseObj` + a cast), so the Text arm's
+      // enums and box numbers are checked here rather than trusted. It is the edge
+      // half of ADR 0049's pair — refuse at the edge, never blank the screen
+      // mid-render — and the renderer's coalescing is the other half. Unchecked,
+      // `valign: 'Center'` reaches `VALIGN_FRAC[valign]` as `undefined` and lands a
+      // NaN anchor on the sprite, which is a VANISHED layer rather than a
+      // misplaced one.
+      if (patch.align !== undefined && !TEXT_ALIGNS.includes(patch.align)) {
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'align', detail: `align must be one of ${TEXT_ALIGNS.join(' | ')}` })
+      }
+      if (patch.valign !== undefined && !VALIGNS.includes(patch.valign)) {
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'valign', detail: `valign must be one of ${VALIGNS.join(' | ')}` })
+      }
+      // A box axis is either null (auto) or a real positive extent, authored in
+      // WHOLE composition pixels: the box lays glyphs out (ADR 0049), so half a
+      // pixel of line-breaking width is not something an author means. Zero and
+      // negative are refused because they are not a narrow box, they are a broken
+      // mode — the renderer reads a non-positive width as "no box" and would render
+      // Auto width while state claimed Fixed. Deliberately NOT the gesture's 8 px
+      // floor: that one is a drag ergonomic, and a 4 px box an agent asks for on
+      // purpose is legal, just silly.
+      //
+      // `authoredExtentPx` rounds first and checks after, which is the only order
+      // that catches `0.4` — a value that passes a raw `> 0` test and then records
+      // as exactly the zero box the check exists to refuse. Resolved here, once, so
+      // the mode check below and the assignments further down all see what will
+      // actually be stored.
+      const boxPx = (field: 'box_w' | 'box_h'): number | null | undefined => {
+        const v = patch[field]
+        return v === undefined || v === null ? v : authoredExtentPx(field, v, ', or null for auto')
+      }
+      const boxWPatch = boxPx('box_w')
+      const boxHPatch = boxPx('box_h')
+      const xP = authored('x', patch.x)
+      const yP = authored('y', patch.y)
+      const opacityP = authored('opacity', patch.opacity)
+      const rotationP = authored('rotation_deg', patch.rotation_deg)
+      const anchorXP = authored('anchor_x', patch.anchor_x)
+      const anchorYP = authored('anchor_y', patch.anchor_y)
+      for (const field of ['line_height', 'letter_spacing'] as const) {
+        const v = patch[field]
+        if (v !== undefined && !Number.isFinite(v)) {
+          throw new CommandFailure({ error: 'InvalidArgument', field, detail: `${field} must be a finite number` })
+        }
+      }
+      // Zero is a value here — "no outline" — so the predicate admits it where
+      // font_size_px's does not; negative is not a thinner stroke, it is nothing.
+      if (patch.outline_width !== undefined && !(Number.isFinite(patch.outline_width) && patch.outline_width >= 0)) {
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'outline_width',
+          detail: `outline_width must be zero or a positive number of composition pixels — got ${patch.outline_width}` })
+      }
+      // A colour needs a stroke to colour. Refused rather than inventing a width:
+      // this surface has no default stroke of its own (a Text layer is born with
+      // none), and a guessed width would be the silent default ADR 0048 rules out.
+      // The width may arrive in the same patch, which is how an agent adds a
+      // coloured outline in one commit.
+      if (patch.outline_color !== undefined) {
+        const widthAfter = patch.outline_width !== undefined ? patch.outline_width : (t.outline?.width ?? 0)
+        if (!(widthAfter > 0)) {
+          throw new CommandFailure({ error: 'InvalidArgument', field: 'outline_color',
+            detail: 'outline_color needs an outline to colour: send outline_width > 0 in the same patch, or set one first' })
+        }
+      }
+      // A shape predicate, not a range: there is no sensible upper bound on type
+      // size, but zero and negative are not small type, they are no glyphs at all.
+      // Hand-written rather than table-driven for the reason every refusal here is
+      // — the detail line is the only channel an agent can correct itself from, and
+      // a generated `must be in (0, Inf)` would not name what to send instead.
+      if (patch.font_size_px !== undefined && !(Number.isFinite(patch.font_size_px) && patch.font_size_px > 0)) {
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'font_size_px',
+          detail: `font_size_px must be a positive number of composition pixels — got ${patch.font_size_px}` })
+      }
+      // CSS weights: 100..900. A face is picked by nearest available weight, so
+      // any whole hundred is meaningful and nothing outside the scale is.
+      if (patch.font_weight !== undefined && !(Number.isInteger(patch.font_weight) && patch.font_weight >= 100 && patch.font_weight <= 900)) {
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'font_weight',
+          detail: `font_weight must be a whole number from 100 to 900 (400 regular, 700 bold) — got ${patch.font_weight}` })
+      }
+      // A shadow is a whole record or null (none): offsets any finite px, blur
+      // a non-negative px radius. Checked before the first write, like the rest.
+      if (patch.shadow !== undefined && patch.shadow !== null) {
+        const sh = patch.shadow
+        for (const f of ['offset_x', 'offset_y', 'blur'] as const) {
+          if (!Number.isFinite(sh[f])) throw new CommandFailure({ error: 'InvalidArgument', field: `shadow.${f}`, detail: `shadow.${f} must be a finite number of composition pixels` })
+        }
+        if (sh.blur < 0) throw new CommandFailure({ error: 'InvalidArgument', field: 'shadow.blur', detail: `shadow.blur must be zero or a positive radius in composition pixels — got ${sh.blur}` })
+      }
+      // The resize mode IS the box nullability — (null, null) auto width,
+      // (set, null) auto height, (set, set) fixed — so (null, set) is no mode at
+      // all. A gesture reaching that pair backfills the width it measured in the
+      // same commit; this layer has no canvas, and inventing a width would be the
+      // silent clamp ADR 0048 rules out, so MCP's route to it refuses. Refusing
+      // BEFORE the first write is load-bearing: a rejected patch must leave the
+      // project byte-identical. A patch touching NEITHER box field still passes
+      // through an already-illegal (hand-edited) layer, which the renderer
+      // coalesces to auto width — refusing there would make the file unfixable.
+      if (patch.box_w !== undefined || patch.box_h !== undefined) {
+        const w = boxWPatch !== undefined ? boxWPatch : t.box_w
+        const h = boxHPatch !== undefined ? boxHPatch : t.box_h
+        if (w === null && h !== null) {
+          throw new CommandFailure({ error: 'InvalidArgument', field: 'box_h',
+            detail: 'a text box height with no width is not a resize mode: send box_w in the same patch for fixed, or leave box_h null — the modes are (null, null) auto width, (set, null) auto height, (set, set) fixed' })
+        }
+      }
+      if (patch.content !== undefined) t.content = patch.content
+      if (patch.font_family !== undefined) t.font.family = patch.font_family
+      if (patch.font_size_px !== undefined) t.font.size_px = patch.font_size_px
+      if (patch.font_weight !== undefined) t.font.weight = patch.font_weight
+      if (patch.italic !== undefined) t.font.italic = patch.italic
+      // Null is a value here, as on the box pair: "no shadow".
+      if (patch.shadow !== undefined) t.shadow = patch.shadow === null ? null : { color: patch.shadow.color, offset_x: patch.shadow.offset_x, offset_y: patch.shadow.offset_y, blur: patch.shadow.blur }
+      if (patch.color !== undefined) t.color = stat(patch.color)
+      if (xP !== undefined) setPositionTrack(t.transform.position, 'x', stat(xP))
+      if (yP !== undefined) setPositionTrack(t.transform.position, 'y', stat(yP))
+      if (opacityP !== undefined) t.opacity = stat(opacityP)
+      if (rotationP !== undefined) t.transform.rotation_deg = stat(rotationP)
+      if (anchorXP !== undefined) t.transform.anchor_x = stat(anchorXP)
+      if (anchorYP !== undefined) t.transform.anchor_y = stat(anchorYP)
+      if (patch.align !== undefined) t.align = patch.align
+      if (patch.valign !== undefined) t.valign = patch.valign
+      // On the box pair the absent/null split is LOAD-BEARING, not the incidental
+      // "don't touch" it is everywhere else: null is the only way to say "back to
+      // auto", so an `=== undefined` guard here is the whole wire contract.
+      if (patch.box_w !== undefined) t.box_w = boxWPatch as number | null
+      if (patch.box_h !== undefined) t.box_h = boxHPatch as number | null
+      if (patch.line_height !== undefined) t.line_height = patch.line_height
+      if (patch.letter_spacing !== undefined) t.letter_spacing = patch.letter_spacing
+      // Width before colour, so a patch carrying both creates the stroke and then
+      // colours it. Zero stores `null` — the same absent style the Text tool
+      // writes and a caption restyle produces — never a zero-width stroke object.
+      // A new stroke is black, the default caption outline colour, until coloured.
+      if (patch.outline_width !== undefined) {
+        t.outline = patch.outline_width <= 0
+          ? null
+          : { color: t.outline?.color ?? { r: 0, g: 0, b: 0, a: 255 }, width: patch.outline_width }
+      }
+      if (patch.outline_color !== undefined && t.outline) t.outline = { color: patch.outline_color, width: t.outline.width }
+      if (patch.graphic_role !== undefined) t.graphic_role = patch.graphic_role
+      if (patch.intro !== undefined) t.intro = patch.intro
+      if (patch.outro !== undefined) t.outro = patch.outro
+      return
+    }
+    case 'VideoClip': {
+      const v = p as VideoClipParams
+      if (patch.crop !== undefined) {
+        const problem = cropProblem(patch.crop)
+        if (problem) throw new CommandFailure({ error: 'InvalidArgument', field: 'crop', detail: problem })
+      }
+      const a = authoredTransform(patch)
+      // Another shape predicate: speed scales a duration, so zero is a division
+      // by zero downstream and negative is not "backwards", it is a negative
+      // span. No upper bound — a 50× ramp is a legitimate effect.
+      if ('speed' in patch) {
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'speed',
+          detail: 'Use retime_layers to change playback rate' })
+      }
+      writeWindow(layer, v, patch.src_in_us, patch.src_out_us)
+      if (a.x !== undefined) setPositionTrack(v.transform.position, 'x', stat(a.x))
+      if (a.y !== undefined) setPositionTrack(v.transform.position, 'y', stat(a.y))
+      if (a.scale_x !== undefined) v.transform.scale_x = stat(a.scale_x)
+      if (a.scale_y !== undefined) v.transform.scale_y = stat(a.scale_y)
+      if (a.opacity !== undefined) v.opacity = stat(a.opacity)
+      if (a.rotation_deg !== undefined) v.transform.rotation_deg = stat(a.rotation_deg)
+      if (a.anchor_x !== undefined) v.transform.anchor_x = stat(a.anchor_x)
+      if (a.anchor_y !== undefined) v.transform.anchor_y = stat(a.anchor_y)
+      if (patch.crop !== undefined) v.crop = canonicalCrop(patch.crop)
+      if (patch.flip_h !== undefined) v.flip_h = patch.flip_h
+      if (patch.flip_v !== undefined) v.flip_v = patch.flip_v
+      if (patch.fade_in_us !== undefined) v.fade_in_us = patch.fade_in_us
+      if (patch.fade_out_us !== undefined) v.fade_out_us = patch.fade_out_us
+      return
+    }
+    case 'ImageOverlay': {
+      const i = p as ImageOverlayParams
+      const a = authoredTransform(patch)
+      if (a.x !== undefined) setPositionTrack(i.transform.position, 'x', stat(a.x))
+      if (a.y !== undefined) setPositionTrack(i.transform.position, 'y', stat(a.y))
+      if (a.scale_x !== undefined) i.transform.scale_x = stat(a.scale_x)
+      if (a.scale_y !== undefined) i.transform.scale_y = stat(a.scale_y)
+      if (a.opacity !== undefined) i.opacity = stat(a.opacity)
+      if (a.rotation_deg !== undefined) i.transform.rotation_deg = stat(a.rotation_deg)
+      if (a.anchor_x !== undefined) i.transform.anchor_x = stat(a.anchor_x)
+      if (a.anchor_y !== undefined) i.transform.anchor_y = stat(a.anchor_y)
+      if (patch.fade_in_us !== undefined) i.fade_in_us = patch.fade_in_us
+      if (patch.fade_out_us !== undefined) i.fade_out_us = patch.fade_out_us
+      if (patch.graphic_role !== undefined) i.graphic_role = patch.graphic_role
+      return
+    }
+    case 'Motif': {
+      const m = p as MotifParams
+      const a = authoredTransform(patch)
+      if (a.x !== undefined) setPositionTrack(m.transform.position, 'x', stat(a.x))
+      if (a.y !== undefined) setPositionTrack(m.transform.position, 'y', stat(a.y))
+      if (a.scale_x !== undefined) m.transform.scale_x = stat(a.scale_x)
+      if (a.scale_y !== undefined) m.transform.scale_y = stat(a.scale_y)
+      if (a.opacity !== undefined) m.opacity = stat(a.opacity)
+      if (a.rotation_deg !== undefined) m.transform.rotation_deg = stat(a.rotation_deg)
+      if (a.anchor_x !== undefined) m.transform.anchor_x = stat(a.anchor_x)
+      if (a.anchor_y !== undefined) m.transform.anchor_y = stat(a.anchor_y)
+      if (patch.src_in_us !== undefined) {
+        const span = subtractTime(sourceOut(layer), sourceIn(m));
+        writeSourceWindow(m, exactTime(patch.src_in_us), addTime(exactTime(patch.src_in_us), span));
+      }
+      // A rebind starts the props over (the caller's, canonicalised upstream
+      // when the manifest is known): the old motif's props are not the new one's.
+      if (patch.motif_id !== undefined && patch.motif_id !== m.motif_id) { m.motif_id = patch.motif_id; m.props = {} }
+      if (patch.props !== undefined) for (const k of Object.keys(patch.props)) m.props[k] = patch.props[k]
+      // A rebind keeps the layer's role: the manifest's applies at placement only.
+      if (patch.graphic_role !== undefined) m.graphic_role = patch.graphic_role
+      return
+    }
+    case 'CompositionRef': {
+      const g = p as CompositionRefParams
+      const a = authoredTransform(patch)
+      writeWindow(layer, g, patch.src_in_us, patch.src_out_us)
+      if (a.x !== undefined) setPositionTrack(g.transform.position, 'x', stat(a.x))
+      if (a.y !== undefined) setPositionTrack(g.transform.position, 'y', stat(a.y))
+      if (a.scale_x !== undefined) g.transform.scale_x = stat(a.scale_x)
+      if (a.scale_y !== undefined) g.transform.scale_y = stat(a.scale_y)
+      if (a.opacity !== undefined) g.opacity = stat(a.opacity)
+      if (a.rotation_deg !== undefined) g.transform.rotation_deg = stat(a.rotation_deg)
+      if (a.anchor_x !== undefined) g.transform.anchor_x = stat(a.anchor_x)
+      if (a.anchor_y !== undefined) g.transform.anchor_y = stat(a.anchor_y)
+      return
+    }
+    case 'Color': {
+      const c = p as ColorParams
+      // The same whole-pixel extent the text box is: a Color layer is rasterized
+      // at this size, and a fractional one buys nothing a whole pixel does not.
+      // Resolved before the colour is written so a refusal leaves the layer
+      // untouched.
+      const wP = patch.width === undefined ? undefined : authoredExtentPx('width', patch.width)
+      const hP = patch.height === undefined ? undefined : authoredExtentPx('height', patch.height)
+      if (patch.color !== undefined) c.color = stat(patch.color)
+      if (wP !== undefined) c.width = wP
+      if (hP !== undefined) c.height = hP
+      return
+    }
+    case 'Audio': {
+      const au = p as AudioParams
+      const gainP = authored('gain_db', patch.gain_db)
+      // `pan` is the one param whose stored value could previously disagree with
+      // what was rendered: the mixer clamps to [-1, 1] on the way out
+      // (`audio/envelope.rs` sample_pan), so a stored 2.0 played as 1.0 forever.
+      // Refusing here makes the store the truth; that clamp stays as a guard for
+      // projects written before this check existed.
+      const panP = authored('pan', patch.pan)
+      writeWindow(layer, au, patch.src_in_us, patch.src_out_us)
+      if (gainP !== undefined) au.gain_db = stat(gainP)
+      if (panP !== undefined) au.pan = stat(panP)
+      if (patch.fade_in_us !== undefined) au.fade_in_us = patch.fade_in_us
+      if (patch.fade_out_us !== undefined) au.fade_out_us = patch.fade_out_us
+      if (patch.mute !== undefined) au.mute = patch.mute
+      if (patch.role !== undefined) au.role = patch.role
+      return
+    }
+  }
+}
+
+/** update_layer_params (mutation half): lock-check, locate,
+ *  field-merge, then Motif content-window clamp.
+ *  After the field-merge: if the layer is a Motif with a known catalog entry and
+ *  a finite contentDur, and the placed window exceeds that contentDur, clamp
+ *  src_in_us + t_end_us into the new content. Growing never resizes.
+ *
+ *  LANDMINE: JS numbers are exact to 2^53 µs — consistent with the
+ *  resolveMotifTEndUs twin note in catalog.ts — diverges from Rust saturating
+ *  arithmetic only for absurd timestamps far beyond realistic use. */
+export function applyUpdateLayerParams(p: Project, id: Uuid, patch: LayerParamsPatch, catalog: MotifManifests): void {
+  const { comp: c, layer } = checkLayerEditable(p, id) // LayerNotFound / TrackLocked
+  if (layer.params.kind !== 'Color' && layer.params.kind !== 'Text') {
+    const pa = layer.params;
+    if (pa.source_phase && 'src_in_us' in patch && patch.src_in_us !== undefined) pa.source_phase.in = { num: 0, den: 1 };
+    if (pa.source_phase && 'src_out_us' in patch && patch.src_out_us !== undefined) pa.source_phase.out = { num: 0, den: 1 };
+    if (pa.fade_phase && 'fade_in_us' in patch && patch.fade_in_us !== undefined) pa.fade_phase.in = { num: 0, den: 1 };
+    if (pa.fade_phase && 'fade_out_us' in patch && patch.fade_out_us !== undefined) pa.fade_phase.out = { num: 0, den: 1 };
+  }
+  // A Motif's props are checked against its manifest BEFORE the merge, the
+  // way `add_layers` and `preview_motif` check theirs: an unknown
+  // key or a wrong type is refused naming the schema, rather than stored for a
+  // render that ignores it. The manifest is the motif the layer will NAME once
+  // the patch lands: a rebind (a new `motif_id`) starts from the patch's props
+  // alone, canonicalised with the new manifest's defaults, because the old
+  // motif's props are not the new one's. A Motif whose folder makes no
+  // package stays permissive: its manifest is unknown until it does.
+  if (patch.kind === 'Motif' && layer.params.kind === 'Motif') {
+    const rebinds = patch.motif_id !== undefined && patch.motif_id !== layer.params.motif_id
+    if (rebinds || patch.props !== undefined) {
+      const manifest = catalog.get(patch.motif_id ?? layer.params.motif_id)
+      if (manifest !== undefined) {
+        try {
+          const canonical = canonicalizeProps(manifest, rebinds ? (patch.props ?? {}) : { ...layer.params.props, ...patch.props })
+          const media = mediaPropProblem(manifest.props_schema, canonical, p.media_pool)
+          if (media) throw new MotifPropError(media)
+          if (rebinds) patch = { ...patch, props: canonical }
+        } catch (e) {
+          if (e instanceof MotifPropError) throw new CommandFailure({ error: 'InvalidArgument', field: 'props', detail: `${e.detail} — list_motifs reports this motif's props_schema` })
+          throw e
+        }
+      }
+    }
+  }
+  applyParamsPatch(layer, patch)
+
+  // Content-window model: after a Motif params update, if the cap-driving prop
+  // (e.g. `seconds`) shrank the content below the current window, clamp the
+  // geometry. Growing never resizes.
+  if (layer.params.kind === 'Motif') {
+    const params = layer.params as MotifParams
+    const manifest = catalog.get(params.motif_id)
+    if (manifest === undefined) return // unknown motif → no clamp
+    const contentDur = resolveMotifMaxDurUs(manifest, params.props)
+    if (contentDur === null) return // unbounded → no clamp
+
+    const tStart = layer.t_start_us
+    const tEnd = layer.t_end_us
+    const srcIn = approximateTime(sourceIn(params))
+    const rate = layerRateNumber(params)
+    const width = (tEnd - tStart) * rate
+
+    if (srcIn + width <= contentDur) return // grow / within content → no geometry change
+
+    // Clamp the window start into content (keep >= 0, < contentDur). Floor (not
+    // round) so newSrcIn can never round UP toward contentDur on off-grid inputs.
+    const maxSrcIn = Math.max(contentDur - 1, 0)
+    const fps = c.fps
+    const newSrcIn = snapFrameFloor(Math.min(srcIn, maxSrcIn), fps.num, fps.den)
+    // Largest grid t_end whose derived src_out stays <= contentDur.
+    const cappedEnd = snapFrameFloor(tStart + (contentDur - newSrcIn) / rate, fps.num, fps.den)
+    // Never collapse to zero-width (guards degenerate contentDur <= 0). The floor
+    // is ONE FRAME, not one µs: `tStart + 1` is off-grid, and validate's grid
+    // backstop would reject the whole commit — turning a silent 1 µs sliver into
+    // a failed edit whenever a motif's remaining content is under one frame.
+    const newTEnd = Math.max(cappedEnd, snapFrameCeil(tStart + 1, fps.num, fps.den))
+
+    writeSourceWindow(params, exactTime(newSrcIn), addTime(exactTime(newSrcIn), multiplyTime(exactTime(newTEnd - tStart), layerRate(params))))
+    layer.t_end_us = newTEnd
+    applyDurationAutofit(c)
+  }
+}
+
+/** native/src/state/layer.rs `parse_effect_param_key` — parse
+ *  "effects[<uuid>].params[<key>]" → [effectId, paramKey]; null otherwise. (A
+ *  non-UUID id still parses here but the subsequent effect lookup fails → resolves
+ *  to null, matching the Rust outcome.) */
+export function parseEffectParamKey(key: string): [Uuid, string] | null {
+  const m = /^effects\[([^\]]+)\]\.params\[(.+)\]$/.exec(key)
+  return m ? [m[1], m[2]] : null
+}
+
+export const TRANSFORM_F64_KEYS = ['x', 'y', 'scale_x', 'scale_y', 'rotation_deg', 'anchor_x', 'anchor_y']
+
+/** layer.rs `resolve_animated_f64_mut` / `resolve_animated_f64_mut_on_layer` —
+ *  resolve a param-key to a setter for its Animated<f64> slot, or null if the key
+ *  is unknown / invalid on this kind. Effect-param paths look in layer.effects
+ *  (and require the param slot to already exist). */
+function f64Lens(layer: Layer, key: string): { set(v: Animated<number>): void } | null {
+  const eff = parseEffectParamKey(key)
+  if (eff) {
+    const e = layer.effects.find((x) => x.id === eff[0])
+    if (!e || !(eff[1] in e.params)) return null
+    return { set: (v) => { e.params[eff[1]] = v } }
+  }
+  const p = layer.params
+  if (p.kind === 'Color') return null
+  if (p.kind === 'Audio') {
+    if (key === 'gain_db') return { set: (v) => { p.gain_db = v } }
+    if (key === 'pan') return { set: (v) => { p.pan = v } }
+    return null
+  }
+  // VideoClip | ImageOverlay | Text | Motif | CompositionRef — transform +
+  // opacity. A Group joins by having exactly that pair and nothing else
+  // animatable (ADR 0052 §4), so it needs no arm of its own here.
+  if (key === 'opacity') return { set: (v) => { p.opacity = v } }
+  if (key === 'x' || key === 'y' || key === 'path_progress') return positionTrack(p.transform.position, key) ? { set: (v) => { setPositionTrack(p.transform.position, key, v) } } : null
+  if (TRANSFORM_F64_KEYS.includes(key)) return { set: (v) => { (p.transform as unknown as Record<string, Animated<number>>)[key] = v } }
+  return null
+}
+
+/** layer.rs:286-374 read sibling of f64Lens — resolve a param-key to its CURRENT
+ *  Animated<f64> (a reference into the layer), or null if unknown/invalid on this
+ *  kind. Effect-param paths read layer.effects (None when the param slot is
+ *  absent → caller maps to UnknownKeyframeParam). Read-only: never inserts. */
+export function resolveAnimatedF64(layer: Layer, key: string): Animated<number> | null {
+  const eff = parseEffectParamKey(key)
+  if (eff) {
+    const e = layer.effects.find((x) => x.id === eff[0])
+    return e ? (e.params[eff[1]] ?? null) : null
+  }
+  const p = layer.params
+  if (p.kind === 'Color') return null
+  if (p.kind === 'Audio') {
+    if (key === 'gain_db') return p.gain_db
+    if (key === 'pan') return p.pan
+    return null
+  }
+  // VideoClip | ImageOverlay | Text | Motif | CompositionRef — transform +
+  // opacity, the read sibling of `f64Lens`' one arm for all five.
+  if (key === 'opacity') return p.opacity
+  if (key === 'x' || key === 'y' || key === 'path_progress') return positionTrack(p.transform.position, key)
+  if (TRANSFORM_F64_KEYS.includes(key)) return (p.transform as unknown as Record<string, Animated<number>>)[key] ?? null
+  return null
+}
+
+/** Colour sibling of `f64Lens`: the ONE animatable colour, `color` on a Text or
+ *  a Color layer.
+ *
+ *  A Text layer's shadow and outline colours are deliberately absent — they are
+ *  plain `Rgba` fields, not `Animated` tracks, so there is no slot for a lens to
+ *  resolve to and no key that reaches one. */
+function rgbaLens(layer: Layer, key: string): { set(v: Animated<Rgba>): void } | null {
+  if (key !== 'color') return null
+  const p = layer.params
+  if (p.kind === 'Text' || p.kind === 'Color') return { set: (v) => { p.color = v } }
+  return null
+}
+
+/** Read sibling of `rgbaLens` — the current `Animated<Rgba>` for a param key, or
+ *  null when this kind has no such track. */
+export function resolveAnimatedRgba(layer: Layer, key: string): Animated<Rgba> | null {
+  if (key !== 'color') return null
+  const p = layer.params
+  return p.kind === 'Text' || p.kind === 'Color' ? p.color : null
+}
+
+/** Locate the layer (LayerNotFound), resolve the param key
+ *  (UnknownKeyframeParam), return its t_start_us + current track. Used by the MCP
+ *  keyframe tools for timeline-absolute↔layer-local conversion. Read-only (no
+ *  commit, no id mint).
+ *
+ *  An effect param resolves on the effect it names (EffectNotFound when the
+ *  layer has none by that id), and an unset param of a catalogued kind reads as
+ *  `Static(<catalog default>)` — the value the render and the inspector use for
+ *  it (`shared/effects/params.ts`) — so it can be keyed with no prior write.
+ *
+ *  The track's value type is decided by the KEY, so the union it answers is
+ *  already narrowed for the caller: `color` reads through `rgbaLens`' sibling,
+ *  every other key through `f64Lens`'. */
+export function readLayerTrack(p: Project, id: Uuid, paramKey: string): { tStartUs: number; track: Animated<TrackValue> } {
+  const { layer } = requireLayer(p, id)
+  const eff = parseEffectParamKey(paramKey)
+  if (eff) {
+    const e = layer.effects.find((x) => x.id === eff[0])
+    if (!e) throw new CommandFailure({ error: 'EffectNotFound', effect: eff[0] })
+    const stored = e.params[eff[1]]
+    const dflt = effectParamDefault(e.kind, eff[1])
+    if (stored) return { tStartUs: layer.t_start_us, track: stored }
+    if (dflt !== null) return { tStartUs: layer.t_start_us, track: { mode: 'Static', value: dflt } }
+    throw new CommandFailure({ error: 'UnknownKeyframeParam', layer: id, param_key: paramKey })
+  }
+  const track: Animated<TrackValue> | null = isColorParam(paramKey)
+    ? resolveAnimatedRgba(layer, paramKey)
+    : resolveAnimatedF64(layer, paramKey)
+  if (track === null) throw new CommandFailure({ error: 'UnknownKeyframeParam', layer: id, param_key: paramKey })
+  return { tStartUs: layer.t_start_us, track }
+}
+
+/** A wire `Rgba`: four INTEGER channels in [0, 255]. Checked structurally
+ *  because a track arrives as untyped JSON from both edges — MCP parses it, the
+ *  renderer does not — and an `{r,g,b}` short of one channel reaches the OkLab
+ *  mix as NaN, which is a colour nothing renders. */
+function isWireRgba(v: unknown): v is Rgba {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false
+  const o = v as Record<string, unknown>
+  return (['r', 'g', 'b', 'a'] as const).every((ch) => {
+    const n = o[ch]
+    return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= 255
+  })
+}
+
+/** How a rejected value reads back to whoever sent it. The client drops
+ *  `error.data`, so the detail line is the only channel a caller can correct
+ *  itself from — name what arrived, not just that it was wrong. */
+function describeTrackValue(v: unknown): string {
+  if (v === null) return 'null'
+  if (Array.isArray(v)) return 'an array'
+  if (typeof v === 'object') return isWireRgba(v) ? 'an {r,g,b,a} colour' : 'an object'
+  return typeof v === 'number' && !Number.isFinite(v) ? 'a non-finite number' : `a ${typeof v}`
+}
+
+/** Refuse a track whose values are not the type its param key takes. The KEY
+ *  decides — `color` carries `{r,g,b,a}`, every other param a number — so a
+ *  caller that sent the wrong one is told which type the param it named takes,
+ *  rather than having the payload silently pick a lens for it. */
+function checkTrackValueType(paramKey: string, track: Animated<TrackValue>): void {
+  const wantRgba = isColorParam(paramKey)
+  const values = track.mode === 'Static' ? [track.value] : track.value.map((k) => k.value)
+  for (const v of values) {
+    if (wantRgba ? isWireRgba(v) : typeof v === 'number' && Number.isFinite(v)) continue
+    throw new CommandFailure({ error: 'InvalidArgument', field: 'track',
+      detail: wantRgba
+        ? `param '${paramKey}' takes {r,g,b,a} values (integers 0..255), got ${describeTrackValue(v)}`
+        : `param '${paramKey}' takes number values, got ${describeTrackValue(v)}` })
+  }
+}
+
+/** update_layer_param_track (mutation half): lock-check →
+ *  normalize (EmptyKeyframeTrack on empty) → value-type check → locate →
+ *  resolve, lazily inserting Static(0) for a missing slot of an EXISTING effect
+ *  → re-resolve (UnknownKeyframeParam) → assign. NO autofit (a keyframe write
+ *  never moves t_start/t_end).
+ *
+ *  Two value types, picked by the param key: `color` lands through `rgbaLens`,
+ *  every other key through `f64Lens`. Everything between — snap, sort, dedupe,
+ *  the tangent solve — is generic over the value; only quantization is
+ *  numbers-only (a channel is already an integer), and the Auto solve runs with
+ *  no scalar projection for colour, which sends its Auto sides to the identity
+ *  coordinates. */
+export function applyUpdateLayerParamTrack(p: Project, id: Uuid, paramKey: string, track: Animated<TrackValue>): void {
+  const { comp: c, layer } = checkLayerEditable(p, id) // LayerNotFound / TrackLocked — BEFORE normalize
+  // Located BEFORE normalize because the write-time grid depends on the layer's
+  // kind: an audio envelope — gain_db, pan, and the audio-role automation —
+  // quantizes on the 48 kHz lattice, so audio automation is never coarser than the
+  // mixer that renders it (spec R2-D6). Error ordering: EmptyKeyframeTrack precedes
+  // UnknownKeyframeParam.
+  //
+  // This changes the WRITE grid only. Keyframe times remain deliberately unenforced
+  // by validate (see validate.ts's validateLayerParams note): trim/split rebase keys
+  // by a delta, and re-snapping the shifted set would dedupe-merge two keys that
+  // landed on one quantum — authored data lost.
+  if (!normalizeKeyframes(track, (t) => snapOnGrid(t, gridForLayerKind(layer.params.kind, c.fps)))) {
+    throw new CommandFailure({ error: 'EmptyKeyframeTrack', layer: id, param_key: paramKey })
+  }
+  // Values, after the times. Both value steps — the type check here and the
+  // range quantization below — run before `lens.set`, because the lazy insert
+  // further down WRITES to the project and a refusal has to leave the project
+  // byte-identical, the same ordering rule applyParamsPatch's text-box mode
+  // check spells out.
+  //
+  // Running before the key is known valid is safe: an unrecognised key is not a
+  // colour key, so it takes the scalar path, where the effect-param fallback
+  // carries no range and cannot refuse — and `f64Lens` still answers
+  // UnknownKeyframeParam for it further down. Only keys that ARE in the table
+  // carry a range, and those are exactly the valid ones.
+  checkTrackValueType(paramKey, track)
+  // The static-only rule for `audio.*` effect params (ADR 0063), at the write
+  // entry `set_keyframe` / `remove_keyframe` / `retime_keyframe` all funnel
+  // through. Before the lazy slot insert below for the same reason as the two
+  // value steps: a refusal leaves the project byte-identical.
+  const audioEff = parseEffectParamKey(paramKey)
+  if (audioEff) checkAudioEffectParamStatic(layer.effects.find((x) => x.id === audioEff[0]), audioEff[1], track)
+  if (isColorParam(paramKey)) {
+    // `track` holds `Rgba` values — `checkTrackValueType` just proved it, and the
+    // narrowing is by param key, which no control-flow analysis can follow.
+    const rgba = track as Animated<Rgba>
+    // No `quantizeTrack`: a channel is already an integer, and the precision
+    // table is keyed by f64 param. The Auto solve runs with NO scalar
+    // projection — a colour has no single axis to take a slope on — which sends
+    // every Auto side to the identity coordinates and skips the Smooth rule.
+    if (rgba.mode === 'Keyframed') rgba.value = solveAutoTangents(rgba.value, null)
+    const colorLens = rgbaLens(layer, paramKey)
+    if (!colorLens) throw new CommandFailure({ error: 'UnknownKeyframeParam', layer: id, param_key: paramKey })
+    colorLens.set(rgba)
+    return
+  }
+  const scalar = track as Animated<number>
+  if (paramKey==='path_progress' && scalar.mode==='Keyframed' && scalar.value.length>MAX_RESIDENT_KEYFRAMES) throw new CommandFailure({error:'InvalidArgument',field:'path_progress',detail:`Path progress supports at most ${MAX_RESIDENT_KEYFRAMES} keys`})
+  if (paramKey==='path_progress' && scalar.mode==='Keyframed' && ![scalar.extrapolate.before,scalar.extrapolate.after].every(v=>['Hold','Loop','PingPong'].includes(v))) throw new CommandFailure({error:'InvalidArgument',field:'extrapolate',detail:'Path progress supports Hold, Loop and PingPong'})
+  quantizeTrack(paramKey, scalar)
+  // Tangents, after the values: every Auto side and every Smooth pair of Free
+  // sides is solved HERE — after snap / sort / dedupe / quantize, so the stored
+  // numbers describe the stored keys — and nowhere else. The engine never
+  // solves, so preview, export, the curve graph and get_param_track all read
+  // these same explicit coordinates; trim / split / move carry them through
+  // unchanged, which is what keeps motion byte-identical across a cut.
+  if (scalar.mode === 'Keyframed') scalar.value = solveAutoTangents(scalar.value, (v) => v)
+  if (f64Lens(layer, paramKey) === null) {
+    const eff = parseEffectParamKey(paramKey)
+    if (eff) {
+      const e = layer.effects.find((x) => x.id === eff[0])
+      // A placeholder that lives for two statements: it exists only so the
+      // re-resolve below finds the key present, and `lens.set(track)` overwrites
+      // it unconditionally. NOT a default — the catalog's `default`
+      // (`shared/effects/params.ts`) is, applied at render (`EffectChain`), in
+      // the inspector (`EffectParamField`) and by the MCP read (`readLayerTrack`):
+      // absent means default.
+      if (e && !(eff[1] in e.params)) e.params[eff[1]] = { mode: 'Static', value: 0 }
+    }
+  }
+  const lens = f64Lens(layer, paramKey)
+  if (!lens) throw new CommandFailure({ error: 'UnknownKeyframeParam', layer: id, param_key: paramKey })
+  lens.set(scalar)
+}

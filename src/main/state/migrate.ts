@@ -1,0 +1,562 @@
+// apps/desktop/src/main/state/migrate.ts
+//
+// The version-keyed upgrade chain for `project.json`. One step per schema
+// generation, applied in sequence: v_n → v_n+1 → … → the build's version.
+// `persistence.ts` owns the refusals (missing/non-numeric version, a file NEWER
+// than the build) and calls in here for everything older.
+//
+// THE ONE RULE this file exists to enforce: a shape CONVERSION is a step here,
+// with a version number attached. It is NOT an unconditional rewrite in
+// `parseProject`. The version-blind normalize pass over there is for DEFAULTS
+// (an additive optional field materializing) and VALIDITY REPAIRS (off-grid
+// geometry, a flag that contradicts the data it describes) — both of which are
+// idempotent statements about the *current* shape and carry no version. A
+// conversion states "the shape used to be X and is now Y", which is exactly what
+// a version number is for. Before this file existed the codebase had no way to
+// say that, so three conversions rode the blind pass and the version never moved
+// (see ADR 0047).
+//
+// WHY THIS FILE IMPORTS NOTHING FROM ./model — and must keep importing nothing:
+// a step is a frozen statement about a shape that has already passed into
+// history. If a step read `SCHEMA_VERSION`, a type, or `defaultSettings()` from
+// the live model, it would silently re-anchor to whatever the model looks like
+// years later — the step's meaning would change without the step being edited,
+// and the failure would only ever surface on a real user's old file. So every
+// step works on the WIRE object (`Record<string, unknown>`), declares local
+// types for just the fields it touches, and writes frozen literals. There is no
+// linter in this repo; `migrate.contract.test.ts` asserts the import ban by
+// reading this file's source.
+//
+// The runner — never a step — owns `schema_version`: a step that had to stamp
+// its own output version could forget, and a forgotten stamp is silent (the next
+// step's `from` would not match and the walk would report a hole that isn't one).
+
+/** The oldest on-disk schema version this build can upgrade FROM.
+ *
+ *  v1 is the initial format, not yet published. Nothing before it was released — the
+ *  pre-release builds cut over rather than migrating (`docs/data-model.md`
+ *  §Versioning) — so there is deliberately no step below this floor and a file
+ *  claiming one is refused rather than guessed at. */
+export const MIN_SCHEMA_VERSION = 1
+
+/** External facts absent from old project.json. No live model or defaults enter
+ * a migration: the host supplies the original Motif's manifest dimensions. */
+export interface MigrationContext {
+  motifSize?: (id: string, version: number) => readonly [number, number] | null
+  mediaSize?: (id: string) => readonly [number, number] | null
+  /** v3 numeric interpolation contract; injected canonical Wasm evaluator.
+   * No current model defaults or serializers are allowed in the conversion. */
+  sampleScalar?: (track: unknown, times: readonly number[], fallback: number) => number[]
+  samplePosition?: (position: unknown, times: readonly number[]) => { x: number; y: number }[]
+  onBake?: (report: PositionBakeReport) => void
+  /** v5 → v6: the package a v5 project's Motif id rendered (`main/motif/
+   *  legacyResolve.ts`), with the lineage and library source its table entry
+   *  takes; null when none did. */
+  legacyMotif?: (id: string) => LegacyMotif | null
+  /** v5 → v6: a package the table now says is in `Motifs/<id>/`. The step
+   *  only plans it; the open copies it once the upgraded project validates. */
+  onMotifCopy?: (copy: MotifCopy) => void
+  /** v5 → v6: a new lineage uid for a Motif nothing resolved. */
+  newUid?: () => string
+  /** v6 → v7: a file the upgrade moved a record to. The step only plans it;
+   *  the open carries it out. */
+  onFile?: (plan: FilePlan) => void
+}
+
+/** A file to move or copy inside the project folder; both paths are
+ *  `/`-separated and relative to it. `recorded` is the absolute path the old
+ *  file named, for a copy whose source is not in the folder (a project copied
+ *  before its voiceover was). */
+export interface FilePlan { from: string; to: string; mode: 'move' | 'copy'; recorded?: string }
+
+export interface LegacyMotif {
+  uid: string
+  revision: string
+  from: { uid: string; version: number; revision: string } | null
+}
+
+/** A package the table names, for the open to copy into `Motifs/<id>/`;
+ *  `source` is the v5 id it resolved as, when the key differs from it. */
+export interface MotifCopy { id: string; source?: string; revision: string }
+
+export interface PositionBakeReport {
+  compositionId: string
+  layerId: string
+  samples: number
+  previousMode: 'XY' | 'Path'
+}
+
+export interface MigrationStep {
+  /** The schema version this step READS. It produces `from + 1`. */
+  from: number
+  /** Convert the wire object in place. Receives the runner's private clone, so
+   *  mutation is safe and expected; the caller's object is never touched. */
+  apply(wire: Record<string, unknown>, context?: MigrationContext): void
+}
+
+/** The chain, in ascending `from` order.
+ *
+ *  v1 → v2 preserves existing clip silence when removing the inspector mute toggle.
+ *  `migrate.completeness.test.ts` fails the build if a `SCHEMA_VERSION` bump
+ *  arrives without one (and without its committed fixture). */
+export const STEPS: readonly MigrationStep[] = [{
+  from: 1,
+  apply(wire) {
+    // Visit every composition, including Groups. Only a clip's mute is folded
+    // into enabled; track flags, role mixing and linked members remain independent.
+    const compositions = wire.compositions as Record<string, { tracks?: unknown }> | undefined
+    if (!compositions || typeof compositions !== 'object') return
+    for (const composition of Object.values(compositions)) {
+      if (!Array.isArray(composition?.tracks)) continue
+      for (const track of composition.tracks) {
+        if (!Array.isArray(track?.layers)) continue
+        for (const layer of track.layers) {
+          if (layer?.params?.kind !== 'Audio' || layer.params.mute !== true) continue
+          layer.enabled = false
+          layer.params.mute = false
+        }
+      }
+    }
+  },
+}, {
+  from: 2,
+  apply(wire) {
+    const compositions = wire.compositions as Record<string, { tracks?: unknown }> | undefined
+    if (!compositions || typeof compositions !== 'object') return
+    for (const composition of Object.values(compositions)) {
+      if (!Array.isArray(composition?.tracks)) continue
+      for (const track of composition.tracks) {
+        if (!Array.isArray(track?.layers)) continue
+        for (const layer of track.layers) {
+          const params = layer?.params
+          if (!params || !['VideoClip', 'Audio', 'ImageOverlay', 'Motif', 'CompositionRef'].includes(params.kind)) continue
+          // Old VideoClip.speed was inert. Do NOT recurse into Motif props or
+          // preserve the old number as a second, accidentally live rate.
+          if (params.kind === 'VideoClip') delete params.speed
+          params.time_map = { kind: 'Affine', rate: { num: 1, den: 1 } }
+          params.frame_interpolation = { kind: 'FrameSampling' }
+          if (params.kind === 'Audio' || params.kind === 'CompositionRef') params.preserve_pitch = true
+          if (params.kind === 'ImageOverlay' || params.kind === 'Motif') {
+            const start = params.kind === 'Motif' ? (params.src_in_us ?? 0) : 0
+            params.content_window = { in_us: start, out_us: start + layer.t_end_us - layer.t_start_us }
+          }
+        }
+      }
+    }
+  },
+}, {
+  from: 3,
+  apply(wire, context = {}) {
+    // Frozen v3/v4 wire shapes. Text already stored its anchor position.
+    type Scalar = { mode: 'Static'; value: number } | {
+      mode: 'Keyframed'; value: { value: number; [key: string]: unknown }[]; extrapolate?: { before: string; after: string }
+    }
+    type Transform = {
+      position: { mode: 'XY'; x: Scalar; y: Scalar } | {
+        mode: 'Path'; path: { nodes: { point: { x: number; y: number } }[] }
+      }
+      anchor_x?: Scalar; anchor_y?: Scalar; scale_x: Scalar; scale_y: Scalar
+    }
+    type Fraction = { num: number; den: number }
+    type Composition = { width: number; height: number; fps: Fraction; duration_us: number;
+      transitions?: { duration_us: number }[]; tracks: { layers: {
+      id: string; t_start_us: number; t_end_us: number; params: { kind: string; media?: string; composition?: string;
+        motif_id?: string; motif_version?: number; transform?: Transform;
+        src_in_us?: number; time_map?: { kind: string; rate: Fraction };
+        source_phase?: { in: Fraction } }
+    }[] }[] }
+    const compositions = wire.compositions as Record<string, Composition>
+    const pool = wire.media_pool as Record<string, { metadata?: { video?: { width: number; height: number } } }>
+    const constant = (track: Scalar | undefined, fallback: number): number | null => {
+      if (!track) return fallback
+      if (track.mode === 'Static') return track.value
+      if (track.value.length === 0) return fallback
+      const value = track.value[0].value
+      return track.value.every(key => key.value === value) ? value : null
+    }
+    const shift = (track: Scalar, offset: number): Scalar => {
+      if (track.mode === 'Static') track.value += offset
+      else if (!track.value.length) return { mode: 'Static', value: offset }
+      else for (const key of track.value) key.value += offset
+      return track
+    }
+    // Rational sample clocks preserve sub-microsecond Group phases/rates. The
+    // direct composition grid uses the shipped v3 half-up microsecond policy.
+    const rational = (n: bigint, d = 1n): Fraction => {
+      if (d <= 0n) throw new Error('Schema v3 → v4: invalid sample denominator')
+      let a = n < 0n ? -n : n, b = d
+      while (b) { const r = a % b; a = b; b = r }
+      n /= a; d /= a
+      const num = Number(n), den = Number(d)
+      if (!Number.isSafeInteger(num) || !Number.isSafeInteger(den)) throw new Error('Schema v3 → v4: sample time overflow')
+      return { num, den }
+    }
+    const add = (a: Fraction, b: Fraction) => rational(BigInt(a.num) * BigInt(b.den) + BigInt(b.num) * BigInt(a.den), BigInt(a.den) * BigInt(b.den))
+    const mul = (a: Fraction, b: Fraction) => rational(BigInt(a.num) * BigInt(b.num), BigInt(a.den) * BigInt(b.den))
+    const value = (t: Fraction) => t.num / t.den
+    let sampleClocks: Map<string, Map<string, Fraction>> | undefined
+    const clocks = () => {
+      if (sampleClocks) return sampleClocks
+      const result = new Map<string, Map<string, Fraction>>()
+      let visits = 0
+      const visit = (id: string, at: Fraction, ancestors: Set<string>) => {
+        if (ancestors.has(id)) throw new Error('Schema v3 → v4: cyclic Group reference')
+        const c = compositions[id]
+        if (!c) throw new Error(`Schema v3 → v4: missing composition ${id}`)
+        const key = `${at.num}/${at.den}`
+        let times = result.get(id)
+        if (!times) { times = new Map(); result.set(id, times) }
+        if (times.has(key)) return
+        if (++visits > 2_000_000) throw new Error('Schema v3 → v4: migration sample budget exceeded; original project unchanged')
+        times.set(key, at)
+        const stack = new Set(ancestors).add(id)
+        const margin = Math.max(0, ...(c.transitions ?? []).map(t => t.duration_us))
+        for (const track of c.tracks ?? []) for (const layer of track.layers ?? []) {
+          const p = layer.params
+          if (p.kind !== 'CompositionRef' || value(at) < layer.t_start_us - margin || value(at) > layer.t_end_us + margin) continue
+          if (p.time_map && p.time_map.kind !== 'Affine') throw new Error('Schema v3 → v4: unsupported Group time map')
+          const local = add(at, { num: -layer.t_start_us, den: 1 })
+          const start = add({ num: p.src_in_us ?? 0, den: 1 }, p.source_phase?.in ?? { num: 0, den: 1 })
+          visit(p.composition!, add(start, mul(local, p.time_map?.rate ?? { num: 1, den: 1 })), stack)
+        }
+      }
+      for (const [id, c] of Object.entries(compositions)) {
+        if (!c.fps || !(c.fps.num > 0 && c.fps.den > 0) || !Number.isFinite(c.duration_us)) throw new Error('Schema v3 → v4: invalid composition clock')
+        const count = Math.ceil(c.duration_us * c.fps.num / (1_000_000 * c.fps.den))
+        if (count > 2_000_000) throw new Error('Schema v3 → v4: migration sample budget exceeded; original project unchanged')
+        for (let frame = 0; frame <= count; frame++) {
+          visit(id, { num: Math.round(frame * 1_000_000 * c.fps.den / c.fps.num), den: 1 }, new Set())
+        }
+      }
+      sampleClocks = result
+      return result
+    }
+    let keySequence = 0
+    const usedIds = new Set<string>()
+    // Key IDs remain unique even when an older project contains migration IDs.
+    JSON.stringify(wire, (key, v) => { if (key === 'id' && typeof v === 'string') usedIds.add(v); return v })
+    const keyId = () => {
+      let id: string
+      do { id = `00000000-0000-4000-8000-${(++keySequence).toString(16).padStart(12, '0')}` } while (usedIds.has(id))
+      usedIds.add(id); return id
+    }
+    for (const [compositionId, composition] of Object.entries(compositions ?? {})) {
+      for (const track of composition.tracks ?? []) for (const layer of track.layers ?? []) {
+        const p = layer.params
+        if (!['VideoClip', 'ImageOverlay', 'Motif', 'CompositionRef'].includes(p.kind)) continue
+        const t = p.transform
+        if (!t) throw new Error(`Schema v3 → v4: clip ${layer.id} has no transform`)
+        const ax = constant(t.anchor_x, 0.5), ay = constant(t.anchor_y, 0.5)
+        const sx = constant(t.scale_x, 1), sy = constant(t.scale_y, 1)
+        const factor = (anchor: number | null, scale: number | null) =>
+          anchor === 0 || scale === 0 ? 0 : anchor !== null && scale !== null ? anchor * Math.abs(scale) : null
+        const fx = factor(ax, sx), fy = factor(ay, sy)
+        let size: readonly [number, number] | null | undefined
+        if (p.kind === 'Motif') size = context.motifSize?.(p.motif_id!, p.motif_version!)
+        else {
+          const source = p.kind === 'CompositionRef' ? compositions[p.composition!] : pool?.[p.media!]?.metadata?.video
+          if (source) size = [source.width, source.height]
+          else if (p.media) size = context.mediaSize?.(p.media)
+        }
+        if ((fx !== 0 || fy !== 0) && (!size || !size.every(v => Number.isFinite(v) && v > 0))) {
+          throw new Error(`Schema v3 → v4: source dimensions unavailable for ${p.kind} clip ${layer.id}` +
+            (p.kind === 'Motif' ? ` (${p.motif_id} v${p.motif_version}); restore its matching Motif manifest` : '; restore its media metadata') +
+            '. The original project was not changed.')
+        }
+        if (fx === null || fy === null) {
+          if (!context.sampleScalar || !context.samplePosition) throw new Error('Schema v3 → v4: animation evaluator unavailable')
+          const margin = Math.max(0, ...(composition.transitions ?? []).map(t => t.duration_us))
+          const span = layer.t_end_us - layer.t_start_us
+          const times = new Map<string, Fraction>()
+          for (const at of clocks().get(compositionId)?.values() ?? []) {
+            const local = add(at, { num: -layer.t_start_us, den: 1 })
+            if (value(local) >= -margin && value(local) <= span + margin) times.set(`${local.num}/${local.den}`, local)
+          }
+          for (const num of [0, span]) times.set(`${num}/1`, { num, den: 1 })
+          const exact = [...times.values()].sort((a, b) => value(a) - value(b))
+          // Fail atomically rather than creating a track the v4 evaluator would
+          // silently truncate. The cap is a frozen v4 wire/runtime constraint.
+          if (exact.length > 4096) throw new Error(`Schema v3 → v4: clip ${layer.id} requires ${exact.length} position samples (limit 4096); original project unchanged`)
+          const numeric = exact.map(value)
+          const points = context.samplePosition(t.position, numeric)
+          const axes = ['x', 'y'] as const
+          const tracks = axes.map((axis, index) => {
+            const anchors = context.sampleScalar!(t[axis === 'x' ? 'anchor_x' : 'anchor_y'], numeric, 0.5)
+            const scales = context.sampleScalar!(t[axis === 'x' ? 'scale_x' : 'scale_y'], numeric, 1)
+            return { mode: 'Keyframed' as const, value: exact.map((at, i) => {
+              const t_us = Math.floor(value(at))
+              const remainder = add(at, { num: -t_us, den: 1 })
+              const coordinate = points[i][axis] + anchors[i] * Math.abs(scales[i]) * size![index]
+              if (!Number.isFinite(coordinate)) throw new Error(`Schema v3 → v4: invalid sampled position for ${layer.id}`)
+              return { id: keyId(), t_us, ...(remainder.num ? { time_fraction: remainder } : {}), value: coordinate,
+                in: { x: 2 / 3, y: 2 / 3, mode: 'Free' }, out: { x: 1 / 3, y: 1 / 3, mode: 'Free' },
+                continuity: 'Broken', segment: { kind: 'Linear' } }
+            }), extrapolate: { before: 'Hold', after: 'Hold' } }
+          })
+          const previousMode = t.position.mode
+          t.position = { mode: 'XY', x: tracks[0], y: tracks[1] }
+          context.onBake?.({ compositionId, layerId: layer.id, samples: exact.length, previousMode })
+          continue
+        }
+        const dx = fx === 0 ? 0 : fx * size![0], dy = fy === 0 ? 0 : fy * size![1]
+        if (t.position.mode === 'XY') { t.position.x = shift(t.position.x, dx); t.position.y = shift(t.position.y, dy) }
+        else for (const node of t.position.path.nodes) { node.point.x += dx; node.point.y += dy }
+      }
+    }
+  },
+}, {
+  from: 4,
+  apply(wire) {
+    // v5 tags visual layers with a graphic role. Every existing Text, Motif and
+    // ImageOverlay layer, in every composition, is untagged: a Motif's manifest
+    // role applies at placement only and is NOT back-filled here.
+    const compositions = wire.compositions as Record<string, { tracks?: unknown }> | undefined
+    if (!compositions || typeof compositions !== 'object') return
+    for (const composition of Object.values(compositions)) {
+      if (!Array.isArray(composition?.tracks)) continue
+      for (const track of composition.tracks) {
+        if (!Array.isArray(track?.layers)) continue
+        for (const layer of track.layers) {
+          const params = layer?.params
+          if (!params || !['Text', 'Motif', 'ImageOverlay'].includes(params.kind)) continue
+          params.graphic_role = null
+        }
+      }
+    }
+  },
+}, {
+  from: 5,
+  apply(wire, context = {}) {
+    // v6 renders each Motif from the project's own copy, named in a table.
+    // Every id a Motif layer of any composition references gets an entry: the
+    // package v5 rendered for it, planned as a copy, or a missing entry with a
+    // lineage of its own when nothing resolved. An open is never refused for
+    // a Motif. Layers drop `motif_version`, which only told how old a layer's
+    // binding was: the table's revision says what it renders.
+    type Entry = { uid: string; revision: string | null; from: LegacyMotif['from'] }
+    type MotifLayer = { params: { kind: 'Motif'; motif_id: string; motif_version?: unknown } }
+    const compositions = wire.compositions as Record<string, { tracks?: unknown }> | undefined
+    const layers: MotifLayer[] = []
+    for (const composition of Object.values(compositions ?? {})) {
+      if (!Array.isArray(composition?.tracks)) continue
+      for (const track of composition.tracks) {
+        if (!Array.isArray(track?.layers)) continue
+        for (const layer of track.layers) {
+          if (layer?.params?.kind === 'Motif' && typeof layer.params.motif_id === 'string') layers.push(layer as MotifLayer)
+        }
+      }
+    }
+    // A key is a folder name and the Motif's `motif://` host, which URL
+    // parsing lowercases, so v5 ids in another form (a hand-made library
+    // folder could be named anything) are keyed by their letters and digits,
+    // lowercased and joined by single dashes, and their layers follow. A key
+    // two ids come to takes the later one's lineage prefix, as an automatic
+    // copy does. Ids already in key form go first, so none is displaced.
+    // LANDMINE: the frozen twin of `isProjectMotifKey` and `projectMotifKey`
+    // (shared/motifs/projectMotifs.ts), which placement keys by; a key one
+    // rejects fails validation, refusing the open. Change both.
+    const isKey = (id: string) => id.length <= 63 && /^[a-z0-9_]+(?:-[a-z0-9_]+)*$/.test(id) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/.test(id)
+      && !(id in Object.prototype) && id !== 'prototype'
+    const keyFor = (id: string) => {
+      if (isKey(id)) return id
+      const key = id.toLowerCase().replace(/[^a-z0-9_]+/g, '-').slice(0, 63).replace(/^-+|-+$/g, '')
+      return isKey(key) ? key : 'motif'
+    }
+    const prefixed = (key: string, uid: string) => {
+      const suffix = '-' + uid.replace(/-/g, '').slice(0, 8).toLowerCase()
+      return key.slice(0, 63 - suffix.length).replace(/-+$/, '') + suffix
+    }
+    const newUid = context.newUid ?? (() => globalThis.crypto.randomUUID())
+    const ids = [...new Set(layers.map(l => l.params.motif_id))].sort()
+    const keys = new Map<string, string>()
+    const motifs: Record<string, Entry> = {}
+    for (const id of [...ids.filter(isKey), ...ids.filter(id => !isKey(id))]) {
+      const found = context.legacyMotif?.(id) ?? null
+      const entry: Entry = found ? { uid: found.uid, revision: found.revision, from: found.from } : { uid: newUid(), revision: null, from: null }
+      let key = keyFor(id)
+      if (Object.hasOwn(motifs, key)) key = prefixed(key, entry.uid)
+      keys.set(id, key)
+      motifs[key] = entry
+      if (found) context.onMotifCopy?.(key === id ? { id: key, revision: found.revision } : { id: key, source: id, revision: found.revision })
+    }
+    for (const layer of layers) {
+      layer.params.motif_id = keys.get(layer.params.motif_id)!
+      delete layer.params.motif_version
+    }
+    wire.motifs = Object.fromEntries(Object.keys(motifs).sort().map(key => [key, motifs[key]!]))
+  },
+}, {
+  from: 6,
+  apply(wire, context = {}) {
+    // v7 records where a media file sits as a project path: `/`-separated,
+    // relative, every segment a name each OS accepts. A path that leaves the
+    // folder (absolute, or any `..`) makes the item external: path_rel null,
+    // path_abs kept. Two different paths that come to one name, compared
+    // case-folded, are told apart by `-2`, `-3` before the extension; paths
+    // already valid go first, so none of them is renamed. A renamed file is
+    // found again on open by its content. The file stops holding what the
+    // runtime derives: path_abs of an item inside the folder, the derivative
+    // paths and the route's readiness slots. A voiceover the TTS cache held
+    // becomes a file under Media/Voiceover/, hashed on open. Never throws: an
+    // open is not refused for a path.
+    type Route = { route?: unknown; full_proxy?: unknown; format_version?: unknown }
+    type Item = { path_rel?: unknown; path_abs?: unknown; file_hash_blake3?: unknown; decode_route?: unknown
+      conform_path?: unknown; waveform_path?: unknown; thumbnails_dir?: unknown }
+    const pool = wire.media_pool as Record<string, Item> | undefined
+    if (!pool || typeof pool !== 'object') return
+    // LANDMINE: the frozen twin of the project path rules (shared/projectPath.ts,
+    // portable_file_name in native/src/state/project_path.rs). A path this
+    // writes that the live parser refuses fails the open; the step's fuzz test
+    // holds it to the live parser.
+    const utf8 = new TextEncoder()
+    const bytes = (s: string) => utf8.encode(s).length
+    const device = /^(con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])$/i
+    const reserved = /[<>:"|?*\\/\x00-\x1f]/g
+    const portable = (seg: string) => seg !== '' && seg !== '.' && seg !== '..' && !/[<>:"|?*\\/\x00-\x1f]/.test(seg)
+      && !/[. ]$/.test(seg) && !device.test(seg.split('.')[0]!) && seg.normalize('NFC') === seg && bytes(seg) <= 255
+    const clean = (name: string): string => {
+      const trimmed = name.normalize('NFC').replace(reserved, '_').replace(/[. ]+$/, '')
+      if (trimmed === '') return 'media'
+      const stem = trimmed.split('.')[0]!
+      return device.test(stem) ? `${stem}_${trimmed.slice(stem.length)}` : trimmed
+    }
+    // The cleaned name with suffix `-n` (none for 1), cut to 255 bytes keeping
+    // an extension of at most half that.
+    const named = (name: string, n: number): string => {
+      const c = clean(name)
+      const dot = c.lastIndexOf('.')
+      const [stem, ext] = dot > 0 && bytes(c.slice(dot)) <= 127 ? [c.slice(0, dot), c.slice(dot)] : [c, '']
+      const suffix = n === 1 ? '' : `-${n}`
+      let budget = 255 - bytes(suffix) - bytes(ext), cut = ''
+      for (const ch of stem) {
+        const b = bytes(ch)
+        if (b > budget) break
+        budget -= b; cut += ch
+      }
+      const out = clean(cut + suffix + ext)
+      return portable(out) ? out : `media${suffix}`
+    }
+    const fold = (s: string) => s.normalize('NFC').toLowerCase()
+    const taken = new Set<string>()
+    const chosen = new Map<string, string>()
+    // One output per input spelling: items that named one file still do. Two
+    // spellings equal but for case, with the same bytes, are one file on a
+    // volume that folds case (Windows, macOS), so they keep one name too.
+    const sameFile = new Map<string, string>()
+    const claim = (key: string, segments: string[], hash?: unknown): string => {
+      const twin = typeof hash === 'string' && /^[0-9a-f]{64}$/i.test(hash) ? `${fold(key)}\0${hash.toLowerCase()}` : null
+      const known = chosen.get(key) ?? (twin === null ? undefined : sameFile.get(twin))
+      if (known !== undefined) { chosen.set(key, known); return known }
+      const dirs = segments.slice(0, -1).map(seg => named(seg, 1))
+      let out = ''
+      for (let n = 1; out === '' || taken.has(fold(out)); n++) out = [...dirs, named(segments[segments.length - 1]!, n)].join('/')
+      taken.add(fold(out))
+      chosen.set(key, out)
+      if (twin !== null) sameFile.set(twin, out)
+      return out
+    }
+    const planned = new Set<string>()
+    const plan = (file: FilePlan) => {
+      if (planned.has(file.to)) return
+      planned.add(file.to)
+      context.onFile?.(file)
+    }
+
+    const inside: { item: Item; key: string; segments: string[] }[] = []
+    const voiceovers: { id: string; item: Item; key: string }[] = []
+    for (const [id, item] of Object.entries(pool)) {
+      if (!item || typeof item !== 'object') continue
+      if (typeof item.path_rel === 'string') {
+        const rel = item.path_rel.replace(/\\/g, '/').normalize('NFC')
+        const segments = rel.split('/').filter(seg => seg !== '' && seg !== '.')
+        if (/^(?:\/|[A-Za-z]:)/.test(rel) || segments.includes('..') || segments.length === 0) item.path_rel = null
+        else inside.push({ item, key: segments.join('/'), segments })
+      } else if (item.path_rel == null && typeof item.path_abs === 'string') {
+        const voiceover = /[\\/]Cache[\\/]voiceover[\\/]([0-9a-f]{64})\.mp3$/i.exec(item.path_abs)
+        if (voiceover) voiceovers.push({ id, item, key: voiceover[1]! })
+      }
+      const route = item.decode_route as Route | null | undefined
+      if (route && typeof route === 'object') {
+        // The proxy cache now names a full proxy by its recipe; a v7-recipe
+        // one under the old name keeps its bytes.
+        const hash = item.file_hash_blake3
+        if ((route.route === 'proxied' || route.route === 'native-sw') && route.format_version === 7
+          && typeof hash === 'string' && /^[0-9a-f]{64}$/i.test(hash) && typeof route.full_proxy === 'string'
+          && route.full_proxy.split(/[\\/]/).pop() === `${hash}.mp4`) {
+          plan({ from: `Cache/proxies/${hash}.mp4`, to: `Cache/proxies/${hash}.full-p7.mp4`, mode: 'move' })
+        }
+        item.decode_route = { route: route.route }
+      }
+      delete item.conform_path
+      delete item.waveform_path
+      delete item.thumbnails_dir
+    }
+    const valid = (i: (typeof inside)[number]) => i.segments.every(portable)
+    for (const { item, key, segments } of [...inside.filter(valid), ...inside.filter(i => !valid(i))]) {
+      item.path_rel = claim(key, segments, item.file_hash_blake3)
+      delete item.path_abs
+    }
+    for (const { id, item, key } of voiceovers) {
+      const to = claim(`\0voiceover:${key}`, ['Media', 'Voiceover', `voiceover-${key.slice(0, 8).toLowerCase()}.mp3`])
+      plan({ from: `Cache/voiceover/${key}.mp3`, to, mode: 'copy', recorded: item.path_abs as string })
+      item.path_rel = to
+      delete item.path_abs
+      item.file_hash_blake3 = `pending-${id}`
+    }
+  },
+}]
+
+export interface UpgradeOutcome {
+  /** The wire object at the target version. Identical reference to the input
+   *  when nothing ran; a clone when it did. */
+  wire: Record<string, unknown>
+  /** The version the input was at. */
+  from: number
+}
+
+/** Walk `wire` from its own version up to `to`.
+ *
+ *  `steps` is injectable so synthetic chains can exercise multi-step walks,
+ *  stamping, clone isolation and missing-step errors independently of the
+ *  currently registered conversions. Production always passes the default.
+ *
+ *  Clones once up front rather than mutating in place: a step that throws
+ *  half-way leaves the caller's object untouched, so the error path can report
+ *  the ORIGINAL file rather than a half-upgraded hybrid. */
+export function upgradeWire(
+  wire: Record<string, unknown>,
+  from: number,
+  to: number,
+  steps: readonly MigrationStep[] = STEPS,
+  context: MigrationContext = {},
+): UpgradeOutcome {
+  if (from === to) return { wire, from }
+  if (from > to) {
+    // Defensive: persistence.ts refuses newer-than-build before we are called.
+    throw new Error(`project schema v${from} is ahead of v${to}; there is no downgrade path`)
+  }
+  if (from < MIN_SCHEMA_VERSION) {
+    throw new Error(
+      `project schema v${from} predates the oldest upgradable version (v${MIN_SCHEMA_VERSION}) — ` +
+      `re-create the project in a fresh workspace.`,
+    )
+  }
+
+  const out = structuredClone(wire)
+  for (let v = from; v < to; v += 1) {
+    const step = steps.find((s) => s.from === v)
+    if (step === undefined) {
+      // Unreachable while the completeness test is green — it asserts the chain
+      // covers every version from MIN to current. Kept because "unreachable"
+      // depends on a test staying green, and a wrong upgrade is worse than a
+      // refused open.
+      throw new Error(
+        `no upgrade step from project schema v${v} to v${v + 1}: the migration chain is incomplete ` +
+        `(this build reads v${to}).`,
+      )
+    }
+    step.apply(out, context)
+    out.schema_version = v + 1
+  }
+  return { wire: out, from }
+}

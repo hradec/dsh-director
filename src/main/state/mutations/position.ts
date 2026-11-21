@@ -1,0 +1,82 @@
+import type { Project, Uuid } from '../model';
+import { CommandFailure } from '../errors';
+import { checkLayerEditable } from './helpers';
+import { positionProblem, translatePath, visitPositionTracks, type PositionAnimation } from '../../../shared/position';
+import { normalizeKeyframes } from './animated';
+import { snapFrameRound } from '../snap';
+import { solveAutoTangents } from '../../../shared/tangents';
+import { refuseRetiredKeyframeShape } from '../serialize';
+import { solvePathGeometry } from '../../../shared/pathGeometry';
+/** One atomic authoring command, shared by UI and MCP. */
+export function applySetPosition(project: Project, id: Uuid, input: PositionAnimation, geometryOnly = false): void {
+    const { layer, comp } = checkLayerEditable(project, id);
+    if (!('transform' in layer.params))
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'position', detail: 'This layer has no position' });
+    const position = structuredClone(input);
+    if (!position || typeof position !== 'object')
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'position', detail: 'Position requires a record' });
+    if (geometryOnly) {
+        if (position.mode !== 'Path' || layer.params.transform.position.mode !== 'Path')
+            throw new CommandFailure({ error: 'InvalidArgument', field: 'position', detail: 'Geometry editing requires Path mode' });
+        position.progress = layer.params.transform.position.progress;
+    }
+    const problem = positionProblem(position);
+    if (problem)
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'position', detail: problem });
+    if (position.mode === 'Path') position.path = solvePathGeometry(position.path);
+    try {
+        refuseRetiredKeyframeShape({ compositions: { c: { tracks: [{ layers: [{ id, params: { transform: { position } } }] }] } } });
+    }
+    catch (error) {
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'position', detail: String(error) });
+    }
+    if (!geometryOnly)
+        visitPositionTracks(position, track => {
+            normalizeKeyframes(track, t => snapFrameRound(t, comp.fps.num, comp.fps.den));
+            if (track.mode === 'Keyframed')
+                track.value = solveAutoTangents(track.value, v => v);
+        });
+    // Full records (including baked samples) retain numeric precision. Numeric
+    // inspector edits still pass through the per-param precision policy.
+    layer.params.transform.position = position;
+}
+/** Relative translation resolves on the authoritative state so successive
+ * gestures cannot overwrite one another using an older UI snapshot. */
+export function applyTranslatePath(project: Project, id: Uuid, dx: number, dy: number): void {
+    const { layer } = checkLayerEditable(project, id);
+    if (!Number.isFinite(dx) || !Number.isFinite(dy))
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'position', detail: 'Translation must be finite' });
+    if (!('transform' in layer.params) || layer.params.transform.position.mode !== 'Path')
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'position', detail: 'The layer must use Path mode' });
+    const next = translatePath(layer.params.transform.position, dx, dy);
+    const problem = positionProblem(next);
+    if (problem)
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'position', detail: problem });
+    layer.params.transform.position = next;
+}
+/** MCP `translate_position`: offset a layer's position by (dx, dy) composition
+ *  px in either mode, keeping its motion — every XY key value (or the static
+ *  value), or every path node with its handles and progress (`applyTranslatePath`).
+ *  Tangents are unit-square shapes, so a uniform offset leaves them as they are. */
+export function applyTranslatePosition(project: Project, id: Uuid, dx: number, dy: number): void {
+    const { layer } = checkLayerEditable(project, id);
+    if (!('transform' in layer.params))
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'position', detail: `layer ${id} is a ${layer.params.kind} layer, which has no position` });
+    if (!Number.isFinite(dx) || !Number.isFinite(dy))
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'position', detail: 'Translation must be finite' });
+    const position = layer.params.transform.position;
+    if (position.mode === 'Path') { applyTranslatePath(project, id, dx, dy); return; }
+    // A plain copy of the draft (structuredClone cannot read an immer proxy);
+    // the record is JSON by construction.
+    const next = JSON.parse(JSON.stringify(position)) as typeof position;
+    const shift = (track: typeof next.x, d: number): void => {
+        if (track.mode === 'Static') track.value += d;
+        else for (const k of track.value) k.value += d;
+    };
+    shift(next.x, dx);
+    shift(next.y, dy);
+    const problem = positionProblem(next);
+    if (problem)
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'position', detail: problem });
+    layer.params.transform.position = next;
+}

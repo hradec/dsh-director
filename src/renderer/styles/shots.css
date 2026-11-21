@@ -1,0 +1,872 @@
+/* ============================================================
+   Shots Panel — one row per detected shot, each row carrying
+   its opening candidate above its own body.
+
+   Layout: a single column of CARDS, one per shot, separated by
+   a step of surface plus the list's own gap and nothing else —
+   the Marker Panel's mechanism. Each card stacks three bands:
+   identity plus an action gutter, the cut evidence in a sunken
+   well, then the cover frame beside its measurements and prose.
+   Stacked rather than side by side because the Panel must stay
+   legible at TOOL_MINIMUM's 240px, where a five-column row
+   would put two 40px frames next to a truncated timecode.
+
+   Weight tracks consequence: exactly ONE filled button is on
+   screen at rest — *Split at cuts*, the plain apply. Everything
+   that only changes what the reviewer sees is a ghost, and the
+   per-card press is one hover-revealed glyph (`.playhead-goto`'s
+   rule), so a forty-shot list does not stand forty buttons.
+
+   Every frame slot holds its space with `aspect-ratio`, so the
+   list never reflows as the extracts land one at a time.
+   ============================================================ */
+
+.shots-panel {
+  display: flex;
+  flex-direction: column;
+  gap: calc(8 * var(--ui-px));
+  padding: calc(8 * var(--ui-px));
+  font-size: var(--font-size-body);
+  color: var(--foreground);
+}
+
+/* The three sentences that are not a row list: what to select, what has not
+   been analyzed, and a scanned source with no shots in the window. */
+.shots-empty {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+  line-height: 1.5;
+}
+
+.shots-offer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: calc(8 * var(--ui-px));
+}
+
+/* The Analyze refusal, in the slot next to the button that raised it. Inline
+   beats the status bar on proximity; the log row is the record. */
+.shots-error {
+  margin: 0;
+  color: var(--destructive);
+  font-size: var(--font-size-caption);
+  line-height: 1.5;
+}
+
+/* ── The candidate score strip ──────────────────────────────────────────────
+   x = source time across the clip's window, y = the frame-change score, one
+   tick per candidate the floor scan emitted. The plot's SVG stretches
+   (preserveAspectRatio: none) while the ticks keep a screen-width stroke via
+   vector-effect, so the strip stays readable from TOOL_MINIMUM's 240px up to a
+   full-width dock. The line is an HTML element rather than an SVG one for the
+   same reason: a stretched viewBox would squash a handle, and a real element
+   takes focus and keyboard on its own. */
+
+.shots-strip {
+  display: flex;
+  flex-direction: column;
+  gap: calc(3 * var(--ui-px));
+}
+
+.shots-strip-plot {
+  position: relative;
+  height: calc(56 * var(--ui-px));
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--surface-sunken);
+  cursor: ns-resize;
+  /* Or a drag on a touch/pen device scrolls the Panel instead of moving the
+     line. */
+  touch-action: none;
+}
+
+.shots-strip-plot-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Excluded by the line — still drawn, because how much is being thrown away is
+   half of what the strip is for. */
+.shots-tick {
+  stroke: var(--muted-foreground);
+  stroke-width: 1.5;
+}
+
+.shots-tick[data-accepted="true"] {
+  stroke: var(--selection);
+  stroke-width: 2;
+}
+
+/* The threshold line and its handle in one element: full width so it reads as
+   a line, tall enough to be grabbable, and centred on its own position. */
+.shots-threshold {
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: calc(9 * var(--ui-px));
+  transform: translateY(-50%);
+  border-radius: var(--radius-control);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.shots-threshold::before {
+  position: absolute;
+  right: 0;
+  left: 0;
+  top: 50%;
+  height: calc(1 * var(--ui-px));
+  background: var(--selection);
+  content: "";
+}
+
+/* The grip, parked at the right end so it never sits over the tallest ticks. */
+.shots-threshold::after {
+  position: absolute;
+  right: calc(2 * var(--ui-px));
+  top: 50%;
+  width: calc(7 * var(--ui-px));
+  height: calc(7 * var(--ui-px));
+  margin-top: calc(-3.5 * var(--ui-px));
+  border-radius: 999px;
+  background: var(--selection);
+  content: "";
+}
+
+.shots-threshold:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.shots-strip-axis {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: calc(6 * var(--ui-px));
+  color: var(--muted-foreground);
+  font-size: var(--font-size-micro);
+}
+
+.shots-strip-range {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+
+/* The parameters row: the minimum shot length as a labelled field with a unit,
+   and the on-demand measure action. Wraps at narrow widths rather than
+   truncating — the length field must never read as a second slider. */
+.shots-params {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}
+
+.shots-param-field {
+  width: calc(72 * var(--ui-px));
+}
+
+/* Pushed to the far end of the parameters row: it acts on the whole list, where
+   everything to its left shapes one number. `auto` on the FIRST of the two
+   list-wide actions only, so the pair stays together at the end rather than
+   splitting across the row. */
+.shots-measure {
+  margin-inline-start: auto;
+}
+
+/* Beside *Measure shots* and skinned identically: both are opt-in passes that
+   change what the rows SAY rather than which rows there are, and a different
+   skin would file this with the apply verbs, which commit. */
+.shots-describe-all {
+  flex: none;
+}
+
+/* Both of these say WHY they are greyed in their `title` — "every shot in this
+   list is already measured", "every shot already has a description" — and the
+   shared button skeleton sets `disabled:pointer-events-none`, which stops the
+   element being hit-tested at all. `.shots-apply-verb`'s rule, which these two
+   needed just as much: the sentence naming the precondition was the one thing
+   nobody could read. */
+.shots-measure:disabled,
+.shots-describe-all:disabled {
+  pointer-events: auto;
+}
+
+.shots-list {
+  display: flex;
+  flex-direction: column;
+  gap: calc(6 * var(--ui-px));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* One card per shot. A step of surface on the Panel's `--card`, plus the
+   list's gap, is the WHOLE separation mechanism — no border, no shadow, no left
+   colour rail. A rail would spend a second channel on what the flags already
+   say, and forty lifted cards read as forty objects competing rather than forty
+   members of one review. `MarkerPanel.tsx`'s card row states the same rule. */
+.shots-row {
+  display: flex;
+  flex-direction: column;
+  gap: calc(5 * var(--ui-px));
+  padding: calc(6 * var(--ui-px)) calc(8 * var(--ui-px));
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+
+/* `--accent` and not `--surface-tint`: the card already sits a step above the
+   Panel, so a 4% white wash on top of it barely registers as "the pointer is
+   here". The Marker Panel's card hover is the same step. */
+.shots-row:hover {
+  background: var(--accent);
+}
+
+/* A card marked for discard. It gives up its SURFACE rather than fading: a shot
+   that will not survive the apply should read as already out of the stack,
+   where a translucent card reads as a card that failed to load. Still present
+   and still re-checkable — the reviewer has to see what an apply would delete,
+   and a row that vanished on being unchecked would leave nothing to re-check.
+   The opacity step is lighter than it was (0.55) because the missing surface is
+   now doing most of the work. */
+.shots-row[data-kept="false"] {
+  background: transparent;
+  opacity: 0.7;
+}
+
+.shots-row[data-kept="false"]:hover {
+  background: var(--surface-tint);
+}
+
+/* The well goes with it. A card that has given up its surface but still holds
+   a near-black inset reads as a hole in the list rather than as a shot on its
+   way out. */
+.shots-row[data-kept="false"] .shots-cuts {
+  background: transparent;
+}
+
+/* ── Band 1: who this shot is, and what can be done to it ───────────────────
+   The keep box leads. Deciding keep-or-discard is the gesture this Panel exists
+   for, and a leading column of boxes is the one that can be run down with the
+   eye — it used to sit at the far right of the body, last on the row rather
+   than first. Nothing on this line has a width that depends on a translated
+   word, which is what lets it hold a fixed action gutter at 240px. */
+.shots-card-head {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+  min-width: 0;
+}
+
+/* The card's action gutter. Hidden until the card is hovered or something in it
+   takes focus — `.playhead-goto`'s rule (`playhead.css`), and the one the
+   Marker Panel's delete follows. A column of buttons standing down a forty-shot
+   list reads as the Panel's subject, and the subject is the shots.
+
+   `opacity` and not `display: none`: the button stays in the tab order, so the
+   gutter is reachable by keyboard on a card nobody is pointing at. */
+.shots-card-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: calc(2 * var(--ui-px));
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.shots-row:hover .shots-card-actions,
+.shots-card-actions:focus-within,
+/* Pinned on the one card a run is against, so the card that is busy does not
+   hide its own state the moment the pointer leaves it. */
+.shots-card-actions[data-running="true"] {
+  opacity: 1;
+}
+
+/* ── Band 2: the cut evidence ───────────────────────────────────────────────
+   The opening boundary and every boundary this shot swallowed, in a sunken well
+   inside the card.
+
+   Sunken, and not a third card band: before this, a candidate strip carried a
+   row's own grammar — a checkbox, a number, two frames — at 60% opacity, so one
+   shot that had merged two boundaries read as three rows. `--surface-sunken` is
+   the token for an inset slot, and an inset inside a raised card cannot be read
+   as its sibling.
+
+   Still the card's top half, because the promise this list makes is the one the
+   Panel's own header comment states: "is this a real cut" is one look, not a
+   second surface. */
+.shots-cuts {
+  display: flex;
+  /* Shrink-wrapped, not full width. A card is a flex column, so a stretched
+     well spent the whole card width on ~200px of evidence and read as an empty
+     container — the inset has to be the size of what it holds. Its width is the
+     widest candidate strip, so a shot with several merged boundaries still
+     lines their checkboxes and scores up in one column. */
+  align-self: flex-start;
+  max-width: 100%;
+  flex-direction: column;
+  gap: calc(3 * var(--ui-px));
+  padding: calc(3 * var(--ui-px)) calc(4 * var(--ui-px));
+  border-radius: var(--radius-control);
+  background: var(--surface-sunken);
+}
+
+.shots-row[data-kept="false"] .shots-timecode,
+.shots-row[data-kept="false"] .shots-duration {
+  text-decoration: line-through;
+}
+
+/* One boundary: the toggle, then the meter and the digits beside it. */
+.shots-cut {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  color: var(--muted-foreground);
+}
+
+/* The control is the frame pair and the seam between them, and nothing to
+   their right — the meter and the score are what the decision is weighed on,
+   and a reading that flipped what it reports would be the misclick this split
+   exists to rule out. `Checkbox.Root` renders a button, so the chrome it
+   arrives with has to come off before the frames can sit in it. */
+.shots-cut-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.shots-cut-toggle:focus-visible {
+  outline: none;
+  border-radius: var(--radius-control);
+  box-shadow: var(--focus-ring);
+}
+
+/* A candidate the reviewer cleared. It stays on the card it merged into so the
+   merge can be undone. The dim is lighter than it was (0.6) because the seam and
+   the meter now say which state this is — the opacity only has to keep the
+   accepted boundary reading as the card's own opening. */
+.shots-cut[data-accepted="false"] {
+  opacity: 0.75;
+}
+
+/* ── The seam ───────────────────────────────────────────────────────────────
+   The state, as geometry. A cut is a vertical rule between two clips — the way
+   every timeline draws one — and a merged boundary is the two frames bridged
+   instead. Vertical against horizontal: two marks on orthogonal axes cannot be
+   misread for each other at a glance down a list, where two 16px squares in the
+   same card could.
+
+   The slot's width never changes with the state. A toggle that reflowed what it
+   sits between would move the next frame out from under the pointer that just
+   clicked it — `.playhead-filter-chip`'s rule. */
+.shots-cut-seam {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-self: stretch;
+  align-items: center;
+  justify-content: center;
+  width: calc(14 * var(--ui-px));
+}
+
+/* Cut: the edit point. */
+.shots-cut[data-accepted="true"] .shots-cut-seam::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: calc(2 * var(--ui-px));
+  margin-left: calc(-1 * var(--ui-px));
+  background: var(--selection);
+  content: "";
+  transition: opacity var(--transition-fast);
+}
+
+/* Merged: no edit point, and the pair bridged into one span. */
+.shots-cut[data-accepted="false"] .shots-cut-seam::before {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: calc(1 * var(--ui-px));
+  background: var(--border-on-dark-strong);
+  content: "";
+  transition: opacity var(--transition-fast);
+}
+
+/* Hover says the ACTION, where the resting rule says the state: scissors on a
+   merged seam, a link on a standing cut. The mark steps aside for it, because
+   an icon shown ON TOP of the state mark would be two claims in one 14px slot.
+   Keyed on the toggle, not the row: a glyph raised by hovering the meter would
+   promise an action the meter does not have. */
+.shots-cut-seam-glyph {
+  display: flex;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.shots-cut-toggle:hover .shots-cut-seam-glyph,
+.shots-cut-toggle:focus-visible .shots-cut-seam-glyph {
+  opacity: 1;
+  color: var(--foreground);
+}
+
+.shots-cut-toggle:hover .shots-cut-seam::before,
+.shots-cut-toggle:focus-visible .shots-cut-seam::before {
+  opacity: 0;
+}
+
+/* ── The margin meter ───────────────────────────────────────────────────────
+   How far this boundary's score sat from the line, on the LINE'S OWN axis:
+   the fill and the notch are the two numbers the strip above plots, in the
+   strip's own two colours. That is the whole reason it can carry meaning with
+   no words — it is not a new scale to learn, it is the scale the reviewer just
+   dragged.
+
+   The axis is [0, 1] because that is what the detector emits: the score is
+   ffmpeg's raw `lavfi.scene_score` (`jobs/shot/mod.rs`), and 1.0 is reachable
+   only by a frame pair that changes maximally — measured, black to white.
+
+   Two things the axis is honest about rather than hiding:
+
+   - The left 5% is unreachable. The scan runs `select='gt(scene,0.05)'`
+     (`FLOOR_SENSITIVITY`), so no candidate below the floor is ever emitted.
+     1.7px of 34px; not worth a second scale.
+   - The right third is very nearly unreachable too. A hard cut between wholly
+     unrelated content measures ~0.70, and real footage — shared lighting,
+     palette, grain — scores lower still, which is why the shipped default line
+     is 0.40. So the fill lives in roughly [0.05, 0.7] in practice.
+
+   That second one is a real loss of contrast, and it is deliberately NOT fixed
+   here: the strip above plots on the same [0, 1] (`ScoreStrip`'s `yOf`), so
+   re-ranging the meter alone would buy contrast by breaking the correspondence
+   that is the meter's entire justification. If it is worth fixing it is worth
+   fixing in both, as one shared scale.
+
+   The notch is only drawn once the prefs read has landed (`data-notch`): a
+   notch defaulted to 0 would claim every candidate cleared the line by
+   miles. */
+.shots-cut-meter {
+  position: relative;
+  flex: none;
+  width: calc(34 * var(--ui-px));
+  height: calc(4 * var(--ui-px));
+  margin-left: calc(6 * var(--ui-px));
+  border-radius: 999px;
+  background: var(--surface-raised);
+}
+
+.shots-cut-meter::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: clamp(0%, calc(var(--score, 0) * 100%), 100%);
+  border-radius: 999px;
+  background: currentcolor;
+  content: "";
+}
+
+.shots-cut-meter[data-notch]::after {
+  position: absolute;
+  top: calc(-2 * var(--ui-px));
+  bottom: calc(-2 * var(--ui-px));
+  left: clamp(0%, calc(var(--notch, 0) * 100%), 100%);
+  width: calc(1 * var(--ui-px));
+  background: var(--foreground);
+  content: "";
+}
+
+/* The fill's colour is the detector's CONFIDENCE, in the shared status ramp:
+   red below 0.25, amber to 0.5, green above. `cutConfidence` in the Panel keeps
+   the two numbers and states what they were measured from — briefly, the axis
+   is [0, 1] but real cuts live in [0.05, 0.7], so the bands sit inside that.
+
+   Why the fill can afford to carry magnitude at all: accepted-vs-merged used to
+   be here (`--selection` against `--muted-foreground`) and it moved to the seam,
+   where it is drawn as geometry. Nothing was lost and one thing was gained —
+   a HIGH-confidence boundary on a BRIDGED seam is now visible, which is exactly
+   the case worth noticing: a strong cut that `reduce` dropped for sitting inside
+   `min_shot_us` rather than for scoring badly. The old grey hid it.
+
+   Colour is never the only channel: the fill's length and the digits beside it
+   carry the same number, so the ramp is an enhancement and not a requirement.
+
+   `--destructive` is the repo's only red (the token block keeps one greppable
+   ladder and calls it the error role), so the low band shares a hue with this
+   Panel's *Split and discard* verb. Accepted: a 4px bar inside a card and a
+   button in the chrome band are not mistakable for each other, and amber is
+   likewise already the flag colour two lines down. */
+.shots-cut-meter[data-confidence="low"] {
+  color: var(--destructive);
+}
+
+.shots-cut-meter[data-confidence="mid"] {
+  color: var(--warning);
+}
+
+.shots-cut-meter[data-confidence="high"] {
+  color: var(--success);
+}
+
+/* The digits. Demoted to a check on the meter rather than the thing that is
+   read: what the meter cannot say is whether 0.51 or 0.55 sat closer to a line
+   at 0.50, and that is the one question two marginal cuts raise. */
+.shots-score {
+  flex: none;
+  min-width: 2.4em;
+  margin-left: calc(5 * var(--ui-px));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--font-size-micro);
+  color: var(--muted-foreground);
+}
+
+.shots-row-body {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(6 * var(--ui-px));
+  min-width: 0;
+}
+
+/* Both frame slots. `aspect-ratio` plus a fixed width is what holds the row's
+   height while a frame is pending or has failed — the placeholder IS the slot,
+   not a substitute drawn inside a collapsed one. */
+.shots-cover,
+.shots-pair-frame {
+  flex: none;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--muted);
+}
+
+.shots-cover {
+  width: calc(72 * var(--ui-px));
+}
+
+.shots-pair-frame {
+  width: calc(40 * var(--ui-px));
+}
+
+.shots-cover img,
+.shots-pair-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* A frame the extractor refused. Marked rather than left looking pending, so a
+   permanently empty slot is not read as a load that never finishes. */
+.shots-cover[data-state="failed"],
+.shots-pair-frame[data-state="failed"] {
+  border-style: dashed;
+}
+
+.shots-row-facts {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: calc(2 * var(--ui-px));
+  min-width: 0;
+}
+
+/* The row's activation target: index, timecode, duration. A button and not the
+   whole row, so the two checkboxes stay independently clickable. */
+.shots-row-goto {
+  display: flex;
+  /* Claims what the keep box and the action gutter leave, so the gutter stays
+     at the card's trailing edge instead of floating in beside the timecode. */
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: calc(6 * var(--ui-px));
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--foreground);
+  cursor: pointer;
+  text-align: left;
+}
+
+.shots-row-goto:hover .shots-timecode {
+  color: var(--selection);
+}
+
+.shots-row-goto:focus-visible {
+  border-radius: var(--radius-control);
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.shots-index {
+  flex: none;
+  min-width: 1.5em;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}
+
+.shots-timecode {
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--font-size-caption);
+}
+
+.shots-duration {
+  flex: none;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}
+
+/* The stats and the flags on one line: both are readings taken over the same
+   span, and pairing them saves a line per card AND keeps anything of variable
+   width off the identity line above. */
+.shots-row-measures {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+  min-width: 0;
+}
+
+.shots-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(6 * var(--ui-px));
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}
+
+/* Absent, not zero. Kept at the same colour as a measured cell so the row does
+   not read as an error — an unsampled span is the ordinary case for anything
+   the reduce reshaped. */
+.shots-stats-absent {
+  font-style: italic;
+}
+
+.shots-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(4 * var(--ui-px));
+}
+
+.shots-flag {
+  padding: 0 calc(4 * var(--ui-px));
+  border-radius: var(--radius-control);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}
+
+.shots-flag[data-flag="black"] {
+  color: var(--foreground);
+}
+
+.shots-flag[data-flag="freeze"],
+.shots-flag[data-flag="fade"] {
+  color: var(--warning, currentcolor);
+}
+
+/* ── The description column ─────────────────────────────────────────────────
+   What a vision model said about this row's stretch of source, with its tags
+   inline after the prose.
+
+   `min-height` is load-bearing: a described row and an undescribed one have to
+   stand the same height, or a list where only some spans were sampled reads as
+   broken alignment. One line of body text at the cell's own line-height. */
+
+.shots-description {
+  min-height: calc(var(--font-size-caption) * 1.5);
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+  line-height: 1.5;
+}
+
+.shots-description-span {
+  margin: 0;
+}
+
+/* Prose, so it stays the row's readable colour rather than the label grey the
+   stats use. */
+.shots-description-text {
+  color: var(--foreground);
+}
+
+/* Italic on the same rule as `shots-stats-absent`, and the same colour as a
+   filled cell: "not described" is the ordinary state of a shot, not an error. */
+.shots-description-empty {
+  margin: 0;
+  font-style: italic;
+}
+
+.shots-clip-content {
+  padding-bottom: calc(8 * var(--ui-px));
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.shots-clip-content h3 {
+  margin: 0 0 calc(4 * var(--ui-px));
+  font-size: inherit;
+  font-weight: 600;
+}
+
+/* One pattern whatever the run holds: a lead paragraph in the row's prose
+   colour — the summary, or a summary-less run's first few segments — then the
+   segments behind a closed disclosure in the caption style the rows use. */
+.shots-clip-lead {
+  margin: 0 0 calc(4 * var(--ui-px));
+  color: var(--foreground);
+  line-height: 1.5;
+}
+
+.shots-clip-details > summary {
+  cursor: default;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}
+
+.shots-clip-details[open] > summary {
+  margin-bottom: calc(4 * var(--ui-px));
+}
+
+/* The open list scrolls in its own box: a long clip's hundreds of lines push
+   the score strip and the rows down by at most this much. Viewport-relative
+   because the Panel is no size container; the dock panel it sits in is about
+   the window's height. */
+.shots-clip-detail-list {
+  /* The Shots panel is often a short dock pane, so a viewport share alone could
+     outgrow it; a dozen lines is enough to read and scroll. */
+  max-height: min(40vh, 18em);
+  overflow-y: auto;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+  line-height: 1.5;
+}
+
+.shots-clip-detail {
+  display: flex;
+  align-items: baseline;
+  gap: calc(6 * var(--ui-px));
+  margin: 0;
+}
+
+/* The row's go-to look: monospace digits that take the selection colour on
+   hover, and the same focus ring. */
+.shots-clip-detail-goto {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted-foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
+
+.shots-clip-detail-goto:hover {
+  color: var(--selection);
+}
+
+.shots-clip-detail-goto:focus-visible {
+  border-radius: var(--radius-control);
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+
+.shots-description-tag {
+  margin-left: calc(4 * var(--ui-px));
+  padding: 0 calc(4 * var(--ui-px));
+  border-radius: var(--radius-control);
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+
+/* The per-card press, in the action gutter. It used to be a filled `secondary`
+   button on its own line under the prose — the single loudest thing in a
+   forty-shot list, and parked in the one place whose width the prose decides.
+   As a glyph it costs 24px of a line that was already there, and the words that
+   were its label are its `aria-label` and its tooltip instead. */
+.shots-describe {
+  color: var(--muted-foreground);
+}
+
+.shots-describe[data-running="true"] {
+  color: var(--selection);
+}
+
+/* Why the press is refused lives in its `title`, and the shared button skeleton
+   sets `disabled:pointer-events-none` — which stops the element being
+   hit-tested at all, so the tooltip explaining the greying is the one thing
+   nobody can read. `.shots-apply-verb`'s rule, which this control needed too:
+   as a filled button with a label it at least said "Describe shot" while
+   greyed, and as a glyph it would have said nothing. */
+.shots-describe:disabled {
+  pointer-events: auto;
+}
+
+.shots-keep {
+  flex: none;
+}
+
+/* ── The apply bar ──────────────────────────────────────────────────────────
+   Above the row list: the Panel scrolls as one in the dock's shared scroller,
+   so a bar under a long list would only be reachable at the end of a scroll. */
+
+.shots-apply {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--ui-px));
+  /* The one seam in the Panel, and it earns its place: it is the line between
+     the controls and the review, which is what lets every control above it
+     give up its border without the band dissolving into the list. Inset by the
+     Panel's own padding rather than bled full-width — `.playhead-toolbar`
+     draws its seam the same way. */
+  padding-bottom: calc(8 * var(--ui-px));
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.shots-apply-verbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(4 * var(--ui-px));
+}
+
+/* The reason a verb is greyed lives in its `title`, and the shared button
+   skeleton sets `disabled:pointer-events-none` — which stops the element being
+   hit-tested at all, so the tooltip that explains the greying would be the one
+   thing nobody can read. Pointer events back on; a disabled button dispatches
+   no click either way. */
+.shots-apply-verb:disabled {
+  pointer-events: auto;
+}
+
+/* The verb that deletes keeps the destructive HUE and gives up the fill: the
+   warning was never in the filled background. A red block above the list
+   shouted loudest about the verb pressed least, while the colour alone still
+   says which of the three throws footage away — and the `outline` variant's
+   hairline is what keeps that red reading as a button rather than as a loose
+   red sentence. Unlayered, so it beats the variant's own
+   `hover:text-foreground`. */
+.shots-apply-verb[data-verb="discard"] {
+  color: var(--destructive);
+}
+
+.shots-apply-verb[data-verb="discard"]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--destructive) 12%, transparent);
+  color: var(--destructive);
+}

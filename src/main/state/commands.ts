@@ -1,0 +1,290 @@
+// apps/desktop/src/main/state/commands.ts
+// Production command adapter: translates the renderer's real category-A
+// channels + camelCase wire args into the gated TS actor mutation core.
+// Param defaults live on the builders below; multi-commit sequencing (and its
+// op_id ordering) lives in the matching actor.ts arm. Routing is pinned by
+// __tests__/prod.routing.test.ts and __tests__/commands.test.ts.
+
+import { roleTokens, styleText } from '../taste/apply'
+import type { Tokens } from '../taste/schema'
+import type { LayerParams, Project, Rgba } from './model'
+import { textParamsDefault } from './mutations/add'
+import { videoClipParams, audioParams, imageOverlayParams, mediaExtent } from './mutations/media'
+import { McpArgError, parseGraphicRoleOpt, parseRgba, parseNumOpt, parseStr, parseStrOpt } from './mcp-commands'
+import { staticPosition } from '../../shared/position'
+
+/** 6-color palette cycled by layer index. */
+const DEMO_PALETTE: Rgba[] = [
+  { r: 96, g: 165, b: 250, a: 255 },
+  { r: 244, g: 114, b: 182, a: 255 },
+  { r: 74, g: 222, b: 128, a: 255 },
+  { r: 251, g: 191, b: 36, a: 255 },
+  { r: 167, g: 139, b: 250, a: 255 },
+  { r: 248, g: 113, b: 113, a: 255 },
+]
+export function demoColor(idx: number): Rgba {
+  return DEMO_PALETTE[idx % DEMO_PALETTE.length]
+}
+
+/** Default color layer: BLACK at composition size. */
+export function prodColorParams(a: Record<string, unknown>, comp: { width: number; height: number }): LayerParams {
+  const color = a.color === undefined ? { r: 0, g: 0, b: 0, a: 255 } : parseRgba(a.color, 'color')
+  return {
+    kind: 'Color',
+    color: { mode: 'Static', value: color },
+    width: parseNumOpt(a.width, 'width') ?? comp.width,
+    height: parseNumOpt(a.height, 'height') ?? comp.height,
+  }
+}
+
+/** Default text layer: `textParamsDefault`'s params, with "Text" as the body
+ *  when the caller names none. The actor supplies the live app font preference
+ *  separately from wire args, for UI, MCP and dry-run alike.
+ *
+ *  `x`/`y` place the layer: they are the ANCHOR point (ADR 0049 — a Text
+ *  layer's position names its anchor), so with the factory's centred anchor
+ *  the text is centred on the point. Both or neither: half a point is refused
+ *  at the boundary rather than paired with a guessed axis, the way ADR 0049
+ *  refuses a `(null, set)` box. Unclamped on purpose — a title that starts
+ *  partly out of frame is a legitimate thing to author.
+ *
+ *  `graphic_role` tags the layer; absent leaves the factory's null. */
+/** A new Text layer: the default params, then the project's style tokens for
+ *  its graphic role (`none` when untagged — Q9, spec H1-D4), then what the
+ *  caller said explicitly. `tokens` absent or null: the default params alone. */
+export function prodTextParams(a: Record<string, unknown>, comp: { width: number; height: number }, defaultFont?: string, tokens?: Tokens | null): LayerParams {
+  const font = defaultFont?.trim() || undefined
+  let params = textParamsDefault(parseStrOpt(a.content, 'content') ?? 'Text', comp)
+  if (font) params.font.family = font
+  const x = parseNumOpt(a.x, 'x')
+  const y = parseNumOpt(a.y, 'y')
+  if ((x === undefined) !== (y === undefined)) {
+    throw new McpArgError('x and y must be given together', x === undefined ? 'x' : 'y')
+  }
+  const role = parseGraphicRoleOpt(a.graphic_role)
+  if (tokens) params = styleText(params, roleTokens(tokens, role ?? null), tokens, comp, font)
+  if (x !== undefined && y !== undefined) params.transform.position = staticPosition(x, y)
+  if (role !== undefined) params.graphic_role = role
+  return params
+}
+
+/** Image layer span: still→3s, animated→duration_us. */
+function imageLayerSpanUs(metadata: { duration_us: number | null; video?: { nb_frames?: number | null } | null }): number {
+  const STILL = 3_000_000
+  const multiFrame = (metadata.video?.nb_frames ?? 0) > 1
+  const d = metadata.duration_us
+  if (d != null && d > 0 && (multiFrame || d >= 500_000)) return d
+  return STILL
+}
+
+export interface MediaLayerResult {
+  params: LayerParams
+  durationUs: number
+  /** When the source is a video carrying audio AND auto_pair_audio_on_import is on,
+   *  the paired Audio layer params (role=dialogue). Else null. */
+  autoPairAudio: LayerParams | null
+}
+
+/** add_media_layer: kind-dispatch on the pool item. The 2 s fallback covers a
+ *  pool item with no probed duration; `duration_us` is normalized content
+ *  duration, so a container start PTS never leaks into the span. */
+export function prodMediaLayer(
+  a: Record<string, unknown>,
+  project: Project,
+): MediaLayerResult {
+  const mediaId = parseStr(a.mediaId, 'mediaId')
+  const item = project.media_pool[mediaId]
+  if (!item) throw new Error(`media not found in pool: ${mediaId}`)
+  const totalSrc = (item.metadata.duration_us as number | null | undefined) ?? 2_000_000
+  switch (item.kind) {
+    case 'Video': {
+      const autoPair = item.metadata.audio != null && project.settings.auto_pair_audio_on_import
+        ? { ...audioParams(mediaId, 0, totalSrc), role: 'dialogue' as const }
+        : null
+      return { params: videoClipParams(mediaId, 0, totalSrc, mediaExtent(item)), durationUs: totalSrc, autoPairAudio: autoPair }
+    }
+    case 'Audio':
+      return { params: audioParams(mediaId, 0, totalSrc), durationUs: totalSrc, autoPairAudio: null }
+    case 'Image': {
+      const span = imageLayerSpanUs(item.metadata as { duration_us: number | null; video?: { nb_frames?: number | null } | null })
+      return { params: imageOverlayParams(mediaId, mediaExtent(item)), durationUs: span, autoPairAudio: null }
+    }
+    default:
+      throw new Error(`unsupported media kind for add_media_layer: ${item.kind}`)
+  }
+}
+
+export function resolveDurationUs(durationUs: number | undefined): number {
+  return Math.max(durationUs ?? 5_000_000, 100_000)
+}
+
+// Free-lane scan (the bounce policy, docs/features.md#track-placement). Home is
+// mutations/helpers.ts so the transition mutations can share it; re-exported
+// here so existing command-adapter consumers keep their './commands' import
+// path.
+export { pickFreeOverlayTrack } from './mutations/helpers'
+
+/** Mechanical channels: pure camelCase→snake renaming, no param construction.
+ *  Returns null for channels not in this table. */
+const MECHANICAL: Record<string, (a: Record<string, unknown>) => { op: string; args: Record<string, unknown> }> = {
+  // No label: the renderer derives the name, and a literal written here could
+  // never be localized (docs/data-model.md#track). `compositionId` is the
+  // creation-op scope (absent = root); layer-addressed channels carry none —
+  // the layer id names its composition (ADR 0052).
+  add_track: (a) => ({ op: 'add_track', args: { label: null, composition_id: a.compositionId ?? null } }),
+  update_layer: (a) => ({ op: 'update_layer', args: { layer: a.layerId, patch: a.patch } }),
+  // Remaining mechanical + meta channels
+  move_layer: (a) => ({ op: 'move_layer', args: { layer: a.layerId, to_track: a.newTrackId, t_start_us: a.newTStartUs, escape_link: a.escapeLink ?? false } }),
+  move_layers: (a) => ({ op: 'move_layers', args: { placements: a.placements, anchor_layer_id: a.anchorLayerId, t_start_us: a.anchorTStartUs } }),
+  // The landing is optional and its two halves travel together — the renderer
+  // API bundles them into one `anchor` object so a caller cannot supply half,
+  // and this flattens the pair onto the wire the way every other op carries its
+  // args. Both null is the raise that names no time.
+  move_layers_to_new_track: (a) => ({ op: 'move_layers_to_new_track', args: { layers: a.layerIds, anchor_layer_id: a.anchorLayerId ?? null, t_start_us: a.anchorTStartUs ?? null } }),
+  // Anchored z-reorder (docs/features.md#track-placement) — the Playhead
+  // Panel's drop gesture. Pure renaming; position/anchor validation lives with
+  // the mutation.
+  restack_layer: (a) => ({ op: 'restack_layer', args: { layer: a.layerId,
+    ...(a.anchorLayerId === undefined ? {} : { anchor: a.anchorLayerId }),
+    ...(a.anchorTrackId === undefined ? {} : { anchor_track: a.anchorTrackId }), position: a.position } }),
+  retime_layers: (a) => ({ op: 'retime_layers', args: { layers: a.layerIds, target: a.target } }),
+  set_preserve_pitch: (a) => ({ op: 'set_preserve_pitch', args: { layers: a.layerIds, preserve_pitch: a.preservePitch } }),
+  trim_layer: (a) => ({ op: 'trim_layer', args: { layer: a.layerId, edge: a.edge, new_t_us: a.newTUs, escape_link: a.escapeLink ?? false } }),
+  // The selection's delete — a set in, one undo entry out. Same rename as
+  // move_layers_to_new_track's, which takes the selection the same way.
+  delete_layers: (a) => ({ op: 'delete_layers', args: { layers: a.layerIds } }),
+  // The same selection, closing the span it vacated
+  // (docs/features.md#ripple-delete). Same rename, and one entry: the deletes
+  // and the sweep are one undo.
+  ripple_delete_layers: (a) => ({ op: 'ripple_delete_layers', args: { layers: a.layerIds } }),
+  // A selected gap closing (docs/features.md#ripple-delete): the lane and BOTH
+  // edges of the span the renderer highlighted, so the actor closes that and
+  // refuses anything else.
+  ripple_delete_gap: (a) => ({ op: 'ripple_delete_gap', args: { track: a.trackId, s: a.startUs, e: a.endUs } }),
+  remove_media: (a) => ({ op: 'remove_media', args: { media: a.mediaId, force: a.force ?? false } }),
+  // The whole-link duplicate: a set in (the first id is the seed the drop
+  // position refers to), one undo entry out. `targetTrackId` re-lanes the seed's
+  // clone only; absent means "stay on the seed's track".
+  paste_layers: (a) => ({ op: 'paste_layers', args: { layers: a.layerIds, t_start_us: a.tStartUs, target_track_id: a.targetTrackId ?? null } }),
+  // The set the renderer resolved (a link's members unless escaped) — the op
+  // toggles exactly what it is handed.
+  set_layers_enabled: (a) => ({ op: 'set_layers_enabled', args: { layers: a.layerIds, enabled: a.enabled } }),
+  split_layer_linked: (a) => ({ op: 'split_layer', args: { layer: a.layerId, at_t_us: a.atTUs, escape_link: a.escapeLink ?? false } }),
+  links_create: (a) => ({ op: 'links_create', args: { layers: a.layerIds, reassign: a.reassign ?? false } }),
+  links_dissolve: (a) => ({ op: 'links_dissolve', args: { link: a.linkId } }),
+  // Groups (ADR 0052): pre-compose takes the selection, add-members takes it
+  // plus the Group clip it goes into; the other three are addressed by the
+  // Group layer / its composition. Pure renaming.
+  groups_create: (a) => ({ op: 'groups_create', args: { layers: a.layerIds, label: a.label ?? null } }),
+  groups_add_members: (a) => ({ op: 'groups_add_members', args: { layers: a.layerIds, group_layer: a.groupLayerId } }),
+  // The crossing addressed by DESTINATION rather than by a Group clip. Pure
+  // renaming too; `toTrackId` is the caller's lane opinion and is absent when it
+  // has none.
+  move_layers_to_composition: (a) => ({ op: 'move_layers_to_composition', args: { layers: a.layerIds, to_composition: a.toCompositionId, anchor_layer: a.anchorLayerId, anchor_t_start_us: a.anchorTStartUs, to_track: a.toTrackId ?? null } }),
+  // The media pool's Group drop. Two composition ids on one channel:
+  // `sourceCompositionId` is the composition being PLACED, `compositionId` the
+  // one the drop lands in — the open one, riding along as the cross-check every
+  // creation channel stamps.
+  add_group_layer: (a) => ({ op: 'add_group_layer', args: { source_composition: a.sourceCompositionId, track: a.trackId, t_start_us: a.tStartUs, composition_id: a.compositionId ?? null } }),
+  groups_ungroup: (a) => ({ op: 'groups_ungroup', args: { layer: a.layerId } }),
+  groups_rename: (a) => ({ op: 'groups_rename', args: { composition: a.compositionId, label: a.label ?? null } }),
+  compositions_delete: (a) => ({ op: 'compositions_delete', args: { composition: a.compositionId } }),
+  update_layer_params: (a) => ({ op: 'update_layer_params', args: { layer: a.layerId, patch: a.patch } }),
+  set_position: (a) => ({op:'set_position',args:{layer:a.layerId,position:a.position,geometry_only:a.geometryOnly===true}}),
+  translate_path: (a) => ({op:'translate_path',args:{layer:a.layerId,dx:a.dx,dy:a.dy}}),
+  update_path_transform: (a) => ({op:'update_path_transform',args:{layer:a.layerId,dx:a.dx,dy:a.dy,entries:a.entries}}),
+  update_layer_param_track: (a) => ({ op: 'update_layer_param_track', args: { layer: a.layerId, param_key: a.paramKey, track: a.track } }),
+  update_layer_param_tracks: (a) => ({ op: 'update_layer_param_tracks', args: { layer: a.layerId, entries: a.entries } }),
+  // Cross-layer batch: the layer id rides INSIDE each entry, so there is no
+  // top-level `layerId` to rename.
+  update_param_tracks_multi: (a) => ({ op: 'update_param_tracks_multi', args: { entries: a.entries } }),
+  set_scale_linked: (a) => ({ op: 'set_scale_linked', args: { layer: a.layerId, linked: a.linked } }),
+  add_effect: (a) => ({ op: 'add_effect', args: { layer: a.layerId, kind: a.kind } }),
+  update_effect: (a) => ({ op: 'update_effect', args: { layer: a.layerId, effect: a.effectId, patch: a.patch } }),
+  move_effect: (a) => ({ op: 'move_effect', args: { layer: a.layerId, effect: a.effectId, new_index: a.newIndex } }),
+  remove_effect: (a) => ({ op: 'remove_effect', args: { layer: a.layerId, effect: a.effectId } }),
+  // set_composition: renderer sends { patch: {...}, compositionId? }; dispatch
+  // receives the patch directly as its args, the target composition riding
+  // alongside (absent = root; the lattice fields cascade regardless).
+  set_composition: (a) => ({ op: 'set_composition', args: { ...(a.patch as Record<string, unknown>), composition_id: a.compositionId ?? null } }),
+  fit_composition_to_layers: (a) => ({ op: 'fit_composition_to_layers', args: { composition_id: a.compositionId ?? null } }),
+  update_track_flags: (a) => ({ op: 'update_track_flags', args: { track: a.trackId, patch: a.patch } }),
+  // `label: null` clears the name back to the derived one, so the header's
+  // cleared field must reach the actor as null rather than as an absent field.
+  rename_track: (a) => ({ op: 'rename_track', args: { track: a.trackId, label: a.label ?? null } }),
+  delete_track: (a) => ({ op: 'delete_track', args: { track: a.trackId, force: a.force ?? false } }),
+  move_track: (a) => ({ op: 'move_track', args: { track: a.trackId, new_position: a.newPosition } }),
+  set_role_gain: (a) => ({ op: 'set_role_gain', args: { role: a.role, gain_db: a.gainDb } }),
+  update_role_flags: (a) => ({ op: 'update_role_flags', args: { role: a.role, patch: a.patch } }),
+  separate_audio_to_new_track: (a) => ({ op: 'separate_audio', args: { layer: a.layerId } }),
+  // Transitions (spec § Command surface). Pure renaming — kind/direction are
+  // validated actor-side by parseTransitionKind (Crossfade REJECTS direction;
+  // Wipe/Slide REQUIRE one), so undefined passes through untouched.
+  add_transition: (a) => ({ op: 'add_transition', args: { from: a.fromLayerId, to: a.toLayerId, duration_us: a.durationUs, kind: a.kind, direction: a.direction } }),
+  update_transition: (a) => ({ op: 'update_transition', args: { transition: a.transitionId, duration_us: a.durationUs, kind: a.kind, direction: a.direction, extended_us: a.extendedUs } }),
+  remove_transition: (a) => ({ op: 'remove_transition', args: { transition: a.transitionId } }),
+  restyle_captions: (a) => ({ op: 'restyle_captions', args: { patch: a.patch } }),
+  correct_caption_text: (a) => ({ op: 'correct_caption_text', args: a }),
+  set_correction_script: (a) => ({ op: 'set_correction_script', args: a }),
+  apply_transcripts: (a) => ({ op: 'apply_transcripts', args: a }),
+  update_project_settings: (a) => ({ op: 'update_project_settings', args: { patch: a.patch } }),
+  project_undo: () => ({ op: 'undo', args: {} }),
+  project_redo: () => ({ op: 'redo', args: {} }),
+  // History-panel channels. Same `project_*` channel → bare-op-name mapping the
+  // three above use: the CHANNEL is the renderer's name for it, the OP is the
+  // dispatch arm's. jump_to takes an absolute stack index (cursor-only, rejects
+  // under the revert lock); create/delete_checkpoint are the User-actor half of
+  // the checkpoint surface (agents create and restore; deleting is the user's).
+  // Markers — the renderer's first marker channels (marker-authoring slice).
+  // `label` defaults to the EMPTY string, not absence: the dispatch arm turns an
+  // absent label into agent shorthand ('m'), and a human marker must instead stay
+  // unnamed so the ruler tooltip falls back to the translated noun.
+  add_marker: (a) => ({ op: 'add_marker', args: { t_us: a.tUs, end_t_us: a.endTUs ?? null, label: a.label ?? '', note: a.note ?? '', composition_id: a.compositionId ?? null, anchor: a.anchor ?? null } }),
+  update_marker: (a) => ({ op: 'update_marker', args: { marker: a.markerId, patch: a.patch } }),
+  remove_marker: (a) => ({ op: 'remove_marker', args: { marker: a.markerId } }),
+  // Anchoring's two explicit gestures. They are their own channels rather than a
+  // shape of `update_marker` because the patch surface refuses `anchor` outright
+  // (mutations/markers.ts): a tie is set and cleared by naming the operation, so
+  // no edit can change one as a side effect.
+  attach_marker: (a) => ({ op: 'attach_marker', args: { marker: a.markerId, layer: a.layerId } }),
+  detach_marker: (a) => ({ op: 'detach_marker', args: { marker: a.markerId } }),
+  project_jump_to: (a) => ({ op: 'jump_to', args: { index: a.index } }),
+  project_create_checkpoint: (a) => ({ op: 'create_checkpoint', args: { label: a.label } }),
+  project_delete_checkpoint: (a) => ({ op: 'delete_checkpoint', args: { checkpoint_id: a.checkpointId } }),
+  project_restore_checkpoint: (a) => ({ op: 'restore_checkpoint', args: { checkpoint_id: a.checkpointId } }),
+  // NOTE: add_motif is intentionally NOT a MECHANICAL entry — parseMechanical
+  // returns null for it, so command() falls through to the rich add_motif switch
+  // arm (canonicalize + two-commit). It is listed in PRODUCTION_OPS directly.
+}
+
+/** All production channels this adapter handles (mechanical + rich + meta). */
+export const PRODUCTION_OPS = new Set<string>([
+  'retime_layers', 'set_preserve_pitch',
+  'add_track', 'update_layer',
+  'add_color_layer', 'add_text_layer', 'add_media_layer', 'paste_layer',
+  'add_demo_color_layer', 'add_demo_text_layer',
+  // Remaining mechanical + meta channels
+  'move_layer', 'move_layers', 'move_layers_to_new_track', 'restack_layer', 'trim_layer', 'delete_layers', 'ripple_delete_layers', 'ripple_delete_gap', 'remove_media', 'paste_layers', 'set_layers_enabled', 'split_layer_linked',
+  'links_create', 'links_dissolve',
+  'groups_create', 'groups_add_members', 'move_layers_to_composition', 'groups_ungroup', 'groups_rename', 'compositions_delete', 'add_group_layer',
+  'update_layer_params', 'update_layer_param_track', 'update_layer_param_tracks', 'update_param_tracks_multi', 'set_scale_linked',
+  'set_position', 'translate_path',
+  'update_path_transform',
+  'add_effect', 'update_effect', 'move_effect', 'remove_effect',
+  'set_composition', 'fit_composition_to_layers',
+  'update_track_flags', 'rename_track', 'delete_track', 'move_track', 'set_role_gain', 'update_role_flags',
+  'add_transition', 'update_transition', 'remove_transition',
+  'add_marker', 'update_marker', 'remove_marker', 'attach_marker', 'detach_marker',
+  'separate_audio_to_new_track', 'restyle_captions',
+  'correct_caption_text', 'apply_transcripts',
+  'set_correction_script',
+  'update_project_settings', 'project_undo', 'project_redo', 'project_restore_checkpoint',
+  'project_jump_to', 'project_create_checkpoint', 'project_delete_checkpoint',
+  // add_motif as a pure TS recorded mutation
+  'add_motif',
+])
+
+export function parseMechanical(channel: string, a: Record<string, unknown>): { op: string; args: Record<string, unknown> } | null {
+  const fn = MECHANICAL[channel]
+  return fn ? fn(a) : null
+}

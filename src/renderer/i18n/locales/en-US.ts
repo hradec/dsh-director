@@ -1,0 +1,3555 @@
+// English (US) is the source locale. New keys land here first, then propagate
+// to other locales. Keep keys grouped by feature area, not by component.
+// UI word for a placed item is `clip` — never `layer`, which stays the model word in
+// code, commands and ADRs (CONTEXT.md **Layer**). zh-CN mirrors this as 片段.
+const enUS = {
+  resources: {
+    memory: 'Memory target',
+    memory_hint: 'Controls caches and processing capacity. The app reduces background work when memory is under pressure; brief peaks are possible.',
+    processing: 'Processing effort',
+    processing_hint: 'Higher settings finish processing sooner but leave less capacity for other apps.',
+    low: 'Low resource use', balanced: 'Balanced', high: 'High performance',
+    disk: 'Temporary cache space',
+    disk_hint: 'Space for replaceable thumbnails, animation frames, waveforms and audio-effect caches. Original media, models and project files are kept. By default, 10% of the total size of the workspace\'s disk (4–64 GiB).',
+    background: 'Continue background processing during playback',
+    background_hint: 'When off, new background media tasks wait until playback stops. Tasks already running finish normally.',
+    preview_during_export: 'Preview during export (beta)',
+    preview_during_export_hint: 'Play and scrub the read-only timeline while encoding. Preview may be limited by available resources.',
+    constrained: 'Memory is under pressure. New processing waits while existing work finishes.',
+    normal: 'Resources available.', usage: 'App memory: about {{used}} GiB.', waiting: '{{count}} tasks waiting.',
+  },
+  hardware: {
+    "probe_heading": "Decode and encode acceleration",
+    "test_complete": "Detection complete",
+    "current_decode_device": "Current decoding device",
+    "decode_idle": "No decoding sessions",
+    "decode_cpu": "CPU (software decoding)",
+    "decode_browser": "Browser decoding (device not reported)",
+    "decode_system": "System video decoder",
+    "decode_device_unknown": "Hardware decoding (device unconfirmed)",
+    "decode_session_scope": "Opened preview sessions; these may remain allocated while paused.",
+    "open_diagnostics": "Hardware diagnostics",
+    "diagnostics_title": "Hardware diagnostics",
+    "diagnostics_devices": "Graphics devices",
+    "render_nodes": "Render device paths",
+    "hardware_rendering": "Hardware accelerated",
+    "preview_decode": "Preview hardware decoding",
+    "export_encode": "Export hardware encoding",
+    "support_available": "Available in this test",
+    "partial_support": "Some formats available",
+    "test_incomplete": "Test incomplete",
+    "browser_media": "Browser media status",
+    "video_decode": "Browser video decoding",
+    "video_encode": "Browser video encoding",
+    "software_processing": "Software processing",
+    "browser_media_scope": "Browser feature status, not a per-format probe. Preview and export acceleration are tested separately below.",
+    "render_device": "Rendering adapter",
+    "render_unresolved": "The rendering adapter could not be matched to a unique device.",
+    "probe_device_unresolved": "Test device not identified",
+    "no_devices": "No graphics devices could be identified.",
+    "memory_dedicated": "Dedicated graphics memory",
+    "memory_shared": "Graphics memory",
+    "memory_local": "Driver-reported local graphics memory",
+    "memory_unknown": "Graphics memory",
+    "device_memory_used": "Device memory used (all apps)",
+    "device_memory_free": "Device memory free",
+    "driver": "Driver",
+    "identity_source": "Device identity source",
+    "memory_source": "Memory measurement source",
+    "source_nvml": "NVIDIA driver",
+    "source_amdgpu": "AMD driver",
+    "source_drm": "Linux graphics driver",
+    "source_pci-ids": "Local PCI device database",
+    "source_electron": "Electron",
+    "source_device-id": "Device ID",
+    "source_unknown": "Unavailable",
+    "render_heading": "Rendering",
+    "acceleration_heading": "Video hardware acceleration",
+    "compositing": "Interface GPU compositing",
+    "enabled": "Enabled",
+    "disabled": "Not enabled",
+    "testing": "Testing…",
+    "detect": "Test acceleration",
+    "refresh": "Refresh hardware",
+    "probe_scope": "Tests preview decoding and export encoding with short samples. Checks format support; playback speed is not measured.",
+    "decode_heading": "Standard engine preview decoding",
+    "encode_heading": "FFmpeg export encoding",
+    "decode_scope": "Preview testing covers H.264, HEVC and VP9 at 8-bit. Linux preview copies frames through system memory. Export decoding currently uses software.",
+    "memory_scope": "Device memory includes all applications. It is measured separately from WeftCut resource use.",
+    "sampled_at": "Last tested: {{time}}",
+    "stale": "Showing the last hardware reading; current information is unavailable.",
+    "probe_details": "Technical details",
+    "status_available": "Test passed",
+    "status_software": "Software rendering",
+    "status_unavailable": "Unavailable",
+    "status_not-tested": "Not tested",
+    "reason_permission-denied": "Device access denied",
+    "reason_driver-unavailable": "Driver or device unavailable",
+    "reason_component-unavailable": "Required application component unavailable",
+    "reason_unsupported": "No supported backend available",
+    "reason_timeout": "Detection timed out; retry when the system is idle",
+    "reason_probe-failed": "The probe did not complete successfully",
+    "reason_resource-busy": "Application resources are busy; retry after current work finishes",
+    "reason_unknown": "This measurement is unavailable",
+    "cpu": "Processor",
+    "cpu_processors": "{{count}} logical processors",
+  },
+  performance: {
+      "shared_gpu_memory": "Uses shared memory",
+      "unknown": "Unknown",
+      "hardware_vram": "Dedicated graphics memory",
+      "hardware_graphics_memory": "Graphics memory",
+      "hardware_gpu": "Default graphics adapter",
+      "hardware_ram": "Memory",
+      "hardware_heading": "This computer",
+      "buffer_frames_hint": "More frames use more GPU buffer memory",
+      "buffer_frames": "Buffered frames per video",
+      "decoder_limit_hint": "0 disables GPU decoding",
+      "decoder_limit": "Concurrent decoders",
+      "decode_manual": "Decode configuration: manual",
+      "heading": "Performance",
+      "budgets_heading": "Resource use",
+      "budget_cache_mib": "Preview cache",
+      "budget_cache_mib_hint": "Video, animation, thumbnails and waveforms",
+      "budget_gpu_buffer_mib": "GPU buffer budget",
+      "budget_gpu_buffer_mib_hint": "Frame transfer only; excludes other VRAM usage",
+      "budget_legacy": "Using legacy settings. Editing a budget switches to shared allocation.",
+      "restore_defaults": "Restore defaults",
+      "save_failed": "Save failed. This change has not taken effect.",
+      "retry_save": "Retry save",
+      "activation": "Caches reclaim gradually; processing changes apply to new tasks and decoder sessions.",
+      "details_heading": "Resource usage details",
+      "resources_unavailable": "Resource status is temporarily unavailable.",
+      "system_memory": "System memory: {{memory}} GiB",
+      "budget_gpu_usage": "Shared texture transfer buffers: {{used}} / {{limit}} MiB",
+      "allocation_cache_hint": "Baseline cache shares (unused capacity is shared)",
+      "cache_usage": "Estimated cache: {{used}} / {{limit}} MiB (includes graphics-backed caches)",
+      "allocation_decode_count": "Concurrent decoder limit",
+      "allocation_capacity": "Current decode pixel budget",
+      "decode_legacy": "Decode configuration: legacy",
+      "decode_tested": "Decode configuration: computer test",
+      "decode_baseline": "Decode configuration: default, untested on this computer",
+      "test_heading": "Test this computer (experimental)",
+      "test_scope": "Test simultaneous H.264 4K/60 video playback.",
+      "test_start": "Run benchmark",
+      "test_cancel": "Cancel test",
+      "test_apply": "Save recommendation",
+      "test_applied": "Recommendation saved",
+      "test_progress": "Testing… {{count}}/8 workloads measured",
+      "test_preparing": "Preparing test media… The first run may take a few minutes.",
+      "test_complete": "Passed: up to {{count}} 4K videos.",
+      "test_conservative": "Single-video target missed. Conservative recommendation only.",
+      "test_failed": "Test failed. Please retry.",
+      "test_cancelled": "Test cancelled.",
+      "test_windows": "Testing currently requires Windows.",
+      "test_missing": "FFmpeg or FFprobe is missing from this installation.",
+      "test_record": "{{date}} · v{{version}} · {{count}} videos passed",
+      "test_record_conservative": "{{date}} · v{{version}} · Conservative recommendation",
+      "test_record_budgets": "Cache {{cache}} MiB · Shared texture transfer buffers {{gpu}} MiB",
+      "test_stale": "Device or software changed. Run a new test.",
+      "restore_tested": "Apply test profile",
+      "clear_test": "Clear test record",
+      "preview_gpu_pool_slots": "Shared buffers per video",
+      "frame_ring_mib": "Video frame cache",
+      "motif_cache_mib": "Animation frame cache",
+      "filmstrip_cache_mib": "Video thumbnail cache",
+      "waveform_cache_mib": "Audio waveform cache",
+      "unit_frames": "frames",
+      "unit_videos": "videos",
+      "unit_megapixels": "megapixels"
+  },
+  retime: {
+    "title": "Retime",
+    "apply_selection": "Apply to all {{count}} selected clips",
+    "mixed": "Selected clips have different rates or durations. Entering a value applies it to every selected clip.",
+    "refused": "{{reason}}",
+    "details": {
+      "collision": "“{{clip}}” would overlap “{{blocking}}”. Shorten the duration or increase the speed.",
+      "collision_limits": "“{{clip}}” would overlap “{{blocking}}”. Maximum duration: {{duration}}; minimum speed: ≈{{rate}}×.",
+      "transition": "This change would invalidate the transition “{{transition}}”. Its duration and the neighbouring clips must stay fixed."
+    },
+    "pitch_scope_one": "Applies to the {{count}} selected audio or Group clip.",
+    "pitch_scope_other": "Applies to the {{count}} selected audio or Group clips.",
+    "conflicts": {
+      "EmptyTargets": "Select at least one clip.",
+      "LayerMissing": "A selected clip no longer exists.",
+      "Locked": "Unlock the selected clip and its track.",
+      "UnsupportedContent": "Select video, audio, animated images, Motifs or Groups.",
+      "NestedTargets": "Select either the Group or its children.",
+      "InvalidSnapshot": "The clip timing is invalid.",
+      "InvalidTarget": "Enter a positive rate or duration.",
+      "Numeric": "The requested timing exceeds the supported precision.",
+      "DurationTooShort": "The duration must span at least one frame or audio sample.",
+      "Transition": "This change would invalidate an existing transition.",
+      "Collision": "The new duration overlaps another clip. Shorten it or increase the rate."
+    },
+    "rate": "Speed",
+    "duration": "Target duration",
+    "reset": "Reset to 1×",
+    "pitch": "Preserve pitch",
+    "hint": "Change duration by adjusting speed, keeping the content range."
+  },
+  crop: { title: "Crop", edit: "Crop in preview", done: "Finish cropping (Enter / Esc)", reset: "Reset crop", unavailable: "Select an unlocked, visible video clip in the preview composition to crop" },
+  layer_scale: { menu_title: "Preview actions", fit: "Fit to frame", fill: "Fill frame", original: "Restore original size" },
+  fonts: {
+    app_default: "App default (Liberation Sans / Noto Sans SC)",
+    loading: "Loading installed fonts…",
+    load_failed: "Could not load installed fonts.",
+    retry: "Retry",
+  },
+  text_correction: {
+    title: "Text correction", script: "Reference text", placeholder: "Paste your reference text here…",
+    saved_with_project: "Saved with your project. Applying correction splits or joins captions at manuscript line breaks and sentence endings, estimating cuts when word timing is unavailable.",
+    scope: "Apply to", selected: "Selected captions ({{count}})", all: "All captions in this composition ({{count}})",
+    apply_selected: "Correct {{count}} selected captions", apply_all: "Correct all {{count}} captions",
+    clear: "Clear text", close: "Close", running: "Correcting…", locked: "Unlock the target captions to correct their text.",
+    completed: "Text correction completed ({{count}} captions changed)",
+  },
+  models: {
+    current_label: "Current model", none_selected: "None", none_active: "No model selected",
+    switch_hint: "Select a model to switch automatically. Downloads and first-time setup require an extra step.",
+    needs_download: "Download required…", needs_configuration: "Setup required…", setup_model: "Set up {{name}}",
+    custom: "Custom", add_model: "Add custom model…", edit_model: "Model settings…",
+    custom_type_hint: "Choose the adapter that matches your model or service.",
+    add_use: "Add and use", configure_use: "Configure and use",
+    files_missing: "Local files are missing. Check the model settings.",
+    local: "Local", online: "Online", online_model: "Online model",
+    current: "In use", ready: "Ready", not_verified: "Not verified", not_downloaded: "Not downloaded",
+    downloading: "Preparing downloads…", verifying: "Checking model…", error: "Preparation failed",
+    needs_components: "A Windows runtime component is required", installing_components: "Installing runtime components…",
+    install_components: "Install runtime components", download_size: "Download: {{size}}", unsupported: "Automatic downloads are unavailable on this platform. Add a custom model with compatible local files.",
+    cpu_state: "Verified on CPU · Processing may be slower", online_notice: "Saving or using sends a small test request that may incur a charge. Processing sends media to this service.",
+    download_use: "Download and use", retry: "Retry", cancel: "Cancel",
+    name: "Custom model name",
+    device_auto: "Automatic (blank); cpu or a device identifier", restore: "Restore automatic configuration",
+    custom_identity: "Changing a built-in model’s files or endpoint creates a named custom model. The built-in configuration is kept.",
+    remove: "Remove custom entry", confirm_remove: "Confirm removal",
+    empty_hint: "Choose a model from the list when you need it. Models are downloaded only after you confirm.",
+    edit: "Edit",
+    editor_hint: "Configuration is checked before saving. Closing this window keeps any preparation running.",
+    save: "Save settings",
+    add_only: "Add without selecting",
+    download_save: "Download and save",
+    details: "View progress",
+    clear_downloads: "Clear downloads",
+    clear_hint: "Remove this model’s app-managed downloads. Shared files needed by other models and files you selected yourself are kept.",
+    remove_hint: "Remove this custom configuration and its saved API key. Local files are kept.",
+    active_remove_hint: "This model is currently selected. After removal, the selection will be None.",
+    analysis_options: "Video analysis options",
+    openai_speech_hint: "OpenAI Whisper uses the official OpenAI service and the fixed whisper-1 model. Only an API key is required; custom server addresses are not supported.",
+    vision_local_hint: "Use a compatible llama-mtmd executable, model GGUF and matching mmproj projector. Both model files are required.",
+    funasr_hint: "Use a sherpa-onnx executable, compatible ONNX model and its tokens file.",
+    whisper_hint: "Use a whisper.cpp executable and compatible Whisper model file.",
+    key_optional: "Optional for services without authentication",
+    model_optional: "Optional — most transcription servers serve one model",
+    speech_endpoint_hint: "Any OpenAI-compatible transcription server. For whisper.cpp, start whisper-server with --inference-path /v1/audio/transcriptions, or enter its /inference URL.",
+    endpoint_timeout: "Request timeout (s)",
+    endpoint_timeout_hint: "Leave empty for automatic: the wait grows with the size of each request. Raise it for a slow self-hosted server.",
+    endpoint_frames_per_request: "Frames per request",
+    endpoint_concurrency: "Concurrent requests",
+    endpoint_batching_hint: "Leave empty for 16 frames, one request at a time. A long clip is sent as several requests at the sampling rate you chose; a model with a larger context can take more frames each, and a server that batches can take several at once.",
+  },
+  motion_path: {
+    conversion_calculating:'Calculating preview… You can keep editing or cancel.',
+    conversion_ready:'Preview updated. Apply to save this conversion.',
+    conversion_limited:'Preview updated, but the target error was not met.',
+    conversion_applying:'Applying conversion…',
+    conversion_unavailable:'Open a composition to calculate the conversion.',
+    conversion_failed:'Could not calculate the preview. Change the settings or reopen the conversion to try again.',
+    conversion_apply_failed:'Could not apply the conversion. Your preview is retained; try applying again.',
+    conversion_tolerance_error:'The target error was not met. Shorten the range or increase the target error.',
+    conversion_details:'About this conversion',
+    conversion_range_note:'Only motion within this range is retained; outside it, the position holds at the endpoints.',
+    node:'Path point', choose_node:'Choose a point…', node_progress:'Point {{index}} · {{progress}}',
+    arrive_here:'Reach point at current time',
+    arrival_caption:'Set a progress keyframe at the playhead.',
+    insert_caption:'Double-click the path to add a point.',
+    arrival_hint:'Add or update a progress keyframe at the playhead. Existing keys are preserved.',
+    arrival_outside:'Move the playhead inside this clip to set an arrival keyframe.',
+    // `mode_xy` / `mode_path` are the position mode switcher's segments, and
+    // `mode_xy` doubles as the caption on the X|Y value row it governs.
+    mode_xy:'XY', mode_path:'Path',
+    path:'Path', nodes:'{{count}} points', node_of:'Point {{index}} / {{count}}',
+    node_mode:'Spatial node', select_node:'Select a point on the path to edit it', mode_corner:'Corner', mode_smooth:'Smooth', mode_auto:'Auto smooth', insert:'Insert after point',
+    insert_hint:'Double-click the path to insert without changing its shape. Adjacent Auto nodes become Smooth to preserve their handles.',
+    start_frame:'Start frame (local)', end_frame:'End frame (inclusive)', every_frames:'Maximum frame interval', samples_used:'keys per property', range_error:'The range must stay within this clip.',
+    tolerance:'Target error (pixels)', nodes_used:'{{count}} path nodes',
+    jump_error:'This range contains an instantaneous position jump. Convert separate ranges or keep the current mode.',
+    conversion_method:'Conversion method', editable_curves:'Editable curves', frame_bake:'Frame baking',
+    axis_keys:'X: {{x}} keys · Y: {{y}} keys',
+    conversion_range_error:'Choose a valid range with microsecond-compatible frame rate.',
+    conversion_options_error:'Use a target of at least 0.05 pixels and a positive integer frame interval.',
+    conversion_capacity_error:'Conversion exceeds 4096 keys per property or available memory. Shorten the range or relax the target error.',
+    node_limit:'The 128-node budget cannot meet the target. Preview only: shorten the range or relax the target.',
+    key_limit:'The 4096-key limit per property cannot meet the target. Preview only: shorten the range or relax the target.',
+    frame_grid:'The current frame grid cannot meet the target. Preview only: relax the target or keep the current mode.',
+    create:'Create motion path', edit:'Edit path', show:'Show trajectory', done:'Done',
+    add:'Add point', curve:'Line / curve', remove:'Remove point',
+    anchor:'The marked anchor follows the path. Select a point to edit its handles.',
+    corner:'The marked anchor follows the path.',
+    to_path:'Convert XY to path…', to_xy:'Convert to XY…', preview:'Preview conversion', apply:'Apply conversion', cancel:'Cancel',
+    error:'Measured position error: {{error}} px ({{count}} checks)',
+    conversion_note:'Only the chosen range is retained; outside it the result holds. Editable curves use sparse keys and keep constant axes static. Frame baking retains regularly spaced keys and adds more when needed. Error is measured at frames, quarter-frames and key boundaries, not guaranteed continuously. Instantaneous position jumps are refused.',
+  },
+  app: {
+    title: "WeftCut",
+    core_status: "core: {{status}}",
+    window_title: "WeftCut — {{name}}",
+  },
+  splash: {
+    starting: "Starting system checks…",
+    checking: "Checking: {{items}}",
+    check_separator: " · ",
+    resolving_project: "Checking the launch project…",
+    ready: "Ready",
+    check: {
+      evaluation_runtime: "evaluation engine",
+      motif_capture_runtime: "Motif capture runtime",
+      motif_catalog: "Motif catalog",
+      motif_catalog_listener: "Motif listeners",
+    },
+  },
+  keyframe: {
+    stopwatch_enable: "Animate this property (add a keyframe at the playhead)",
+    stopwatch_disable: "Stop animating — removes all keyframes (keeps the value at the playhead; undoable)",
+    stopwatch_offscreen: "Move the playhead over the clip to keyframe",
+    // The stopwatch's accessible name. A merged axis row puts two of them
+    // side by side with no caption, so the name has to carry the param.
+    stopwatch_param: "{{param}} — {{action}}",
+    nav_prev: "Previous keyframe",
+    nav_set: "Add or remove a keyframe at the playhead",
+    nav_next: "Next keyframe",
+    interp_hold: "Hold",
+    interp_linear: "Linear",
+    interp_ease_in: "Ease In",
+    interp_ease_out: "Ease Out",
+    interp_ease: "Ease",
+    interp_ease_in_out: "Ease In-Out",
+    // Preset gallery labels — one per canonical-table id (keyframe.interp_<id>,
+    // see src/shared/easing.ts), family style matching "Ease In/Out/In-Out".
+    interp_ease_in_sine: "Sine In",
+    interp_ease_out_sine: "Sine Out",
+    interp_ease_in_out_sine: "Sine In-Out",
+    interp_ease_in_quad: "Quad In",
+    interp_ease_out_quad: "Quad Out",
+    interp_ease_in_out_quad: "Quad In-Out",
+    interp_ease_in_cubic: "Cubic In",
+    interp_ease_out_cubic: "Cubic Out",
+    interp_ease_in_out_cubic: "Cubic In-Out",
+    interp_ease_in_quart: "Quart In",
+    interp_ease_out_quart: "Quart Out",
+    interp_ease_in_out_quart: "Quart In-Out",
+    interp_ease_in_quint: "Quint In",
+    interp_ease_out_quint: "Quint Out",
+    interp_ease_in_out_quint: "Quint In-Out",
+    interp_ease_in_expo: "Expo In",
+    interp_ease_out_expo: "Expo Out",
+    interp_ease_in_out_expo: "Expo In-Out",
+    interp_ease_in_circ: "Circ In",
+    interp_ease_out_circ: "Circ Out",
+    interp_ease_in_out_circ: "Circ In-Out",
+    interp_ease_in_back: "Back In",
+    interp_ease_out_back: "Back Out",
+    interp_ease_in_out_back: "Back In-Out",
+    interp_ease_in_elastic: "Elastic In",
+    interp_ease_out_elastic: "Elastic Out",
+    interp_ease_in_out_elastic: "Elastic In-Out",
+    interp_ease_in_bounce: "Bounce In",
+    interp_ease_out_bounce: "Bounce Out",
+    interp_ease_in_out_bounce: "Bounce In-Out",
+    elastic_amplitude: "Amplitude",
+    elastic_period: "Period",
+    procedural_badge: "Procedural",
+    smooth: "Smooth",
+    easing_library: "Easing library…",
+    // Tangent-handle context menu: the key's continuity.
+    continuity_smooth: "Smooth",
+    continuity_broken: "Broken",
+    // Extrapolation submenus on a track's first / last key; the five modes
+    // (keyframe.extrapolate_<id>, see renderer/keyframe/curve.ts).
+    extrapolate_before: "Extrapolate before",
+    extrapolate_after: "Extrapolate after",
+    extrapolate_hold: "Hold",
+    extrapolate_loop: "Loop",
+    extrapolate_ping_pong: "Ping-pong",
+    extrapolate_offset: "Offset",
+    extrapolate_continue: "Continue",
+    // Gallery row labels — one per canonical-table family (keyframe.family_<x>,
+    // derived from the preset id's last segment; "classic" heads the table).
+    family_classic: "Basic",
+    family_sine: "Sine",
+    family_quad: "Quad",
+    family_cubic: "Cubic",
+    family_quart: "Quart",
+    family_quint: "Quint",
+    family_expo: "Expo",
+    family_circ: "Circ",
+    family_back: "Back",
+    family_elastic: "Elastic",
+    family_bounce: "Bounce",
+  },
+  startup: {
+    subtitle: "Pick a project to open, or create a new one.",
+    new_project: "New project",
+    open_project: "Open project…",
+    open_dialog_title: "Open WeftCut project folder",
+    recent_heading: "Recent",
+    recent_loading: "Loading…",
+    recent_empty: "No recent projects yet.",
+    recent_remove_hint: "Remove from list",
+    recent_show_all: "Show all ({{count}})",
+    recent_show_less: "Show less",
+    recent_open_failed: "Couldn't open project: {{detail}}",
+    recents_load_failed: "Couldn't load the recent projects list: {{detail}}",
+    not_project_folder:
+      "That folder isn't a WeftCut project. Pick a folder created by WeftCut, or start a new project.",
+    project_folder_missing:
+      "That project folder no longer exists — it may have been moved, renamed, or deleted. It was removed from the recent list.",
+    // States the mismatch and stops. "Update WeftCut" is a guess that happens to
+    // be wrong for the file this fires on most often — a project left behind by
+    // a different build of this same repo.
+    project_schema_too_new:
+      "That project was written by a different build of WeftCut (project format v{{found}}); this build reads v{{supported}}.",
+    project_schema_unreadable:
+      "That folder's project.json declares no project format version this build recognizes, so it can't be opened.",
+    project_file_unreadable:
+      "That project's project.json couldn't be read: {{detail}}",
+    project_invalid:
+      "That project's contents didn't pass validation — the file may be damaged or hand-edited.",
+    time_just_now: "just now",
+    time_minutes_ago_one: "{{count}} minute ago",
+    time_minutes_ago_other: "{{count}} minutes ago",
+    time_hours_ago_one: "{{count}} hour ago",
+    time_hours_ago_other: "{{count}} hours ago",
+    time_days_ago_one: "{{count}} day ago",
+    time_days_ago_other: "{{count}} days ago",
+  },
+  // Canvas vocabulary shared by the New Project dialog and Settings > Canvas.
+  // Both surfaces author the same two values off the same lists
+  // (`startup/canvasPresets.ts`), so the wording lives in one place too.
+  canvas: {
+    // Parenthetical after a rate — what a newcomer needs in order to pick 25
+    // over 30, at the one moment the choice is still freely reversible.
+    fps_note: {
+      film: "film",
+      pal: "PAL",
+      ntsc: "NTSC",
+      ntsc_film: "NTSC film",
+    },
+    size_range: "Width and height must be between {{min}} and {{max}}.",
+    size_odd: "Width and height must be whole even numbers.",
+    size_too_many_pixels: "Total canvas area cannot exceed 8K (7680 × 4320).",
+  },
+  new_project: {
+    title: "New project",
+    name: "Project name",
+    name_placeholder: "e.g. My documentary",
+    parent_folder: "Save in",
+    parent_folder_placeholder: "Pick a parent folder…",
+    choose_folder: "Choose…",
+    pick_parent_title: "Pick a parent folder for the new project",
+    validation_empty: "Project name is required.",
+    validation_whitespace: "Project name can't start or end with whitespace.",
+    validation_invalid_chars:
+      "Project name can't contain any of: \\ / : * ? \" < > |",
+    validation_trailing_dot: "Project name can't end with a period.",
+    validation_reserved: "Project name is reserved by the OS — pick another.",
+    resolution: "Resolution",
+    resolution_custom: "Custom",
+    custom_size: "Custom size",
+    width: "Width",
+    height: "Height",
+    frame_rate: "Frame rate",
+    create: "Create",
+    creating: "Creating…",
+    cancel: "Cancel",
+    folder_exists:
+      "A folder with that name is already there. Pick a different name, or a different location.",
+    invalid_preset: "That canvas size or frame rate isn't valid — pick another.",
+    create_failed: "Couldn't create the project: {{detail}}",
+  },
+  project: {
+    canvas: "{{width}}×{{height}} · {{fps}}",
+    fps_simple: "{{fps}}fps",
+    fps_rational: "{{fps}}fps",
+    duration: "{{value}}",
+  },
+  menu: {
+    file: "File",
+    edit: "Edit",
+    insert: "Insert",
+    view: "View",
+    help: "Help",
+  },
+  dev: {
+    menu: "Dev",
+    performance_monitor: "Performance Monitor",
+    motif_cold_start: "Motif Cold Start (Clear Cache and Reopen Project)",
+  },
+  updates: {
+    title: 'Check for Updates',
+    available_manual: '{{version}} is available. It will only download when you choose Download and install, then save your work and restart to install.',
+    download_install: 'Download and install',
+    downloading_action: 'Downloading…',
+    'download-failed': 'Could not download the update. The app has not restarted. Check your connection and disk space, then try again.',
+    available: 'A new version is available',
+    version: '{{version}} is downloaded and ready.',
+    restart: 'Update and restart app',
+    later: 'Later',
+    restarting: 'Saving and restarting…',
+    ready_auto: 'Choose Later to keep working. The update will install when you close the app, without reopening it.',
+    ready_manual: 'Choose Later to keep working. You can return to the update from the Help menu, the update icon on the start screen, or the bell in the editor’s status bar.',
+    'not-ready': 'The update is not ready yet. Please wait for the download to finish.',
+    'save-failed': 'Could not save your work state. The app has not restarted. Check disk space and project permissions, then try again.',
+    disabled: 'Automatic updates are unavailable in this build. Download releases from the project page.',
+    idle: 'Ready to check for updates.',
+    checking: 'Checking for updates…',
+    current: 'You are up to date.',
+    downloading: 'Downloading {{version}}… {{percent}}%',
+    error: 'Could not check for or download the update. Try again, or download it from the releases page.',
+    error_location: 'WeftCut cannot update itself where it is now. Move it to the Applications folder and open it from there, or download {{version}} from the releases page.',
+    releases: 'View Releases',
+    skip: 'Skip this version',
+    indicator_available: '{{version}} is available',
+    indicator_ready: '{{version}} is ready to install',
+    indicator_error: 'Could not download {{version}}',
+  },
+  diagnostics: {
+    title: 'Report an Issue',
+    unclean_exit_title: 'WeftCut did not close normally last time',
+    unclean_exit_body: "WeftCut detected that the last session did not close normally. If you didn't end it yourself, please report it.",
+    process_failure_title: 'A WeftCut process failed last time',
+    process_failure_body: 'WeftCut detected that a process crashed or failed in the last session. Reporting it helps us fix it.',
+    description: 'Export a diagnostic ZIP, review its contents, then attach it to a GitHub issue. Opening GitHub prepares a draft; you choose when to submit it.',
+    privacy: 'Includes app and system versions, CPU / memory / GPU information, recent resource samples and redacted logs. No project files or media are included. Error text may still contain private information. GitHub issues and attachments are public; nothing is uploaded automatically.',
+    export: 'Export Diagnostic Bundle…',
+    github: 'Open GitHub Issue',
+    reveal: 'Show Exported File',
+    later: 'Not Now',
+    saved: 'Saved to {{path}}. Review the ZIP and drag it into your GitHub issue to attach it.',
+    unavailable: 'Diagnostic storage is unavailable. You can still report the problem on GitHub.',
+    error: 'The action could not be completed. Please try again.',
+  },
+  help: {
+    check_updates: "Check for Updates…",
+    report_issue: "Report an Issue…",
+    about: "About WeftCut",
+    version: "Version {{version}}",
+    developed_by: "Developed by UncleChair",
+    license_mit: "License: WeftCut is <mit>MIT</mit>-licensed.",
+    third_party:
+      "Third-party components have their own licenses: <notices>THIRD-PARTY-NOTICES.md</notices>.",
+    copy_version: "Copy Version Info",
+    copied: "Copied",
+    project_link: "Project Page",
+  },
+  view: {
+    display_mode_heading: "Track display",
+    panels_heading: "Panels",
+    display_ab_roll: "A/B Roll",
+    display_all_tracks: "All Tracks",
+    follow_playhead: "Timeline auto-scroll",
+    show_markers: "Show markers",
+    show_safe_areas: "Show safe areas",
+    grid: "Grid",
+    review_overlay: "Review overlay",
+    close_active_panel: "Close Active Panel",
+    reset_workspace: "Reset Workspace",
+    workspaces_heading: "Workspaces",
+    workspace_editing: "Default Layout",
+    save_workspace: "Save Workspace",
+    save_workspace_as: "Save as New Workspace…",
+    rename_workspace: "Rename Workspace…",
+    delete_workspace: "Delete Workspace",
+    enter_agent_mode: "Enter Agent Mode",
+  },
+  quick_actions: {
+    hand_tool_hint:
+      "Hand tool: drag to pan the enlarged preview. The middle mouse button pans under any tool, and the wheel or a trackpad pinch zooms. Escape returns to Selection.",
+    tools: "Tools",
+    toggles: "Toggles",
+    edit: "Edit",
+    range: "In/Out",
+    markers: "Markers",
+    resolution: "Playback resolution",
+    // The cycling button's three tooltips: current rung, then the rung a click
+    // moves to. Both halves are load-bearing here in a way they are not for the
+    // two-state toggles below — that button's glyph and pressed border already
+    // say which of two states it is in, whereas three rungs mean the successor
+    // is genuinely unguessable without being told.
+    resolution_full_hint: "Playback resolution: Full. Click for 1/2.",
+    resolution_half_hint: "Playback resolution: 1/2. Click for 1/4.",
+    resolution_quarter_hint: "Playback resolution: 1/4. Click for Full.",
+    // Shown on the disabled Clear button — says why it's disabled rather than
+    // repeating the label the user can't act on.
+    clear_range_empty: "No in/out points marked",
+    // The Text tool's two tooltips. Armed or armable, the hint teaches the
+    // gesture the icon alone cannot; disabled (an empty project has no canvas
+    // to click), it names the remedy — `clear_range_empty`'s rule.
+    text_tool_hint: "Text tool: click the preview to add text, click text to edit it",
+    text_tool_needs_layer: "Add a clip first, or insert text from the Insert menu",
+    // The marker toggle's two-state hint: current state, then what a click does.
+    // Both halves matter — the pressed border says WHICH state, not what
+    // pressing again would get you.
+    markers_shown_hint: "Showing timeline markers. Click to hide.",
+    markers_hidden_hint: "Timeline markers hidden. Click to show.",
+    // Same two-state shape for the three toggles that joined the section: the
+    // pressed border says which state, the hint says what a click does.
+    snap_on_hint: "Clip snapping on. Click to disable.",
+    snap_off_hint: "Clip snapping off. Click to enable.",
+    canvas_snap_on_hint: "Canvas snapping on. Click to disable.",
+    canvas_snap_off_hint: "Canvas snapping off. Click to enable.",
+    grid_on_hint: "Grid on. Click to turn off.",
+    grid_off_hint: "Grid off. Click to turn on.",
+    review_overlay_on_hint: "Review overlay on: tacks and unreviewed agent changes show on the timeline. Click to hide.",
+    review_overlay_off_hint: "Review overlay off. Click to show tacks and unreviewed agent changes on the timeline.",
+    follow_on_hint: "Timeline auto-scroll on. Click to disable.",
+    follow_off_hint: "Timeline auto-scroll off. Click to enable.",
+    safe_area_on_hint: "Showing safe-area guides. Click to hide.",
+    safe_area_off_hint: "Safe-area guides hidden. Click to show.",
+    link_override_on_hint: "Links off — edits act on single clips. Click to restore links.",
+    link_override_off_hint: "Links on. Click to edit single clips without holding Alt.",
+    // Disabled-button reasons, the `clear_range_empty` rule: name the
+    // precondition rather than restate a label that can't be acted on.
+    link_selected: "Link selected clips",
+    unlink_selected: "Unlink selected clips",
+    link_needs_two: "Select two or more unlinked clips to link them",
+    link_mixed_selection: "Select clips that are all unlinked, or all in one link",
+    // Group / Ungroup, same rule: a greyed button names the precondition. The
+    // three not-plain reasons are separate strings because each names a
+    // different field to reset (`timeline/groupEligibility.ts`).
+    group_selected: "Group selected clips",
+    group_needs_selection: "Select one or more clips to group them",
+    group_locked: "Unlock the selected clips to group them",
+    ungroup_selected: "Ungroup — put the group's clips back",
+    ungroup_needs_one_group: "Select exactly one group clip to ungroup it",
+    ungroup_locked: "Unlock the group clip to ungroup it",
+    ungroup_not_plain_transform:
+      "Reset the group's transform first — ungrouping cannot carry it onto the clips inside",
+    ungroup_not_plain_opacity:
+      "Reset the group's opacity to 1 first — ungrouping cannot carry it onto the clips inside",
+    ungroup_not_plain_time_map: 'Reset the Group playback rate to 1× before ungrouping.',
+    ungroup_not_plain_effects:
+      "Remove the group's effects first — ungrouping cannot carry them onto the clips inside",
+    // Ripple delete. Only TWO reasons live here: the rest of them are refusals
+    // the planner returns, and their sentences are the curated refusal copy
+    // under `errors.ripple_*` — the same line the status bar shows when the
+    // actor refuses for real, so there is no second wording to keep in step
+    // (`timeline/rippleEligibility.ts`).
+    ripple_needs_selection:
+      "Select the clips to remove and close the gap after, or click a gap to close it",
+    // Not a refusal but the precedence rule showing through: the key is about to
+    // do the keyframe delete, so the row says so rather than pretending the
+    // ripple is merely unavailable.
+    ripple_keyframes:
+      "Keyframes are selected — this key deletes them. Deselect them to ripple the clips instead",
+    // Add to Group. Only the clip's context menu shows these, but they are the
+    // same kind of sentence as the two above and drift if kept apart. Its shape
+    // failures stay separate rather than collapsing the way Ungroup's do: the
+    // destination and the members are two different things to go and select.
+    add_to_group_needs_selection:
+      "Select the clips to add, and the group clip to add them to",
+    add_to_group_needs_one_group: "Select exactly one group clip to add to",
+    add_to_group_needs_member:
+      "Select the clips to add as well as the group clip",
+    add_to_group_locked: "Unlock the clips you are adding to the group",
+    add_to_group_retimed: "Reset the destination Group to 1× before changing its members.",
+    add_to_group_starts_before_group:
+      "This clip starts before the group does — move it later first",
+    // Move to…. The first three explain the greyed submenu TRIGGER — what to
+    // go and fix about the selection — and the rest explain one greyed
+    // destination row, where the answer is to pick a different one. A
+    // destination row names itself, so none of these names one (CONTEXT.md's
+    // Composition entry says why the word stays out of UI copy).
+    move_to_composition_needs_selection: "Select the clips to move",
+    move_to_composition_locked: "Unlock the clips you are moving",
+    move_to_composition_no_destination:
+      "There is nowhere else these clips can go",
+    move_to_composition_already_there: "These clips are already here",
+    move_to_composition_cycle:
+      "A selected group already contains it — the group cannot also sit inside it",
+    move_to_composition_offscreen:
+      "Not on screen at the playhead — the clips land at its start",
+    // Transcribe. The clip menu is the only surface that shows these, but
+    // they are the same kind of sentence as the ones above and drift if kept
+    // apart. Each names one thing to go and do — which is why the wrong-kind
+    // and speed cases stay separate: "pick a clip with sound" and "split a
+    // speed-1 segment off" are different work.
+    auto_caption_needs_selection: "Select a video or audio clip to transcribe",
+    auto_caption_needs_audio_kind:
+      "This clip carries no sound — select a video or audio clip",
+    auto_caption_speed_not_one:
+      "This clip is re-timed — split a normal-speed segment off it first, or the words land in the wrong place",
+    auto_caption_transcribing: "A transcription is already running",
+    // Detect pauses. Mostly the transcribe gate, said in the verb the row
+    // uses: the place to go is the same, but "to transcribe" and "to measure"
+    // are not the same errand.
+    //
+    // `needs_selection` asks for an AUDIO clip where transcription asks for
+    // either kind, and that is not a slip: a picture clip is measurable only
+    // through the audio it is linked to, so naming the audio is the shortest
+    // route to a selection that works.
+    detect_pauses_needs_selection: "Select an audio clip to measure",
+    detect_pauses_needs_audio_kind:
+      "This clip carries no sound — select a video or audio clip",
+    detect_pauses_speed_not_one:
+      "This clip is re-timed — split a normal-speed segment off it first, or the pauses land in the wrong place",
+    // The one reason that belongs to pauses alone: the clip's own file may
+    // carry a track, but what plays is the linked Audio layer, and this clip
+    // has none (spec Decision 1).
+    detect_pauses_plays_no_sound: "This clip plays no sound",
+    // Describe content. Its own three sentences again, and the kind case is the
+    // one that genuinely differs from the two blocks above: a description reads
+    // frames, so sound is not what makes a clip eligible here.
+    describe_needs_selection: "Select a video clip to describe",
+    describe_needs_video_kind:
+      "A description reads frames — select a video clip",
+    describe_speed_not_one:
+      "This clip is re-timed — split a normal-speed segment off it first, or the descriptions land in the wrong place",
+    describe_already_running:
+      "A description is already running — wait for it to finish",
+  },
+  dock_workspace: {
+    editing_label: "Editing workspace",
+    empty_label: "Empty workspace",
+    all_closed: "All panels are closed.",
+    open_panel: "Open Panel",
+    reset: "Reset Workspace",
+    close_panel: "Close Panel",
+    move_panel: "Drag to move {{title}}",
+    // Over a Panel that an export in progress has locked.
+    locked_during_export: "Locked while the export runs.",
+    scroll_tabs: {
+      start: "Show earlier Panel tabs",
+      end: "Show later Panel tabs",
+    },
+    // A timeline Panel's own tab: it names the composition it shows, and its
+    // tooltip prints the route the Panel was opened along.
+    timeline_tab: {
+      // The first step of that route. The root composition is never named in
+      // the UI — it IS the timeline — so a path starts at the project, and this
+      // stands in for a project saved under no name yet.
+      project: "Project",
+      // Offered only where a Group is placed more than once: two placements are
+      // two different answers to "where on the film's clock does this sit", and
+      // the tab has to say which one it reads its times against.
+      switch_anchor: "Switch instance",
+      switch_anchor_hint: "Choose the placement instance this Group timeline refers to",
+      anchor_entry: "{{path}} · {{time}}",
+    },
+    panels: {
+      media: "Media Pool",
+      transitions: "Transitions",
+      preview: "Preview",
+      timeline: "Timeline",
+      "quick-actions": "Quick Actions",
+      attribute: "Attribute",
+      caption: "Caption",
+      marker: "Markers",
+      "role-mixer": "Role Mixer",
+      effect: "Effect",
+      playhead: "Playhead",
+      agent: "Agent",
+      history: "History",
+      // Plural, because the Panel is a list of them and the tab names what it
+      // holds. Never "Scene detection" — the detector's name is not what a
+      // reviewer is looking at.
+      shots: "Shots",
+    },
+    position: {
+      left: "left",
+      right: "right",
+      top: "top",
+      bottom: "bottom",
+      center: "center",
+    },
+    announce: {
+      opened: "{{title}} opened",
+      closed: "{{title}} closed",
+      maximized: "{{title}} maximized",
+      restored: "{{title}} restored",
+      pick_target:
+        "Moving {{source}}. Target {{target}}, {{current}} of {{total}}. Press Enter to choose it.",
+      pick_edge:
+        "Dock at the {{position}} of {{target}}. Use the arrow keys to change position, then press Enter.",
+      committed: "Moved {{source}} to the {{position}} of {{target}}.",
+      cancelled: "Panel move cancelled.",
+      not_allowed: "That panel move is not allowed.",
+    },
+  },
+  workspace_name: {
+    save_as_title: "Save as New Workspace",
+    rename_title: "Rename Workspace",
+    name_label: "Workspace name",
+    placeholder: "e.g. Color Grading",
+    confirm: "Save",
+    cancel: "Cancel",
+  },
+  marker_rename: {
+    title: "Rename Marker",
+    label: "Marker label",
+    placeholder: "e.g. Trim this pause",
+    confirm: "Rename",
+    cancel: "Cancel",
+  },
+  marker_panel: {
+    // A section heading, and the whole disclosure control: the composition's
+    // name plus how many markers it holds. A composition with none still gets
+    // one — "nothing is marked here" is an answer, and a missing heading is not.
+    section_heading: "{{name}} ({{count}})",
+    // The section for markers whose clip no longer shows the frame they name.
+    // CONTEXT.md's pinned word.
+    hibernating: "Hibernating",
+    // Row fields. There is deliberately no time field: a marker's time is
+    // spatial and belongs to the lane's drag (docs/features.md#markers) — on an
+    // anchored marker the next reconcile would overwrite anything typed here.
+    label_field: "Marker label",
+    note_field: "Marker note",
+    color_field: "Marker color",
+    // A marker that follows a clip, as against a free one. CONTEXT.md's pinned
+    // word — never "clip marker", which would name a second entity.
+    anchored: "Anchored",
+    go_to: "Go to {{timecode}}",
+    // A hibernating row seeks nowhere: the frame it names is on no timeline
+    // right now, so the only honest destination is the clip it is tied to.
+    reveal_clip: "In the footage at {{timecode}} — reveal the anchoring clip",
+    // The one exit from hibernation. CONTEXT.md's pinned word.
+    detach: "Detach",
+    // The row's delete. Same words as the lane's context menu row
+    // (`timeline.delete_marker`) and deliberately its own key: the Panel names
+    // its own affordances, as `detach` above already does.
+    delete: "Delete marker",
+  },
+  shots_panel: {
+    // State (a): no subject. It names the kind rather than saying "nothing
+    // selected", because an Audio or Text clip IS selected and still has no
+    // shots to review.
+    needs_video_clip: "Select a video clip to review its shot cuts.",
+    // Between the two states, while the probe stats the sidecar. A distinct
+    // sentence, because "not analyzed" would be a claim the probe has not made
+    // yet — and it flickers past in a frame on a hit.
+    checking: "Checking for a shot analysis…",
+    not_analyzed: "“{{clip}}” has not been analyzed for shot cuts yet.",
+    // No percentage exists to report: the ffmpeg pass emits metadata lines, not
+    // progress. A running label and a disabled button are the whole affordance.
+    analyzing: "Analyzing “{{clip}}” — this decodes the whole source once.",
+    analyze: "Analyze",
+    analyze_running: "Analyzing…",
+    // A scanned source whose window holds no boundary above the threshold. An
+    // answer, not a failure.
+    no_shots: "No shot cuts in this clip's range.",
+    // The strip's axis, named by what it MEASURES. The wire field is called
+    // `sensitivity` and reaches no label: a higher value yields FEWER cuts, so
+    // the word reads backwards — the control's meaning is the line's position.
+    axis_frame_change: "Frame change",
+    threshold_line: "Shot cut threshold",
+    threshold_value: "{{value}} frame change",
+    // The floor scan emitted nothing inside this clip's range, so there is no
+    // signal for a line to cross.
+    no_candidates:
+      "No candidate cuts in this clip's range — nothing for a threshold to sort.",
+    // Output granularity, not accuracy: boundaries closer together than this
+    // are dropped. In milliseconds because the source's own frame rate is not
+    // known here.
+    min_shot_length: "Minimum shot length",
+    milliseconds: "ms",
+    go_to: "Go to {{timecode}}",
+    cover_frame: "Cover frame of shot {{index}}",
+    // The pair either side of a candidate boundary — the one look that answers
+    // "is this a real cut".
+    frame_before: "Frame before the cut",
+    frame_after: "Frame at the cut",
+    score: "Detector confidence at this boundary",
+    // Checked = this boundary stands. Clearing it merges the shot into the one
+    // before it; the cleared boundary stays on that row so it can be restored.
+    accept_candidate: "Cut at the start of shot {{index}}",
+    restore_candidate: "Restore the cut at {{timecode}}",
+    // The toggle's hover text says the ACTION, as the seam glyph does — the
+    // label above names the option, which is not the same thing.
+    merge_candidate_hint: "Clear the cut and merge into the previous shot",
+    restore_candidate_hint: "Split here",
+    // Checked = keep. Every row starts kept, so a plain apply is "split here"
+    // and discarding is opted into row by row.
+    keep_shot: "Keep shot {{index}}",
+    // Absent and not zero: a span nothing has sampled has no brightness, and
+    // "0.00" would report a black frame.
+    stats_absent: "not measured",
+    // On-demand measurement of shots without statistics.
+    measure: "Measure shots",
+    measure_running: "Measuring…",
+    measure_hint: "Measure shot brightness, motion and sharpness",
+    // Disabled-button reasons, `apply_no_cuts`' rule: name the precondition
+    // rather than repeat a label that cannot be acted on.
+    measure_all_measured: "Every shot in this list is already measured",
+    measure_busy: "An apply is already running",
+    brightness: "Mean brightness",
+    motion: "Motion between sampled frames",
+    sharpness: "Focus proxy (variance of the Laplacian)",
+    brightness_value: "B {{value}}",
+    motion_value: "M {{value}}",
+    sharpness_value: "S {{value}}",
+    flag_black: "black",
+    flag_freeze: "freeze",
+    flag_fade: "fade",
+    // The three verbs over the reviewed list. Named for what they do to the
+    // clip, not for the wire's mode: "Split at cuts" says where, and the
+    // discarding one says both halves of what it is about to do.
+    apply_split: "Split at cuts",
+    apply_mark: "Mark cuts",
+    apply_discard: "Split and discard unchecked",
+    // Disabled-button reasons, `quick_actions.clear_range_empty`'s rule: name
+    // the precondition — here the remedy — rather than repeat a label that
+    // cannot be acted on. There is deliberately no sentence for an
+    // all-unchecked discard: the channel refuses that one and its wording is
+    // the only one, so the press goes out and the refusal lands below.
+    apply_no_cuts:
+      "Lower the threshold, or restore a cleared cut — this clip is one shot",
+    apply_no_discards: "Uncheck the shots you want discarded first",
+    apply_running: "An apply is already running",
+    // The description column's empty state. A shot without a description is the
+    // ordinary case — the phrase says which state it is in, where a blank cell
+    // would read as a load that never finished.
+    not_described: "Not described",
+    clip_content: "Clip content",
+    // The clip-content section's one disclosure under its lead paragraph (the
+    // summary, or a run's first few segments): every segment with its
+    // timecode, closed by default.
+    clip_details: "Details ({{count}} segments)",
+    // The one legitimate transient, and only where the cell has nothing else to
+    // show: a run whose window overlaps this row is on its way.
+    describing: "Describing…",
+    // The per-row press. Named for the unit it acts on, because the clip-wide
+    // gesture has the same verb in the Edit menu and the two must not read as
+    // the same button.
+    describe_shot: "Describe shot",
+    // A row that already has prose. "Again" and not "Re-describe": the row is
+    // not being corrected, it is being asked a second time, which is a normal
+    // thing to want from a model.
+    describe_shot_again: "Describe again",
+    describe_shot_hint: "Describe the shot using a vision model",
+    // What the status-log rows call one shot's run. Interpolated into
+    // `log.describe_started` / `log.describe_done` in place of a clip name, so
+    // a sweep's rows say which shot each one was.
+    describe_shot_subject: "{{clip}} · shot {{index}}",
+    // The sweep. The count is in the label because the cost is linear in it —
+    // hiding the N would hide the whole decision. Pluralized like
+    // `project.tracks`, since it is read at 1 as often as at 30.
+    describe_all_one: "Describe {{count}} shot",
+    describe_all_other: "Describe {{count}} shots",
+    describe_all_hint: "Describe shots in bulk using a vision model",
+    // While it runs the button IS the stop. `done` counts finished runs, so it
+    // reads 0/7 while the first one is going.
+    describe_all_running: "Stop ({{done}}/{{total}})",
+    describe_all_stop_hint:
+      "Stop after the shot being described now — there is no way to cancel a model run already in flight, and its prose is kept.",
+    // Disabled-button reasons, `measure_all_measured`'s rule: name the
+    // precondition rather than repeat a label that cannot be acted on.
+    describe_all_described: "Every shot in this list already has a description",
+    describe_running: "A description is already running",
+    describe_sweep_running: "A shot-by-shot description pass is already running",
+  },
+  actions: {
+    add_color_layer: "Color clip",
+    add_text_layer: "Text",
+    select_tool: "Selection tool",
+    toggle_blade_mode: "Blade tool",
+    select_text_tool: "Text tool",
+    select_hand_tool: "Hand tool",
+    preview_zoom_in: "Zoom in preview",
+    preview_zoom_out: "Zoom out preview",
+    preview_zoom_fit: "Fit preview to window",
+    move_to_new_track: "Move to a new track",
+    import_media: "Import media…",
+    export: "Export…",
+    save: "Save",
+    save_as: "Save as…",
+    save_and_close: "Save and Close",
+    save_and_close_hint:
+      "Flush any pending edits to the workspace, then return to the project picker.",
+    undo: "Undo",
+    redo: "Redo",
+    settings: "Settings…",
+    settings_hint: "Preferences, shortcuts & API keys.",
+    motifs: "Motifs…",
+    motifs_hint:
+      "Pick a motif overlay (lower third, title card, callout, …) and drop it on the timeline.",
+    open_agent_panel: "Open Agent Panel",
+    enter_agent_mode: "Enter Agent Mode",
+    create_checkpoint: "Create Checkpoint…",
+    create_checkpoint_hint:
+      "Name the current state so you can come back to it. This session only — checkpoints are not saved with the project.",
+    // Not menu items — these labels show up in the Settings → Keyboard
+    // panel for shortcuts that don't have a menu home (transport,
+    // timeline edits).
+    toggle_play: "Play / pause",
+    // "clips" rather than "layers": the command is reached from the timeline,
+    // where what the user sees selected is clips on tracks.
+    select_all: "Select all clips",
+    deselect_all: "Deselect all",
+    delete_selected: "Delete selected clip",
+    // Premiere's own English term. Kept short because it also sits on a 16 px
+    // strip button's tooltip and on a context-menu row beside plain Delete,
+    // where the contrast between the two labels is the whole explanation.
+    ripple_delete_selected: "Ripple delete",
+    copy_selected: "Copy selected clip",
+    paste_at_playhead: "Paste clip at playhead",
+    split_at_playhead: "Split at playhead",
+    toggle_log: "Toggle activity log",
+    focus_log_search: "Focus activity-log search",
+    toggle_display_mode: "Toggle A/B Roll / All Tracks",
+    toggle_follow_playhead: "Toggle timeline auto-scroll",
+    toggle_markers_visible: "Toggle timeline markers",
+    toggle_safe_area_guides: "Toggle safe-area guides",
+    toggle_preview_grid: "Toggle grid",
+    toggle_preview_snap: "Toggle canvas snapping",
+    toggle_tail_snap: "Toggle clip snapping",
+    toggle_review_overlay: "Toggle review overlay",
+    // Prefixed, unlike the bare "Full" / "1/2" the Settings radio uses: these
+    // labels also appear in the search palette, where a row reading just
+    // "1/2" says nothing about what it would change.
+    playback_resolution_full: "Playback resolution: Full",
+    playback_resolution_half: "Playback resolution: 1/2",
+    playback_resolution_quarter: "Playback resolution: 1/4",
+    // The strip's one-button form. Named for what it does rather than for a
+    // value, because unlike the three above it lands somewhere different every
+    // time it runs — a palette row promising "1/2" that sometimes gives 1/4
+    // would be worse than no row.
+    playback_resolution_cycle: "Cycle playback resolution",
+    center_horizontally: "Center horizontally",
+    center_vertically: "Center vertically",
+    apply_default_transition: "Apply default transition (crossfade)",
+    zoom_timeline_in: "Zoom timeline in",
+    zoom_timeline_out: "Zoom timeline out",
+    focus_next_panel: "Focus next Panel",
+    focus_previous_panel: "Focus previous Panel",
+    toggle_maximize_panel: "Maximize / restore Panel",
+    restore_maximized_panel: "Restore maximized Panel",
+    group_selected: "Group selected clips",
+    ungroup_selected: "Ungroup",
+    open_group: "Open group",
+    add_to_group: "Add to Group",
+    // The context menu's version, which knows the Group it was opened over. The
+    // menus built once — Edit, the native bar, the search palette — keep the
+    // plain label above (`menu/CommandContextItem.tsx` says why).
+    add_to_group_named: "Add to “{{name}}”",
+    // Two forms, two labels. The submenu trigger is followed by the list of
+    // destinations, each of which names itself, so the trigger keeps only the
+    // ellipsis; the Edit menu and the palette have no list behind them and
+    // that form means "move to the root", so it names the timeline outright
+    // (`shortcuts/defs.ts` says what those forms do).
+    move_to_composition: "Move to timeline",
+    move_to_composition_submenu: "Move to…",
+    // The three analysis rows name their subject — "selected clip" — because
+    // they sit in the Edit menu and the palette as well as on the clip itself,
+    // and there a row has to say what it will act on. The context menu keeps
+    // the same label: the right-click has just made the clicked clip that
+    // selection, so the sentence stays true.
+    //
+    // "Transcribe" and not "Auto-caption": the row asks the speech engine a
+    // question about the clip, and the name says which one. What lands is
+    // still a caption track — the Caption panel opens on success to show it.
+    // No ellipsis: nothing is asked before it runs. The language is the
+    // engine's to detect, so the one field the old dialog carried was a click
+    // that asked nothing (`speech/transcribeRun.ts`).
+    auto_caption_selected: "Transcribe selected clip",
+    // "Detect pauses" and not "Cut pauses": nothing is removed by the row
+    // itself. Measuring is the half every pause recipe shares, and what becomes
+    // of the pauses is decided inside the section it opens
+    // (`timeline/LayerContextMenu.tsx` carries the whole reason). Ellipsis
+    // because that section comes first.
+    detect_pauses_selected: "Detect pauses in selected clip…",
+    // "Content" as the head noun: what the model reads is what is IN the
+    // footage, and the row's answer lands as prose on the shot rows rather than
+    // as anything about the clip as an object. "Clip" still names the unit the
+    // press acts on — the whole clip, where the per-row `describe_shot` button
+    // acts on one shot.
+    //
+    // No ellipsis, like the transcribe row: sampling and focus live in
+    // Settings → Video understanding now, so the press runs rather than asks.
+    describe_selected: "Describe selected clip content",
+    open_voiceover: "Voiceover…",
+    // Ellipsis because the row opens a surface rather than committing anything:
+    // reviewing is what happens next, and the apply is a press inside the Panel.
+    review_shots: "Review shots…",
+    toggle_link_selected: "Link / Unlink selected clips",
+    toggle_link_override: "Toggle link override",
+    // One key, two subjects — the label names the gesture and the hint below it
+    // names what each selection makes it do.
+    nudge_back: "Nudge earlier",
+    nudge_forward: "Nudge later",
+    nudge_large_back: "Nudge earlier (large)",
+    nudge_large_forward: "Nudge later (large)",
+    resync_audio_to_video: "Re-sync audio to video",
+    seek_frame_back: "Step back one frame",
+    seek_frame_forward: "Step forward one frame",
+    seek_second_back: "Step back one second",
+    seek_second_forward: "Step forward one second",
+    seek_prev_edit: "Go to previous edit point",
+    seek_next_edit: "Go to next edit point",
+    seek_start: "Go to start",
+    seek_end: "Go to end",
+    mark_in: "Mark in point",
+    mark_out: "Mark out point",
+    add_marker_at_playhead: "Add marker at playhead",
+    // The named flags on the marker lane, NOT the in/out range two lines up:
+    // "mark" and "marker" share a root in English and name two different
+    // objects here, so a translation must keep them apart.
+    seek_prev_marker: "Go to previous marker",
+    seek_next_marker: "Go to next marker",
+    seek_prev_changed_range: "Go to previous changed range",
+    seek_next_changed_range: "Go to next changed range",
+    play_changed_range: "Play changed range",
+    clear_range: "Clear in/out points",
+    open_search: "Search everything…",
+    search: "Search",
+  },
+  // The second line under an action in Settings → Keyboard. Only the actions
+  // whose handler dispatches on which selection is armed carry one: their label
+  // can name just one of the two things the key does, so the hint is where the
+  // rule itself is stated.
+  hints: {
+    nudge_back:
+      "Moves the selected keyframes one frame earlier; with no keyframes selected, slips the selected audio one sample.",
+    nudge_forward:
+      "Moves the selected keyframes one frame later; with no keyframes selected, slips the selected audio one sample.",
+    nudge_large_back:
+      "Moves the selected keyframes ten frames earlier; with no keyframes selected, slips the selected audio one millisecond.",
+    nudge_large_forward:
+      "Moves the selected keyframes ten frames later; with no keyframes selected, slips the selected audio one millisecond.",
+    delete_selected:
+      "Deletes the selected keyframes when any are selected, else the selected clips. A selected gap closes instead — everything after it moves left.",
+    ripple_delete_selected:
+      "Selected keyframes and a selected transition take this key first, as they do for Delete; otherwise the selected clips go and everything after them moves left. A selected gap closes.",
+    copy_selected:
+      "Copies the selected keyframes when any are selected, else the selected clip.",
+    paste_at_playhead:
+      "Pastes copied keyframes onto the selected clips at the playhead, else pastes the copied clip.",
+  },
+  // The ✕ every AppDialog draws in its own header. One key, not one per
+  // feature area: the glyph dismisses the DIALOG, so the wording is the same
+  // everywhere and the footer button keeps the contextual verb (Cancel /
+  // Stay / Keep). Distinct from `window_controls.close`, which quits the app.
+  modal: {
+    close: "Close",
+  },
+  dialogs: {
+    save_title: "Save WeftCut project",
+    project_filter: "WeftCut project",
+    save_default_name: "untitled.vproj",
+    import_title: "Import media",
+    media_filter: "Media files",
+  },
+  media_pool: {
+    empty: "No media imported yet.",
+    search_placeholder: "Search media…",
+    no_matches: "No matches for “{{query}}”.",
+    clear_search: "Clear search",
+    // The pool's session filter. Says "unused", not "isolated": on a Group the
+    // state is a remnant, on a media item it is merely never-placed, and the
+    // word that covers both is the neutral one.
+    unused_filter: "Show only unused",
+    // Its own dead end, kept apart from `empty` — a pool full of used media
+    // must never print "No media imported yet."
+    no_unused: "Everything in the pool is used somewhere.",
+    layout_label: "Layout",
+    layout_large: "Large cards (one per row)",
+    layout_grid: "Grid (fixed-size cards)",
+    layout_list: "List",
+    no_duration: "—",
+    importing: "Copying…",
+    copy_pending: "Waiting to copy…",
+    copy_failed: "Copy failed",
+    unsupported: "Engine unsupported",
+    unsupported_hint: "The current preview engine cannot read this media. Switch decode engines in Settings or use an available proxy.",
+    importing_cancel_hint: "Cancel copy and keep the original reference",
+    missing: "Missing",
+    missing_hint: "Source file not found: {{path}}",
+    changed: "Changed",
+    changed_hint: "{{path}} was changed outside WeftCut and no longer holds this media. Import the original file again to restore it.",
+    proxy_pending: "Preparing…",
+    proxy_pending_hint: "Preview is being prepared…",
+    optimizing: "Optimizing in background",
+    optimizing_hint:
+      "Editable now · optimized media is building in the background; export waits for it automatically.",
+    card_ready_hint: "Drag onto a track to add · right-click for media actions",
+    drop_to_import: "Drop files to import",
+    proxy_mode_auto: "Auto",
+    proxy_mode_auto_hint: "Follow the project's Prefer-proxies setting.",
+    proxy_mode_proxy: "Proxy",
+    proxy_mode_proxy_hint: "Always preview this clip from its 720p proxy.",
+    proxy_mode_original: "Original",
+    proxy_mode_original_hint: "Always preview this clip from the original.",
+    actions_for: "Media actions for {{label}}",
+    proxy_heading: "Preview source",
+    analyze_shots: "Analyze shots",
+    analyze_shots_running: "Analyzing…",
+    analyze_shots_hint: "Detect shot cuts for this clip",
+    remove_menu: "Remove from media pool",
+    remove_wait_for_import: "Wait for the import to finish or cancel it first",
+    remove_title: "Remove media?",
+    remove_body: "Remove “{{label}}” from this project?",
+    remove_unused_note:
+      "The source file will stay on disk. Removing unused media cannot be undone.",
+    remove_in_use_title: "Media is in use",
+    remove_in_use_body_one:
+      "“{{label}}” is used by {{count}} timeline clip. Removing it will also remove:",
+    remove_in_use_body_other:
+      "“{{label}}” is used by {{count}} timeline clips. Removing it will also remove:",
+    remove_in_use_note:
+      "This timeline change can be undone. The source file will stay on disk.",
+    // Last rungs of a reference row's naming chain, for a layer the renderer's
+    // snapshot cannot place (`panels/mediaReferences.ts`).
+    reference_unknown_layer: "Clip {{id}}",
+    reference_unknown_track: "Unknown track",
+    remove_cancel: "Cancel",
+    remove_confirm: "Remove",
+    remove_force_confirm_one: "Remove media + {{count}} clip",
+    remove_force_confirm_other: "Remove media + {{count}} clips",
+    removing: "Removing…",
+    remove_failed: "Could not remove media: {{detail}}",
+    // Group cards, in the same pool list as the media ones.
+    // A composition whose last inner layer was deleted. It has no window to
+    // place, so the card is not draggable — the hint is what says why.
+    groups_empty_hint: "This Group is empty. Open it and add a clip first.",
+    groups_card_hint:
+      "Drag onto a track to place another instance · double-click to open · right-click for Group actions",
+    // A composition no Group clip references. Not "unused": everything in the
+    // pool is unused until it is placed, and this state means the opposite —
+    // it WAS placed, the last clip is gone, and the composition is now the only
+    // thing holding it.
+    groups_isolated: "isolated",
+    groups_refs_one: "{{count}} ref",
+    groups_refs_other: "{{count}} refs",
+    groups_actions_for: "Group actions for {{label}}",
+    groups_delete: "Delete Group",
+    groups_delete_hint: "Remove this Group from the project",
+    groups_delete_in_use:
+      "Still shown by a Group clip. Delete those clips, or ungroup them, first.",
+    groups_rename_title: "Rename Group",
+    groups_rename_confirm: "Rename",
+  },
+  preview: {
+    edit_text: "Edit text",
+    empty_hint: "Add a clip to start the preview",
+    preparing: "Preparing preview…",
+    // Shown over the preview while the export pipeline holds its decoders:
+    // an export, or an agent's `render_frames`.
+    suspended_export: "Exporting",
+    suspended_export_preparing: "Preparing export",
+    export_capacity: "Preview is waiting for resources while the export runs.",
+    suspended_agent: "An agent is viewing",
+    // What the preview renders. The list names the timeline and every Group;
+    // the default follows whichever timeline holds the keyboard.
+    target_label: "What the preview shows",
+    target_follow_focus: "Follow focus",
+    // Percentages are composition pixels per device pixel, so 100 % is the
+    // "actual detail" reading. Fit is a mode, not a percentage: it re-fits
+    // when the panel is resized.
+    zoom_label: "Preview zoom",
+    zoom_fit: "Fit",
+    zoom_percent: "{{percent}}%",
+    // The grid row beside the render target, shown while the grid is on.
+    grid_label: "Grid",
+    grid_columns: "Columns",
+    grid_rows: "Rows",
+    grid_vertical_lines: "Vertical grid lines",
+    grid_horizontal_lines: "Horizontal grid lines",
+    grid_hide: "Hide grid lines (snapping stays on)",
+    grid_show: "Show grid lines",
+    // The status-area note while the canvas fallback renderer (no WebGPU or
+    // WebGL2) cannot draw something on screen (rendererCapability.ts).
+    renderer_limit: "Not all drawn",
+    renderer_limit_hint:
+      "This computer draws the preview with the {{renderer}} fallback (no WebGPU or WebGL2), which cannot draw the {{features}} here, so those clips show without them. Exports and frame checks refuse such frames. To fix, turn on hardware acceleration or use a computer with a working GPU driver.",
+    renderer_feature_effects: "effects",
+    renderer_feature_crop: "crop",
+    renderer_feature_transitions: "transitions",
+    renderer_feature_separator: ", ",
+  },
+  timeline: {
+    // The Review lane's header cell (ReviewLane.tsx): the row of tack chips.
+    review_lane: "Tacks",
+    empty_placeholder: "timeline (import a clip or pick a motif to populate)",
+    empty_ab_roll:
+      "No A/B-roll content here. Drop a clip on $t(tracks.roles.a-roll) or $t(tracks.roles.b-roll), or press {{key}} to switch to All Tracks.",
+    resize_track_hint: "Drag to resize this track",
+    track_eye_hint: "Hide this track's output (affects export)",
+    track_lock_hint: "Lock this track against edits",
+    drop_collision: "Overlaps existing media",
+    drop_locked: "Track is locked",
+    clip_lock_hint: "Locked. Select to inspect; unlock in Properties to edit.",
+    clip_track_lock_hint: "Track is locked. Select to inspect; unlock the track to edit.",
+    // The selected gap's tooltip — the shape a clip's own title has (`Video:
+    // start → end`), with the gap named where the kind would be.
+    gap_title: "Gap: {{start}} → {{end}}",
+    // A Group released inside itself, or inside a Group it already contains.
+    drop_cycle: "A Group cannot contain itself",
+    drop_spawn_hint: "Release to create a track",
+    drop_spawn_drag_hint: "Drag a clip here to create a track",
+    delete_track: "Delete track and clips",
+    reorder_track: "Drag to reorder {{name}}",
+    reorder_track_reserved: "A/B roll tracks stay in their relative order",
+    reorder_track_locked: "Unlock this track and its clips to reorder it",
+    track_move_up: "Move track up",
+    track_move_down: "Move track down",
+    track_move_top: "Move track to top",
+    track_move_bottom: "Move track to bottom",
+    track_move_dragging: "Moving {{name}} · Clips: {{count}}",
+    track_move_above: "Place above {{name}}",
+    track_move_below: "Place below {{name}}",
+    delete_track_hint: "Delete this track and all its clips. Undo restores them together.",
+    toggle_keyframe_lanes: "Expand keyframe lanes",
+    mode_ab_roll_hint: "A/B Roll, other tracks hidden. Click to show all.",
+    mode_all_tracks_hint: "All Tracks, nothing hidden. Click for A/B Roll.",
+    // Context-menu entries for the right-click menu on layers.
+    separate_audio: "Separate audio to new track",
+    prebake_now: "Pre-bake now",
+    mark_shot_cuts: "Mark shot cuts",
+    mark_shot_cuts_hint:
+      "Detect this clip's shot boundaries and drop a marker on each.",
+    rename: "Rename",
+    // The Group rows, gated on the right-clicked clip's kind.
+    open_group: "Open group",
+    rename_group: "Rename group…",
+    // Accessible name for the Group clip's inline composition-name editor.
+    group_label: "Group name",
+    // A Group with no stored name. The number is its creation order among the
+    // unnamed ones (`lib/layerName.ts`), which is what makes two unnamed
+    // Groups tellable apart on the timeline.
+    group_derived_name: "Group {{n}}",
+    // The two source-window affordances on a Group clip. Hatched tail: the
+    // composition is shorter than the window, so the clip's end shows nothing.
+    // Tick: the composition is longer, so there is content to trim out to.
+    group_overhang: "Past the end of {{label}} — nothing renders here",
+    group_more_content: "{{label}} runs longer — drag this edge out for more",
+    // Tooltip of the `⚑N` badge on a Group clip. The count reaches through
+    // every composition nested inside, so the sentence says "inside" rather
+    // than naming a timeline — the marks are not all on one.
+    group_marker_count_one: "{{count}} marker inside — click to open this group",
+    group_marker_count_other:
+      "{{count}} markers inside — click to open this group",
+    // Accessible name for the label tab's inline editor.
+    // Tooltip of the `+N` badge on a link whose members sit on filtered lanes.
+    link_hidden_members_one:
+      "{{count}} linked clip on a hidden track — click to reveal it",
+    link_hidden_members_other:
+      "{{count}} linked clips on hidden tracks — click to reveal the next",
+    // The marker menu names its subject: its target is a ~5 px glyph, so a
+    // bare "Delete" would leave "of what?" to a tooltip the menu just covered.
+    delete_marker: "Delete marker",
+    // The two anchoring rows, in the glossary's words (CONTEXT.md). "Attach to
+    // clip" names its target the way "Delete marker" does — the row acts on the
+    // marker but what it needs from the user is a clip.
+    attach_marker: "Attach to clip",
+    detach_marker: "Detach",
+    // Accessible name for the lane header's inline rename field — the visible
+    // label it replaces is the lane's own name.
+    rename_track_label: "Rename {{label}}",
+    enable_layer: "Enable clip",
+    disable_layer: "Disable clip",
+    enable_layers_one: "Enable {{count}} clip",
+    enable_layers_other: "Enable {{count}} clips",
+    disable_layers_one: "Disable {{count}} clip",
+    disable_layers_other: "Disable {{count}} clips",
+    enabled_tracks_locked: "Unlock the affected clips and tracks to enable or disable them",
+    bake_dot_queued: "Pre-bake queued",
+    bake_dot_paused: "Pre-bake paused",
+    bake_dot_retrying: "Retrying pre-bake",
+    bake_dot_warming: "Warming…",
+    bake_dot_preview_ready: "Preview ready",
+    bake_dot_baking: "Pre-baking…",
+    bake_dot_ready: "Baked",
+    bake_dot_error: "Pre-bake failed",
+    audio_slipped: "Audio slipped {{offset}} from its video",
+    audio_units: "Audio units",
+    audio_units_frames: "Timecode (HH:MM:SS:FF)",
+    audio_units_ms: "Milliseconds (HH:MM:SS.mmm)",
+    audio_units_samples: "Samples (48 kHz)",
+    // Transition create entries — shown when the right-click lands within
+    // the tolerance band of a cut between adjacent visual layers.
+    add_transition_crossfade: "Add crossfade",
+    add_transition_wipe: "Add wipe · {{direction}}",
+    add_transition_slide: "Add slide · {{direction}}",
+    transition_chip_title: "{{kind}} transition · {{start}} → {{end}}",
+    // Chip context-menu submenu triggers; kind/direction values reuse
+    // `transitions.*`, delete reuses `property_panel.transition_delete`.
+    transition_menu_kind: "Kind",
+    transition_menu_direction: "Direction",
+    transition_menu_duration: "Duration",
+    transition_menu_duration_preset: "{{seconds}} s",
+    // The marker lane's own header cell: what the row under the ruler is.
+    marker_lane: "Markers",
+    // Hover text for a mark in the marker lane; `label` falls back to
+    // `$t(kinds.marker)` at the call site. Which pattern a marker gets is
+    // MarkerLane.tsx's `markerTitle`.
+    marker_tooltip_point: "{{label}} · {{timecode}}",
+    marker_tooltip_region: "{{label}} · {{start}} – {{end}}",
+  },
+  // Derived track names (`lib/trackName.ts`): what a lane is called when the
+  // user has not named it. Kebab role keys so the lookup is the wire value
+  // itself. Nested into `timeline.empty_ab_roll` with `$t(…)` so the hint names
+  // lanes the way their headers do instead of quoting one language.
+  tracks: {
+    roles: {
+      "a-roll": "A roll",
+      "b-roll": "B roll",
+      "audio-a": "A roll audio",
+      "audio-b": "B roll audio",
+      caption: "Captions",
+    },
+    positional: "Track {{n}}",
+  },
+  transitions: {
+    kind_crossfade: "Crossfade",
+    kind_wipe: "Wipe",
+    kind_slide: "Slide",
+    // Direction = MOTION direction (industry convention): "Wipe left" sweeps
+    // the reveal boundary right-to-left; "Slide left" enters from the right.
+    direction_left: "Left",
+    direction_right: "Right",
+    direction_up: "Up",
+    direction_down: "Down",
+    // Why the apply surfaces (strip button, panel cards) are disabled —
+    // shared so every outlet explains the same precondition the same way.
+    no_target: "No cut between two adjacent visual clips",
+    // Failure copy moved to `errors.*` (errors/formatCommandError.ts).
+  },
+  playhead_panel: {
+    section_label: "Hidden-track clips near playhead",
+    // A row's leading time value: unit letters, not a timecode (see
+    // `formatPlayheadDelta`). The phrase around the value is what saves every row a
+    // printed field name, so a translation has to keep the relation it states —
+    // reducing any of these to the bare number puts the ambiguity back.
+    delta_frames: "{{f}}f",
+    delta_sec_frames: "{{s}}s {{f}}f",
+    delta_min_sec: "{{m}}m {{s}}s",
+    delta_hour_min: "{{h}}h {{m}}m",
+    delta_future: "in {{value}}",
+    delta_past: "{{value}} ago",
+    delta_remaining: "{{value}} left",
+    // The field names themselves, spent where they cost no width: the
+    // accessible name and the hover title. The printed value stays terse; these
+    // say in full what it measures.
+    delta_future_aria: "Starts {{value}} after the playhead",
+    delta_past_aria: "Ended {{value}} before the playhead",
+    delta_remaining_aria: "{{value}} left to play",
+    duration_aria: "Duration {{value}}",
+    // The ±Δ window dial. `value` is pre-formatted (playheadItems.ts) and never a
+    // count, so these keys take no i18next plural suffixes.
+    window_label: "Playhead window",
+    window_seconds: "{{value}}s",
+    window_minutes: "{{value}}min",
+    // The chips are checkboxes in any combination, and checking none is the
+    // unfiltered state — so `filter_empty` must describe a set, not one kind.
+    filter_label: "Filter near-playhead items by kind",
+    cat_video: "Video",
+    cat_audio: "Audio",
+    cat_text: "Text",
+    filter_empty: "Nothing of the checked kinds near the playhead",
+    section_at_playhead: "Now playing",
+    section_nearby: "Nearby",
+    at_playhead_empty: "Nothing is playing right now",
+    goto: "Jump to clip start",
+    rename_label: "Rename {{label}}",
+    restack_grip: "Drag to restack {{label}}",
+    row_menu: "Restack {{label}}",
+    restack_forward: "Bring forward",
+    restack_backward: "Send backward",
+    restack_front: "Bring to front",
+    restack_back: "Send to back",
+    restack_above_track: "Place above {{label}}",
+    restack_below_track: "Place below {{label}}",
+    reference_empty: "No visual content",
+    reference_filtered: "Content filtered",
+    linked: "Linked",
+    link_menu: "Link {{label}}",
+    unlink: "Unlink",
+    all_tracks_title: "All Tracks",
+    all_tracks_msg:
+      "Every track is already on the timeline — nothing is hidden for this Panel to surface.",
+    all_tracks_hint: "Press <key>{{key}}</key> to switch back to A/B Roll.",
+    empty_title: "Nothing near the playhead",
+    empty_msg:
+      "No hidden-track clips fall within ±{{window}} of the playhead. Move the playhead, or widen the window above.",
+  },
+  agent_panel: {
+  // The agent view's Jump: the preview's time only, never a selection.
+  "jump": "Jump the preview here",
+  "jump_elsewhere": "Doesn't play in the film — locate it in the editor",
+  "service_unknown": "MCP status unavailable",
+  "service_ready": "MCP service ready",
+  "service_offline": "MCP service offline",
+  "connection_settings": "Agent connection settings",
+  "last_activity": "Last request · {{time}}",
+  "no_connections": "No registered clients",
+  "connection_note": "Registered sessions do not guarantee that a client is still online.",
+  "running_count": "{{count}} operations running",
+  "no_running": "No operations running",
+  "end_session": "End work session",
+  "end_short": "End",
+  "end_hint": "Ends this session and releases its lock. Running tasks and later agent calls can continue.",
+  "locked": "Undo is locked",
+  "unlock": "Unlock undo",
+  "filter": "Activity filter",
+  "filter_all": "All activity",
+  "filter_errors": "Failures",
+  "latest": "Back to latest",
+  "truncated": "{{count}} older activities are no longer shown.",
+  "loading": "Loading activity…",
+  "no_errors": "No failed operations.",
+  "empty": "Agent activity will appear here when a client starts working.",
+  "operation_count": "{{count}} activities",
+  "disconnected": "Connection closed",
+  "session_ended": "Session ended",
+  "session_active": "Active session",
+  "retention": "Recent activity from this project opening. Not restored after reopening.",
+  "running": "Running",
+  "done": "Completed",
+  "error": "Failed",
+  "cancelled": "Cancelled",
+  "reverted": "Reverted",
+  "partial": "Partly reverted",
+  "reads": "Project and media reads · {{count}}",
+  "restored": "Restored to “{{label}}”",
+  "checkpoint_missing": "Checkpoint unavailable",
+  "client": "Client",
+  "user": "You",
+  "tool": "Tool",
+  "time": "Started",
+  "locate": "Locate object",
+  "object_missing": "Object no longer exists",
+  "arguments": "Call arguments",
+  "tabs": "Agent panel sections",
+  "tab_activity": "Activity",
+  "tab_tacks": "Tacks",
+  "tab_changes": "Changes",
+  "show_changes": "Show its changes on the timeline",
+  "highlight_active": "Timeline shows this call's changes · {{count}}",
+  "highlight_reverted": "Timeline shows this call's changes · {{count}} (since undone)",
+  "highlight_clear": "Back to unreviewed changes",
+  "changes_unavailable": "Change detail is no longer available: this call has left the undo history.",
+  "changes_none": "This call made no project changes.",
+  "tools": {
+    "begin_agent_session": "Start work session",
+    "open_project": "Open project",
+    "create_project": "New project",
+    "open_side_preview": "Open the side preview",
+    "end_agent_session": "End work session",
+    "create_tacks": "Add tacks",
+    "check_composition": "Check the edit",
+    "render_frames": "Look at frames",
+    "update_tack": "Update tack",
+    "delete_tacks": "Remove tacks",
+    "analyze_clip": "Analyze clip",
+    "analyze_audio": "Analyze source audio",
+    "describe_clip": "Describe clip content",
+    "transcribe_clip": "Transcribe clip",
+    "extract_clip_audio": "Extract clip audio",
+    "analyze_shots_floor": "Detect shots",
+    "compare_frames": "Compare frames",
+    "detect_pauses": "Detect pauses",
+    "import_media": "Import media",
+    "synthesize_speech": "Synthesize speech",
+    "apply_subtitles": "Apply subtitles",
+    "auto_split_by_shot": "Split into shots",
+    "remove_pauses": "Remove pauses",
+    "resources/read": "Read resource",
+    "resources/list": "List resources",
+    "tools/list": "List tools",
+    "prompts/list": "List prompts",
+    "prompts/get": "Read prompt",
+    // Mutation and history tools. The panel shows these for a call that has no
+    // history label yet — refused, failed, dry-run, or still running — so each
+    // one is copy, never the tool name. Verbs mirror the history labels.
+    "add_track": "Add track",
+    "delete_track": "Remove track",
+    "rename_track": "Rename track",
+    "move_track": "Move track",
+    "set_track_flags": "Set track flags",
+    "add_layers": "Add clips",
+    "delete_layers": "Delete clips",
+    "set_project_settings": "Update project settings",
+    "apply_transcripts": "Add captions from transcript",
+    "correct_caption_text": "Correct caption text",
+    "restyle_captions": "Restyle captions",
+    "restyle_to_taste": "Restyle to the project style",
+    "list_export_presets": "List export presets",
+    "create_export_preset": "Create export preset",
+    "update_export_preset": "Update export preset",
+    "delete_export_preset": "Delete export preset",
+    "get_export_options": "Read export options",
+    "start_export": "Start export",
+    "get_export_status": "Read export status",
+    "retry_export": "Retry export",
+    "cancel_export": "Cancel export",
+    "export_captions": "Export captions",
+    "merge_captions": "Merge captions",
+    "jump_to": "Jump to history entry",
+    "paste_layers": "Duplicate clips",
+    "rename_layer": "Rename clip",
+    "update_layer_params": "Update clip params",
+    "move_layers": "Move clips",
+    "retime_layers": "Retime clips",
+    "trim_layer": "Trim clip",
+    "split_layer": "Split clip",
+    "shift_layers": "Shift clips",
+    "restack_layer": "Restack clip",
+    "set_layer_flags": "Set clip flags",
+    "create_link": "Link clips",
+    "delete_link": "Unlink clips",
+    "create_group": "Group clips",
+    "add_group_members": "Add clips to group",
+    "ungroup_layer": "Ungroup",
+    "rename_composition": "Rename group",
+    "move_layers_to_composition": "Move clips to timeline",
+    "delete_composition": "Delete timeline",
+    "update_composition": "Update timeline settings",
+    "add_effect": "Add effect",
+    "update_effect": "Update effect",
+    "move_effect": "Reorder effect",
+    "delete_effect": "Remove effect",
+    "add_transition": "Add transition",
+    "update_transition": "Update transition",
+    "delete_transition": "Remove transition",
+    "add_marker": "Add marker",
+    "update_marker": "Update marker",
+    "delete_marker": "Remove marker",
+    "set_marker_anchor": "Tie or untie a marker",
+    "set_keyframe": "Set keyframe",
+    "delete_keyframe": "Remove keyframe",
+    "update_link": "Update link",
+    "update_keyframe": "Update keyframe",
+    "read_project": "Read project",
+    "set_param_track": "Replace param animation",
+    "get_param_track": "Read param animation",
+    "set_position": "Set position animation",
+    "translate_position": "Offset position",
+    "set_role_gain": "Set role gain",
+    "set_role_flags": "Mute or solo role",
+    "delete_media": "Remove media",
+    "undo": "Undo",
+    "redo": "Redo",
+    "create_checkpoint": "Create checkpoint",
+    "restore_checkpoint": "Restore checkpoint",
+    // Motif authoring tools (`main/mcp/motifToolDefs.ts`).
+    "list_motifs": "List motifs",
+    "read_motif": "Read motif source",
+    "create_motif": "Create Motif",
+    "update_motif_files": "Edit Motif files",
+    "export_motif": "Export Motif",
+    "preview_motif": "Preview Motif",
+    "install_motif": "Propose Motif to library",
+    "delete_motif": "Remove Motif from project"
+  }
+},
+  // Tacks (ADR 0115): agent review marks. English says Tack; Chinese says
+  // 批注 everywhere and never shows "Tack" (not 标注, not 备注).
+  tacks: {
+    subtitle: "Notes the agent tacked on for your review",
+    closed_section: "Closed {{count}}",
+    clear_closed: "Clear",
+    clear_closed_hint: "Remove this group's resolved and dismissed tacks. Once cleared, the agent can no longer read what you decided.",
+    resolve_all: "Resolve all",
+    resolve_all_hint: "Mark every open tack in this group resolved",
+    empty: "Tacks an agent leaves for your review will appear here.",
+    outside_session: "Outside a work session",
+    earlier_session: "Earlier work session",
+    group_count: "{{open}} open of {{count}}",
+    kind: "Kind",
+    kind_note: "Note",
+    kind_issue: "Issue",
+    kind_question: "Question",
+    status_open: "Open",
+    status_resolved: "Resolved",
+    status_dismissed: "Dismissed",
+    state_unplaced: "Its composition no longer exists",
+    unplaced_hint: "Its composition no longer exists, so it cannot be located or converted",
+    outdated: "Content changed",
+    outdated_hint: "What plays in its range changed after the agent wrote it — check it still applies",
+    place: "Place",
+    locate: "Locate on the timeline",
+    resolve: "Resolve",
+    resolve_hint: "Resolve: you acted on what it points at",
+    dismiss: "Dismiss",
+    dismiss_hint: "Dismiss: what it points at does not matter",
+    reopen: "Reopen",
+    convert: "Convert to marker",
+    convert_hint: "Add an ordinary marker here with this label and note (undoable), then remove the tack",
+    no_body: "No details.",
+    band_tooltip: "Tack: {{label}} · {{time}}",
+    // The Review lane's group chip: tacks that would overlap, as one chip — its
+    // hover title's first line, and each row of its menu.
+    band_group_one: "{{count}} tack here",
+    band_group_other: "{{count}} tacks here",
+    group_item: "{{kind}} · {{label}}",
+    retention: "Tacks last for this project opening only. They are never saved or exported.",
+  },
+  changes: {
+    subtitle: "What agents changed since you last approved",
+    // The bar over the list: with no range focused, how many there are and
+    // how long, and the way into them (review, a Group's way out to the
+    // film); with one focused, its line, a stepper through its changes,
+    // play, the neighbouring ranges around a count that goes back to all.
+    range_bar: {
+      label: "Changed range",
+      review: "Review",
+      total_one: "{{count}} spot · {{duration}}",
+      total_other: "{{count}} spots · {{duration}}",
+      total_full_one: "{{count}} stretch plays differently, {{duration}} in all",
+      total_full_other: "{{count}} stretches play differently, {{duration}} in all",
+      total_cuts_one: "{{count}} cut point",
+      total_cuts_other: "{{count}} cut points",
+      group_total: "This Group: {{total}}",
+      group_none: "No changed ranges in this Group",
+      film_one: "Film: {{count}}",
+      film_other: "Film: {{count}}",
+      film_hint: "Open the main timeline to review the whole film's ranges",
+      play: "Play",
+      spot: "{{index}} of {{count}}",
+      step: "change {{index}} of {{count}}",
+      all_one: "All {{count}}",
+      all_other: "All {{count}}",
+      back_one: "Back to all {{count}} (Esc)",
+      back_other: "Back to all {{count}} (Esc)",
+    },
+    approve_all: "Approve all",
+    approve_all_hint: "Make the project as it is now the new review baseline — your own changes included",
+    revert_all: "Revert all",
+    revert_all_hint: "Restore the project to the review baseline, your own changes since included. Undo brings it all back.",
+    revert_all_locked: "History is locked — unlock it to revert",
+    approve_stale: "The changes were updated — review again. Nothing was approved.",
+    // In the toolbar; the full sentence is its title.
+    approve_stale_short: "Nothing approved: the list changed",
+    revert_stale: "The changes were updated — review again. Nothing was reverted.",
+    revert_stale_short: "Nothing reverted: the list changed",
+    user_note_one: "Plus {{count}} user change",
+    user_note_other: "Plus {{count}} user changes",
+    show_user: "Show",
+    hide_user: "Hide",
+    show_mine_hint: "Also list the changes only you made. They need no approval.",
+    mine: "You",
+    mine_hint: "Your own change — it needs no approval",
+    locate: "Locate on the timeline",
+    empty: "Nothing to review.",
+    no_baseline: "Changes an agent makes will appear here for review.",
+    retention: "Approving records nothing in history; reverting is one step you can undo. To drop a single change, undo it or edit it back.",
+    group_root: "Main timeline",
+    group_project: "Project",
+    group_gone: "Removed group",
+    group_count: "{{count}} unreviewed",
+    class_added: "Added",
+    class_removed: "Removed",
+    class_modified: "Modified",
+    // After a change's line, where the film shows the change less loudly
+    // than its class says (ADR 0169).
+    weight_quiet: "plays the same",
+    weight_soft: "out of sync only",
+    // The diff stat at the start of the Changes toolbar (+ − ~).
+    stats: {
+      label: "Unreviewed changes:",
+      added: "{{count}} added",
+      removed: "{{count}} removed",
+      modified: "{{count}} modified",
+    },
+    range: {
+      added: "Added · {{duration}}",
+      removed: "Removed · {{duration}}",
+      cut: "Removed here · {{duration}}",
+      modified: "Modified · {{duration}}",
+      modified_resized: "Modified · {{duration}}, was {{before}}",
+      gap_added: "Gap lengthened · {{duration}}",
+      gap_removed: "Gap shortened · {{duration}}",
+      only_audio: "audio only",
+      only_picture: "picture only",
+      sync: "picture and sound {{offset}} apart",
+      sync_picture: "picture layers {{offset}} apart",
+      sync_sound: "sound layers {{offset}} apart",
+      out_of_sync: "Out of sync · {{duration}}",
+      sound_later: "{{sound}} {{lag}} later than picture",
+      sound_earlier: "{{sound}} {{lag}} earlier than picture",
+      sound: "Sound",
+      includes_user: "includes your edits",
+      user: "your edit",
+      seconds: "{{value}} s",
+    },
+    kind_Layer: "Clip",
+    kind_Marker: "Marker",
+    kind_Transition: "Transition",
+    kind_Link: "Link",
+    kind_AudioRole: "Audio role",
+    kind_Media: "Media",
+    role_title: "{{name}} mix",
+    kind_Motif: "Motif",
+    motif_title: "Motif {{name}}",
+    kind_Track: "Track",
+    kind_Composition: "Group",
+    aspect_placement: "Placement",
+    aspect_timing: "Timing",
+    aspect_retime: "Speed",
+    aspect_params: "Properties",
+    aspect_keyframes: "Keyframes",
+    aspect_effects: "Effects",
+    aspect_label: "Name",
+    aspect_flags: "Enabled / locked",
+    aspect_content: "Files",
+    // Snapshot facts, with explicit before/after timing values (ADR 0116).
+    detail: {
+      length_added: "{{s}} s long",
+      length_removed: "Deleted {{s}} s",
+      time_start: "Start {{from}} → {{to}} s",
+      trim_start_cut: "Cut {{s}} s from the start",
+      trim_start_extend: "Extended start by {{s}} s",
+      trim_end_cut: "Cut {{s}} s from the end",
+      trim_end_extend: "Extended end by {{s}} s",
+      time_end: "End {{from}} → {{to}} s",
+      time_source_start: "Source start {{from}} → {{to}} s",
+      time_source_end: "Source end {{from}} → {{to}} s",
+      track_from_to: "Moved from {{from}} to {{to}}",
+      track_to: "Moved to {{to}}",
+      track_other: "Moved to another track",
+      composition_to: "Moved to “{{name}}”",
+      composition_other: "Moved to another timeline",
+      speed: "Speed {{from}} → {{to}}",
+      speed_changed: "Speed changed",
+      gain: "Gain {{from}} → {{to}} dB",
+      list_separator: ", ",
+      names_more: "{{names}} and {{count}} more",
+      keyframes: "{{names}} keyframes",
+      effect_added: "Added effect “{{name}}”",
+      effect_added_any: "Added effect",
+      effect_removed: "Removed effect “{{name}}”",
+      effect_removed_any: "Removed effect",
+      effect_changed: "Updated effect “{{name}}”",
+      effect_changed_any: "Updated effect",
+      label: "Renamed",
+      enabled: "Enabled",
+      disabled: "Disabled",
+      locked: "Locked",
+      unlocked: "Unlocked",
+    },
+    from_session: "From: {{reason}}",
+    n_clips_one: "{{count}} clip",
+    n_clips_other: "{{count}} clips",
+    n_markers_one: "{{count}} marker",
+    n_markers_other: "{{count}} markers",
+    group_badge: "Contains {{count}} unreviewed change(s)",
+    group_badge_activity: "Contains {{count}} change(s)",
+    ghost_label: "Removed clip, baseline position {{start}} – {{end}}",
+    // An activity's highlight compares against the project before that call,
+    // not against the review baseline.
+    ghost_label_activity: "Removed clip, position before this call {{start}} – {{end}}",
+    before_label: "Baseline position",
+    before_label_activity: "Position before this call",
+    // A row's place, in the seconds its facts speak; the timecode is its tooltip.
+    position_span: "Now {{start}} – {{end}} s",
+    position_point: "Now at {{t}} s",
+    before_span: "Baseline position {{start}} – {{end}} s",
+    before_point: "Baseline position {{t}} s",
+    before_span_activity: "Position before this call {{start}} – {{end}} s",
+    before_point_activity: "Position before this call {{t}} s",
+    track_title: "Track “{{name}}”",
+    was_label: "Before {{start}} – {{end}} s",
+    ghost_tag: "Removed {{start}} – {{end}} s",
+    ghost_tag_activity: "Removed · before this call {{start}} – {{end}} s",
+    was_label_activity: "Before this call {{start}} – {{end}} s",
+    marker_ghost_label: "Removed marker “{{label}}”, baseline position {{at}}",
+    marker_ghost_label_activity: "Removed marker “{{label}}”, position before this call {{at}}",
+    // A clip tooltip's line for its review mark: the class, then what it did.
+    clip_title: "{{cls}}: {{what}}",
+  },
+  agent_mode: {
+    exit: "Exit to editor",
+    exit_hint: "Return to the full editor. The work session and undo lock remain unchanged.",
+    restore: "Restore",
+    restore_hint: "Revert the project to this checkpoint — the restore is undoable.",
+    resize_record_panel: "Resize record panel",
+  },
+  errors: {
+    refresh_failed: "refresh: {{detail}}",
+    // Curated refusal copy (errors/formatCommandError.ts). Names are resolved
+    // before interpolation — {{incoming}}/{{blocking}}/{{layer}} are display
+    // names, never uuids.
+    layer_overlap:
+      "Can't place “{{incoming}}” there — it would overlap “{{blocking}}” on {{track}}.",
+    track_locked: "{{track}} is locked.",
+    layer_locked: "{{layer}} is locked. Unlock it before editing.",
+    motif_in_use_one: "Motif “{{motif}}” is used by {{count}} clip. Remove the clip first.",
+    motif_in_use_other: "Motif “{{motif}}” is used by {{count}} clips. Remove those clips first.",
+    track_not_empty: "{{track}} still has clips on it.",
+    track_not_removable: "{{track}} is reserved and can't be removed.",
+    link_locked_member:
+      "“{{layer}}” is linked with the locked clip “{{locked}}”.",
+    trim_edge_out_of_range:
+      "Can't trim “{{layer}}” to {{time}} — outside the clip's range.",
+    split_outside_layer:
+      "Can't split “{{layer}}” at {{time}} — the position is outside the clip.",
+    transition_insufficient_handle:
+      "“{{layer}}” has only {{available}} of source handle — not enough for this transition.",
+    transition_restore_collision:
+      "Removing the transition needs to move “{{layer}}” back to the cut, but that space is now occupied.",
+    transition_participants_share_link:
+      "“{{from}}” and “{{to}}” are in the same link — moving one drags the other, so the overlap can't open. Unlink them first.",
+    transition_layers_not_adjacent:
+      "“{{from}}” and “{{to}}” must touch to add a transition.",
+    // Ripple delete's four. Every one opens with the same four words, because
+    // these lines are read in two places — the status bar after the fact, and a
+    // greyed row's tooltip before it — and the shared opening is what makes the
+    // tooltip legible as "this is why the ripple is off" rather than as a
+    // sentence about a clip.
+    ripple_inside_hole:
+      "Ripple delete blocked: {{layer}} starts inside the span being closed — add it to the selection, or delete without ripple.",
+    ripple_collision:
+      "Ripple delete blocked: {{moving}} would land on {{blocking}}.",
+    ripple_link_straddles:
+      "Ripple delete blocked: link {{link}} has members on both sides of the cut.",
+    ripple_locked_layer:
+      "Ripple delete blocked: {{layer}} is locked and would have to move.",
+    // The gap's own refusal (docs/features.md#ripple-delete): the span the
+    // renderer selected is no longer a gap by the time the actor reads it — a
+    // clip moved into it, or an edge moved. Same four-word opening as the
+    // ripple's, since it greys the same row and lands on the same status bar.
+    gap_not_found:
+      "Ripple delete blocked: the selected gap on {{track}} is no longer there.",
+    fps_locked_by_content:
+      "Frame rate stays {{current}} fps — the timeline still holds {{layers}} clip(s).",
+    fps_locked_by_content_history:
+      "Frame rate stays {{current}} fps — undo history still holds clips (reopen the project to clear it).",
+  },
+  language: {
+    switch_label: "Language",
+  },
+  window_controls: {
+    minimize: "Minimize",
+    maximize: "Maximize",
+    restore: "Restore",
+    close: "Close",
+  },
+  transport: {
+    preparing_audio: "Preparing audio…",
+    audio_failed: "Audio playback failed",
+    retry_playback: "Retry playback",
+    retry_playback_hint: "Press Play to retry.",
+    cancel_playback: "Cancel playback",
+    play_pause_hint: "Play / pause",
+    to_start_hint: "Jump to start",
+    to_end_hint: "Jump to end",
+    timecode_label: "Current time",
+    timecode_edit_hint: "Click to edit · Enter to seek · Esc to cancel",
+    dropped_frames_one:
+      "{{count}} frame dropped during playback — decoding fell behind",
+    dropped_frames_other:
+      "{{count}} frames dropped during playback — decoding fell behind",
+    late_frames_one:
+      "{{count}} frame late during playback — the render loop stalled",
+    late_frames_other:
+      "{{count}} frames late during playback — the render loop stalled",
+  },
+  export: {
+    cancelling: "Cancelling export…",
+    action_failed: "The action could not finish. Check the technical details and retry.",
+    pending_title: "Export needs attention",
+    phase_prepare: "Preparing media…",
+    failure_hint: "The export could not finish. Check the technical details, resolve the issue, then export again.",
+    change_filename: "Change filename",
+    keep_filename: "Keep original filename",
+    new_filename: "New filename",
+    filename_hint: "Keep the file extension. The new name applies when you retry.",
+    retry_filename: "Retry filename (including extension; blank keeps current name)",
+    plan_resources: "Checking export requirements",
+    wait_resources: "Waiting for other processing to release resources; the export starts automatically",
+    wait_memory: "Waiting for memory to become available; the export starts automatically",
+    wait_holder: "Waiting for {{holder}} to finish; the export starts automatically",
+    wait_holder_mux: "Waiting for {{holder}} to finish; the file is written automatically",
+    wait_resources_mux: "Waiting for other processing to finish; the file is written automatically",
+    holder_proxy: "proxy generation",
+    holder_waveform: "waveform generation",
+    holder_thumbnails: "thumbnail generation",
+    holder_shots: "shot analysis",
+    holder_import: "media import",
+    holder_model: "a local model",
+    holder_export: "another export",
+    resource_budget: "This export needs more working memory than the current target allows, even with reduced buffering. Increase the Memory target in Settings > Performance and retry. Export quality has not been changed.",
+    resource_pressure: "Available memory is low. Close other applications or wait for memory to recover, then retry.",
+
+    title: "Export",
+    phase_encode: "Encoding",
+    pill: "Export {{percent}}%",
+    pill_rate: "{{fps}} fps · {{speed}}×",
+    pill_elapsed: "Elapsed {{time}}",
+    cancel_export: "Cancel export",
+    starting: "Starting export…",
+    preparing:
+      "Preparing optimized media for {{labels}} — export will start automatically.",
+    preparing_cancel: "Cancel",
+    failed_prepare:
+      "Couldn't prepare {{labels}} for export — the file may be corrupt or unsupported. Re-import it and try again.",
+    failed_audio_fx:
+      'audio effect "{{effect}}" on "{{layer}}": {{message}}',
+    failed_audio_fx_chain: 'audio effects on "{{layer}}": {{message}}',
+    no_video_material:
+      "No video to export: the selected range has no visible clips.",
+    no_audio_material:
+      "No audio to export: the selected range has no audio.",
+    renderer_cannot_draw:
+      "This computer draws with the {{renderer}} fallback (no WebGPU or WebGL2), which cannot draw the {{features}} in the export range. The export stopped before encoding instead of leaving them out. Export on a computer with working GPU acceleration, or remove them from the range.",
+    encoder_needs_webgl:
+      "This computer has no WebGL, which the native encoder needs, and these settings have no WebCodecs path. Set the video encoder (encoder_engine) to Auto or WebCodecs with H.264, HEVC or AV1 at 8-bit and a bitrate rate mode.",
+    progress_label:
+      "{{percent}}% · frame {{frame}} · {{fps}}fps · {{speed}}x",
+    phase_finalize: "Finalizing",
+    finalize_sink: "Flushing the encoder…",
+    finalize_audio: "Rendering audio…",
+    retry_finalize: "Retry finishing export",
+    discard_pending: "Discard export",
+    retry_hint: "Retry finishing the export without encoding again. Closing the project or discarding this export deletes its temporary files.",
+    finalize_mux: "Writing the output file…",
+    complete: "Exported to {{path}}",
+    failed: "Export failed: {{detail}}",
+    resource_unavailable: "There aren't enough resources available to finish exporting. Wait for other processing tasks to finish and retry. If it still fails, increase the Memory target in Settings > Performance.",
+    encoder_stalled: "The encoder stopped responding, so the export was stopped.",
+    encoder_stalled_hint: "Export again. If it stops again, set Video encoder to Software on the Video tab of the export settings, then export.",
+    open_settings: "Open settings",
+    technical_details: "Technical details",
+    dismiss: "Dismiss",
+    play: "Play",
+    play_hint: "Open the exported file in a Render & Play window.",
+    // Named per OS the way Premiere / Resolve label it (see ExportPanel's
+    // REVEAL_KEY); Linux has no single file manager to name, and does not
+    // select the file (main/openPath.ts), so its label promises less.
+    reveal_windows: "Reveal in Explorer",
+    reveal_mac: "Reveal in Finder",
+    reveal_linux: "Show in folder",
+    reveal_hint: "Open the folder containing the exported file.",
+    render_play_title: "WeftCut — Render & Play",
+    notify_done_title: "Export finished",
+    notify_done_body: "Saved to {{path}}",
+    notify_failed_title: "Export failed",
+    notify_failed_body: "{{detail}}",
+  },
+  export_presets: {
+    default_badge: "Default",
+    set_default: "Set as default",
+    is_default: "Default for new projects",
+    empty_short: "No personal presets yet",
+    "preset": "Preset",
+    "builtins": "Built-in presets",
+    "personal": "My presets",
+    "builtin_match": "Match project",
+    "builtin_hd": "720p HD Landscape",
+    "builtin_fullhd": "1080p Full HD Landscape",
+    "builtin_uhd": "4K UHD Landscape",
+    "name": "Preset name",
+    "save": "Save",
+    "save_as": "Save as preset…",
+    "rename": "Rename…",
+    "delete": "Delete",
+    "custom": "Custom",
+    "modified_badge": "(modified)",
+    "restore": "Restore",
+    "update": "Update preset",
+    "save_failed": "Could not save the preset. Check that the name is unique and the preset still exists, then try again.",
+    "duplicate_name": "A preset with this name already exists.",
+    "invalid": "Check export settings: {{reason}}"
+},
+  export_dialog: {
+    file_exists: "A file with this name exists",
+    use_available_name: "Use “{{name}}”",
+    path_check_failed: "Could not check whether a file with this name exists.",
+    check_again: "Check again",
+    overwrite_completed: "Automatically overwrite files with the same name on export",
+    overwrite_save_failed: "Could not save the overwrite preference. Please try again.",
+    title: "Export settings",
+    cat_general: "General",
+    cat_video: "Video",
+    cat_audio: "Audio",
+    cat_subtitle: "Subtitle",
+    subtitle_placeholder: "Subtitle export is coming soon.",
+    content: "Export content",
+    include_video: "Include video",
+    include_audio: "Include audio",
+    content_none: "Select at least video or audio to export.",
+    video_excluded:
+      "Video isn't included in this export. Change “Export content” under General to include it.",
+    audio_excluded:
+      "Audio isn't included in this export. Change “Export content” under General to include it.",
+    resolution: "Resolution",
+    fps: "Frame rate",
+    follow_comp: "Follow timeline",
+    codec: "Codec",
+    container: "Container / Muxer",
+    encoder_engine: "Encoder engine",
+    engine_auto: "Auto",
+    engine_native: "Native (FFmpeg)",
+    engine_webcodecs: "WebCodecs",
+    path_native: "Encoder: native FFmpeg (full control, explicit color tags)",
+    path_webcodecs: "Encoder: WebCodecs (hardware if available)",
+    // Engine option labels + unavailable reason reuse settings.decode_engine_*
+    // so preview and export read identically.
+    decode_engine: "Decode engine",
+    decode_summary:
+      "Decode: {{originals}} source(s) from originals, {{proxy}} from lossy proxy",
+    checking_codec: "Checking codec support…",
+    codec_unsupported:
+      "{{codec}} can't be encoded on this machine — pick another codec.",
+    prores_profile: "ProRes profile",
+    dnxhr_profile: "DNxHR profile",
+    quality: "Quality",
+    quality_low: "Low",
+    quality_medium: "Medium",
+    quality_high: "High",
+    quality_custom: "Custom",
+    target_bitrate: "Target bitrate",
+    max_bitrate: "Maximum bitrate",
+    max_bitrate_unlimited:
+      "Peak uncapped — the encoder may spike well above the target on hard scenes. Set a maximum to bound it.",
+    max_bitrate_below_target:
+      "The maximum must be at least the target bitrate. Below it, the encoder abandons the target and the file comes out at the maximum.",
+    buffer_size: "Buffer size",
+    buffer_size_auto:
+      "Buffer follows the ceiling (2×). A smaller buffer tracks the ceiling more tightly and swings quality more; a larger one is looser.",
+    cbr_hint:
+      "CBR holds this bitrate throughout: the maximum and minimum are pinned to it, so quality varies with scene difficulty.",
+    rate_constraints_native_only:
+      "Maximum bitrate and buffer size need the native FFmpeg encoder — WebCodecs exposes only a target bitrate.",
+    mbps: "Mbps",
+    mbit: "Mbit",
+    rate_mode: "Rate control",
+    rate_vbr: "VBR (variable)",
+    rate_cbr: "CBR (constant)",
+    rate_quality: "Quality (CRF)",
+    crf: "CRF",
+    keyframe_interval: "Keyframe interval",
+    encoder_accel: "Video encoder",
+    encoder_auto: "Auto (prefer hardware)",
+    encoder_software: "Software",
+    speed_preset: "Encoder preset",
+    preset_fast: "Fast",
+    preset_medium: "Medium",
+    preset_slow: "Slow (best quality/size)",
+    location: "Location",
+    filename: "File name",
+    choose_location: "Choose output folder",
+    browse: "Browse…",
+    cancel: "Cancel",
+    export: "Export",
+    range: "Range",
+    range_full: "Whole project",
+    range_marked: "In/out range",
+    range_marked_none:
+      "No in/out points marked on the timeline. Mark a span with the Quick Actions strip or the I / O keys.",
+    range_custom: "Custom",
+    range_in: "In",
+    range_out: "Out",
+    range_invalid:
+      "This range is empty, or lies entirely outside the project. Check the in and out points.",
+    audio_codec: "Audio codec",
+    audio_bitrate: "Audio bitrate",
+    audio_channels: "Channels",
+    audio_sample_rate: "Sample rate",
+    channels_mono: "Mono",
+    channels_stereo: "Stereo",
+    bit_depth: "Bit depth",
+    bit_depth_8: "8-bit",
+    bit_depth_10: "10-bit (HEVC Main10 / AV1) — experimental",
+    bit_depth_hint: "Timeline has 10-bit sources — 10-bit output preserves their precision.",
+    bit_depth_experimental_warning:
+      "10-bit export is experimental. The preview is shown in standard 8-bit, so on-screen colors and gradients may not match the final 10-bit file — HDR / wide-gamut preview isn't possible on the web platform yet. It also runs well below realtime and may fail or produce incorrect output on some sources.",
+    experimental_title: "10-bit export is experimental",
+    experimental_body:
+      "This feature is still experimental and may fail or produce incorrect output:",
+    experimental_point_preview:
+      "The preview is shown in 8-bit/SDR and can't be guaranteed to match the actual 10-bit result — color, gradients, and HDR may differ.",
+    experimental_point_slow:
+      "Software 10-bit decode runs well below realtime — 4K or long projects can be very slow.",
+    experimental_point_reliability:
+      "Some sources (e.g. HEVC Main10 originals) get transcoded and may be less reliable.",
+    experimental_proceed: "Export anyway",
+    native_unavailable_fallback:
+      "The native FFmpeg encoder is unavailable. Export with the WebCodecs encoder instead? (Bitrate mode only; color tags rely on defaults.)",
+    native_unavailable_no_fallback:
+      "The native FFmpeg encoder is unavailable and this format has no WebCodecs fallback.",
+  },
+  app_notice: {
+    dismiss: "Got it",
+    keyring_unavailable: {
+      title: "Cloud API keys can't be stored",
+      action: "Open API key settings",
+      body: "No system keychain or keyring is available, so cloud API keys can't be saved or read. Allow WeftCut access to it, or on Linux install one (such as GNOME Keyring or KWallet), then restart WeftCut and try again.",
+    },
+    native_decode_unavailable: {
+      title: "Native decode engine unavailable",
+      action: "Open decode settings",
+      body: "The native decode component (@weftcut/native-decode) failed to load, so previews use the WebCodecs engine only. Reinstall the app to restore it.",
+    },
+    agent_skill_unavailable: {
+      title: "Agent Skill missing",
+      action: "Open agent settings",
+      body: "The Skill that teaches a connected agent how to drive WeftCut did not install, so there is nothing to hand to your agent. Reinstall the app to restore it.",
+    },
+    agent_skill_stale: {
+      title: "Agent Skill not up to date",
+      action: "Open agent settings",
+      body: "WeftCut could not refresh its agent Skill, so the copy on offer is one an earlier version left behind. An agent using it may call tools this version no longer has.",
+    },
+    motif_drafts_left: {
+      title: "{{count}} Motif drafts not shown",
+      action: "Open agent settings",
+      body: "Motif drafts from an earlier version are still in {{folder}}. To use one, ask an agent to run create_motif with a directory source on its folder.",
+    },
+  },
+  // Codec-named optimization reasons, shown in Media Pool badge tooltips.
+  import_proxy: {
+    checking_one: "Checking this clip…",
+    reason_undecodable: "{{codec}} · can't be decoded on this machine",
+    reason_transcode: "{{codec}} · needs transcoding",
+    reason_10bit: "{{codec}} 10-bit/HDR · needs optimizing",
+    reason_bridged: "{{codec}} · usable now, optimizing scroll in background",
+    failed: "Preparation failed — re-import to retry",
+    failed_log: "Optimizing “{{label}}” failed — re-import it to retry.",
+  },
+  connect: {
+    blurb:
+      "Connect an external agent to WeftCut's local MCP server so it can read and edit your project directly.",
+    starting: "MCP server starting…",
+    copy: "Copy config",
+    copied: "Copied!",
+    copy_prompt: "Copy setup prompt",
+    prompt_copied: "Prompt copied!",
+    prompt_heading: "Let your agent set itself up",
+    prompt_blurb:
+      "For agents that support MCP: paste the prompt into the chat and it configures the MCP connection and copies the Skill. Paste it again after each WeftCut upgrade: the agent's copy does not update itself.",
+    manual_heading: "Prove you're human",
+    skill_path_heading: "WeftCut's Skill copy",
+    skill_copy_note:
+      "Agents read their own copy of this folder, which does not update itself: replace it after each WeftCut upgrade.",
+    skill_path_unavailable:
+      "No Skill folder to open — see “Let your agent set itself up” above.",
+    skill_stale:
+      "Showing the copy an earlier launch left behind, which may be older than this version of WeftCut.",
+    skill_retry: "Try again",
+    skill_retrying: "Installing…",
+    skill_fault: {
+      not_built:
+        "This development build has no Skill staged yet. Run “npm run build:skills” and restart.",
+      bundle_missing:
+        "No Skill shipped with this installation of WeftCut. Reinstall the app to restore it.",
+      incomplete:
+        "The Skill that shipped with WeftCut is incomplete. Reinstall the app to restore it.",
+      copy_failed:
+        "WeftCut could not write the Skill into its user-data folder. Check free disk space and the folder's permissions, then restart.",
+    },
+    copy_path: "Copy path",
+    browse: "Browse…",
+    // The Browse button's tooltip — Windows' own Explorer wording, and true on
+    // all three: the file manager comes up on the folder (selected where the
+    // platform can — see main/openPath.ts).
+    open_location: "Open file location",
+    agent_prompt: [
+      "Configure the WeftCut MCP server for me. Make the configuration change directly; do not just describe the steps.",
+      "",
+      "Connection details:",
+      "- Server name: weftcut",
+      "- Transport: streamable HTTP",
+      "- URL: {{url}}",
+      "- Authorization header: Bearer {{token}}",
+      "",
+      "Requirements:",
+      "- Use your client's official MCP config format and location.",
+      "- Inspect the existing configuration first and preserve all other settings and MCP servers.",
+      '- Add or update only the MCP server named "weftcut"; do not replace the whole configuration file.',
+      "- Keep the bearer token private and do not echo it in your response.",
+      "- Validate the resulting configuration syntax. If the client must be restarted, tell me.",
+      "- Report which file you changed and whether the configuration is valid.",
+    ].join("\n"),
+    agent_prompt_stdio: [
+      "Configure the WeftCut MCP server for me. Make the configuration change directly; do not just describe the steps.",
+      "",
+      "Connection details:",
+      "- Server name: weftcut",
+      "- Transport: stdio (local command)",
+      "- Command: {{command}}",
+      "- Args: {{args}}",
+      "",
+      "Requirements:",
+      "- Use your client's official MCP config format and location.",
+      "- Inspect the existing configuration first and preserve all other settings and MCP servers.",
+      '- Add or update only the MCP server named "weftcut"; do not replace the whole configuration file.',
+      "- Keep the command and args exactly as given: the command is a path on this machine. The entry takes no environment variables; drop any that an existing weftcut entry has.",
+      "- Validate the resulting configuration syntax. If the client must be restarted, tell me.",
+      "- Report which file you changed and whether the configuration is valid.",
+    ].join("\n"),
+    // The second half of the setup prompt, appended after whichever MCP block
+    // applies. It stands on its own so the message still reads when there is no
+    // staged Skill folder to hand over and this half is left out.
+    agent_prompt_skill: [
+      "Then install the WeftCut Skill — the usage guidance that ships with the app.",
+      "",
+      '- Copy the folder "{{folder}}" into your own skills directory, keeping the folder name weftcut. For Claude Code that is ~/.claude/skills/weftcut.',
+      "- Delete any copy already there first; it belongs to another version of WeftCut.",
+      "- Read the Skill once it is in place, and follow it whenever you work on a WeftCut project.",
+      "- Report where you installed it.",
+    ].join("\n"),
+    reveal: "Reveal token",
+    hide: "Hide token",
+    refresh: "Refresh token",
+    refreshing: "Refreshing…",
+    refresh_hint: "Generate a new bearer token and persist it",
+    refresh_confirm:
+      "Generate a new bearer token? Any agent using the current token will need its config updated.",
+    token_note:
+      "MCP requests must carry the token, and the server binds to local use only. The token is stored in mcp_auth.json — if it leaks, use Refresh token to rotate it.",
+    snippets_heading: "Client config snippets",
+    stdio_note:
+      "This configuration stays valid long-term: app restarts, port changes and token changes require no edits. Agents can also connect while WeftCut is closed, and launch it directly.",
+    http_heading: "HTTP direct (advanced)",
+    http_note:
+      "Connects directly to the running app. The connection drops once the app closes, and the configuration becomes invalid when the port or token changes. Unless your client does not support stdio, use the configuration above.",
+    cli_note: "Or run the following command in a terminal",
+    copy_command: "Copy command",
+    // Host names come from shared/agentHosts.ts and stay untranslated; only a
+    // tab whose label is a common word has an entry here.
+    tabs: {
+      generic: "Generic",
+    },
+    paste_into: "Paste into {{places}}",
+    place_project: "a project's {{path}}",
+    place_or: " or ",
+    hint_facts:
+      "Connection details — refer to your client's own docs to fill in each value.",
+    http_unsupported:
+      "{{host}} takes local commands only, so it connects through the stdio configuration.",
+  },
+  settings: {
+    auto_install_updates_on_quit: 'Automatically install available updates when closing the app',
+    auto_install_updates_on_quit_hint: 'When enabled, updates download in the background and install on exit. When disabled, updates only download when you choose Download and install.',
+    auto_install_updates_on_quit_hint_mac: 'When enabled, updates download in the background and install on exit. When disabled, updates only download when you choose Download and install. An update that has already downloaded still installs when you close the app.',
+    layout_theme: 'Layout theme',
+    layout_theme_hint: 'Apply preset text sizes and dialog dimensions. Relaxed layouts provide more horizontal room and slightly larger text.',
+    layout_theme_recommended: 'Recommended',
+    layout_theme_recommended_detail: 'Suits this display: {{width}}×{{height}} at {{scale}}% scaling',
+    layout_themes: {
+      '1080p-standard': '1080p · Standard',
+      '1080p-wide': '1080p · Relaxed',
+      '2k-standard': '2K (1440p) · Standard',
+      '2k-wide': '2K (1440p) · Relaxed',
+      '4k-standard': '4K · Standard',
+      '4k-wide': '4K · Relaxed',
+    },
+    default_text_font: "Default text font",
+    default_text_font_hint: "The default font when using text. Install fonts through your operating system, then restart WeftCut to update the list.",
+    heading: "Settings",
+    cat_general: "General",
+    cat_project: "Project",
+    cat_keyboard: "Keyboard",
+    cat_speech: "Transcription",
+    cat_vlm: "Video understanding",
+    cat_agent: "Agent",
+    project_scope_blurb:
+      "Settings on this page apply to the current project only and are saved with the project file.",
+    preferences_heading: "Basics",
+    reopen_on_launch: "Auto-open last project",
+    reopen_on_launch_hint:
+      "When enabled, WeftCut skips the start screen and auto-opens the last used project.",
+    canvas_heading: "Canvas",
+    canvas_blurb:
+      "This project's editing and preview size, and its timeline frame rate.",
+    canvas_lock: "Lock canvas settings",
+    canvas_lock_hint:
+      "Canvas settings are project setup, not edits — they cannot be undone.",
+    canvas_resolution: "Resolution",
+    canvas_resolution_custom: "Custom",
+    canvas_custom_size: "Custom size",
+    canvas_width: "Width",
+    canvas_height: "Height",
+    canvas_apply: "Apply",
+    canvas_fps: "Frame rate",
+    canvas_fps_hint:
+      "The frame rate can only be changed in a project whose timeline has never had content.",
+    duration_heading: "Duration",
+    duration_blurb:
+      "Duration follows the last visible frame by default. Extend it to hold a fixed runtime longer than the content.",
+    pin_composition_duration: "Extend duration",
+    pin_composition_duration_hint:
+      "Holds it at the value below. Can only be set ≥ {{floor}} (content end).",
+    composition_duration_label: "Duration",
+    composition_duration_below_floor: "Must be ≥ {{floor}} (content end).",
+    duration_wall_clock:
+      "This rate is non-drop-frame: {{tc}} is {{wall}} of real time.",
+    content_end_wall_clock: "Content end {{tc}} is {{wall}}.",
+    timeline_heading: "Timeline",
+    timeline_wheel_axis: "Mouse wheel scrolls",
+    timeline_wheel_axis_horizontal: "Along time (horizontal)",
+    timeline_wheel_axis_vertical: "Across tracks (vertical)",
+    timeline_wheel_axis_hint:
+      "Shift+wheel always scrolls the other axis. Ctrl+wheel and Alt+wheel zoom.",
+    auto_delete_empty_tracks: "Automatically delete empty tracks",
+    auto_delete_empty_tracks_hint:
+      "Remove a track when its last clip is moved or deleted. Turn off to keep empty tracks; reserved and locked tracks always stay. Applies to all projects.",
+    tail_snap_enabled: "Clip snapping",
+    tail_snap_enabled_hint:
+      "Snap clips to nearby clip edges or the playhead while dragging or trimming. Hold {{mod}} to override.",
+    tail_snap_strength: "Snap strength",
+    tail_snap_strength_hint:
+      "Measured in screen pixels.",
+    playback_heading: "Playback",
+    prefer_proxies: "Prefer proxies for preview",
+    prefer_proxies_hint:
+      "Play the lightweight 720p proxy in the preview for clips that have one, for smoother scrubbing. Export still uses the original.",
+    decode_unsupported_generate_proxy: "Generate proxy",
+    keybindings_blurb:
+      "Manage your keyboard shortcut configuration table.",
+    placeholder_set: "Replace key…",
+    placeholder_unset: "Paste API key",
+    speech_blurb:
+      "Turn speech in audio and video into text for subtitles and media search. Supports local models and online services.",
+    speech_binary: "Binary",
+    speech_model: "Model",
+    speech_tokens: "Tokens",
+    speech_device: "Device",
+    speech_threads: "Threads",
+    speech_browse: "Browse…",
+    vlm_blurb:
+      "Describe video frames to help AI understand and search your media. Supports local models and online services.",
+    // Named for what it controls rather than for the wire field (`fps`): what a
+    // user is choosing is how closely the model looks — so the unit has to ride
+    // in the row, beside the number, or nothing on screen says what the count
+    // counts.
+    vlm_sampling: "Sample",
+    vlm_sampling_unit: "fps",
+    vlm_sampling_hint:
+      "Frames per second sampled across the clip — more is finer and slower.",
+    vlm_focus: "Focus",
+    vlm_focus_general: "General scene",
+    vlm_focus_shot_type: "Shot type and camera",
+    vlm_focus_hint:
+      "What the tags lean toward. The prose describes the scene either way.",
+    // Worded by VIEW rather than by the two controls beside it: the engine, the
+    // model and the interface language key the same cache, and naming only these
+    // two would leave a language switch looking like lost data.
+    vlm_view_note:
+      "Descriptions are cached per engine, model, sampling, focus and interface language. Changing any of them switches to another description view and keeps the existing one — switch back and it is there.",
+    vlm_mmproj: "Projector",
+    vlm_endpoint_url: "URL",
+    vlm_endpoint_model: "Model",
+    content_whisper_runtime: "whisper.cpp engine (v1.9.1)",
+    content_whisper_model_base: "Whisper Base model (multilingual)",
+    content_funasr_runtime: "sherpa-onnx engine (v1.13.4)",
+    content_funasr_model_paraformer: "Paraformer-zh model (Chinese)",
+    content_llama_mtmd_runtime: "llama.cpp engine (b10103, Vulkan)",
+    content_qwen3vl_model: "Qwen3-VL 4B model (Q4_K_M)",
+    content_qwen3vl_mmproj: "Qwen3-VL vision projector (F16)",
+    content_prereq_msvc14:
+      "Requires the Microsoft Visual C++ 2015–2022 x64 runtime (usually already installed).",
+    prebake_motifs: "Pre-bake all motif content",
+    prebake_motifs_hint:
+      "Bake every motif frame the timeline uses in the background.",
+    preview_heading: "Preview",
+    preview_snap_enabled: "Canvas snapping",
+    preview_snap_enabled_hint:
+      "Align clips to the frame, other clips and the grid's lines while moving or resizing them on the preview. Hold {{mod}} to override.",
+    preview_snap_strength: "Snap strength",
+    preview_snap_strength_hint:
+      "Measured in screen pixels.",
+    grid_opacity: "Grid visibility",
+    decode_engine: "Decode engine",
+    decode_engine_auto: "Automatic",
+    decode_engine_auto_desc: "Picks the best engine for each clip",
+    decode_engine_ffmpeg: "Standard",
+    decode_engine_ffmpeg_tag: "ffmpeg",
+    decode_engine_ffmpeg_desc: "Decodes every format, accurate colors",
+    decode_engine_webcodecs: "Lite",
+    decode_engine_webcodecs_tag: "webcodecs",
+    decode_engine_webcodecs_desc: "Lighter on resources; supports fewer formats; colors may be slightly off",
+    decode_engine_unavailable: "Standard engine unavailable: {{reason}}",
+    decode_engine_unavailable_suffix: "unavailable",
+    playback_resolution: "Playback resolution",
+    playback_resolution_full: "Full",
+    playback_resolution_half: "1/2",
+    playback_resolution_quarter: "1/4",
+    playback_resolution_smooth: "Smooth",
+    playback_resolution_sharp: "Sharp",
+    playback_resolution_export_note: "Export always renders at full resolution.",
+    decode_unsupported_title: "Unsupported format",
+    decode_unsupported_body:
+      "The Lite engine can't decode this clip. Switch to the Standard engine to play it.",
+    decode_unsupported_switch: "Switch to Standard",
+    decode_unsupported_body_no_component:
+      "This clip's format isn't supported by the Lite engine, and the Standard engine isn't installed.",
+    data_location_heading: "Data location",
+    data_location_blurb:
+      "Where WeftCut keeps its large managed files. Your Motifs, partial caches, and downloaded assets will be stored here.",
+    data_location_current_label: "Current folder",
+    data_location_fallback:
+      "Fallback — the folder you chose was unavailable, so the default is in use.",
+    data_location_change: "Change…",
+    data_location_open_folder: "Open folder",
+    data_location_working: "Preparing…",
+    data_location_phase_copy: "Copying files…",
+    data_location_phase_verify: "Verifying…",
+    data_location_phase_done: "Finishing…",
+    data_location_progress_count: "{{copied}} / {{total}} files",
+    data_location_success_copy:
+      "Your data was copied to {{path}}. Restart WeftCut to start using the new location.",
+    data_location_success_adopt:
+      "WeftCut will use the existing data folder at {{path}}. Restart to apply.",
+    data_location_restart: "Restart to apply",
+    data_location_error:
+      "Couldn't change the data folder: {{message}} Your data was left unchanged.",
+    data_location_cleanup_title: "Delete old data copy?",
+    data_location_cleanup_body:
+      "WeftCut is now running on the new location. The previous copy at {{path}} is no longer used — delete it to free up space, or keep it as a backup.",
+    data_location_cleanup_keep: "Keep",
+    data_location_cleanup_delete: "Delete old copy",
+    data_location_cleanup_deleting: "Deleting…",
+  },
+  keybindings: {
+    add: "+ Add",
+    no_binding: "(no binding)",
+    remove_hint: "Remove this binding",
+    reset: "Reset",
+    reset_all: "Reset all",
+    export: "Export…",
+    import: "Import…",
+    export_title: "Export keyboard shortcuts",
+    import_title: "Import keyboard shortcuts",
+    press_a_key: "Press a key…",
+    conflict:
+      "Already bound to {{action}} — unset it first.",
+    reset_blocked:
+      "Can't reset: {{chord}} is bound to {{action}}. Unset it first.",
+  },
+  colorpick: {
+    pick: "Pick color",
+    hint_cancel: "Esc — cancel",
+    hint_screen: "S — pick from screen",
+    screen_hint: "Frozen screen · Click or Enter to pick · Arrow keys to adjust · Esc to cancel",
+    error_unsupported: "Screen picking is unavailable on this desktop. You can still pick inside the editor.",
+    error_permission: "Allow screen recording in system settings to pick outside the editor.",
+    error_capture: "Could not capture the screen. Try again, or pick inside the editor.",
+    error_effect_input: "No color is available from this clip at the playhead. Cancel and move to a visible frame, or press S to pick from the screen.",
+    error_timeout: "Screen picking timed out. Try again, or pick inside the editor.",
+  },
+  effects: {
+    heading: "Effects",
+    empty: "Select a clip to edit its effects.",
+    add: "Add effect",
+    empty_chain: "No effects on this clip yet.",
+    order_hint: "Applied top to bottom.",
+    drag_hint: "Drag to reorder",
+    collapse: "Collapse {{name}}",
+    expand: "Expand {{name}}",
+    enable: "Toggle {{name}}",
+    more: "More actions for {{name}}",
+    move_up: "Move up",
+    move_down: "Move down",
+    reset_params: "Reset parameters",
+    remove: "Remove {{name}}",
+    key_color: "Key color",
+    search_placeholder: "Search effects…",
+    search_clear: "Clear search",
+    no_results: "No matching effect.",
+    category: {
+      blur: "Blur",
+      keying: "Keying",
+      color: "Color",
+      stylize: "Stylize",
+      audio: "Audio",
+    },
+    audio: {
+      select_region: "Select region",
+      select_region_too_short: "This clip is shorter than the shortest region the filter can sample.",
+      source_in: "Source in",
+      source_out: "Source out",
+      region_needed: "Drag a noise-only region on the clip to sample.",
+      region_too_short: "The sample region is too short to learn a noise profile.",
+      region_offscreen: "The sample region falls outside the part of the media this clip plays.",
+      status: {
+        pending: "Processing…",
+        failed: "Failed: {{error}}",
+      },
+    },
+    audio_denoise: {
+      name: "Denoise",
+      desc: "Remove steady background noise",
+      params: {
+        strength: "Strength",
+        margin: "Sensitivity",
+        profile_in_us: "Sample region start",
+        profile_out_us: "Sample region end",
+      },
+    },
+    blur: {
+      name: "Blur",
+      desc: "Gaussian softening",
+      params: { strength: "Strength" },
+    },
+    chromakey: {
+      name: "Chroma Key",
+      desc: "Remove a green/blue screen",
+      params: {
+        keyR: "Key red",
+        keyG: "Key green",
+        keyB: "Key blue",
+        balance: "Screen balance",
+        clipBlack: "Clip black",
+        clipWhite: "Clip white",
+        despill: "Despill",
+        feather: "Feather",
+        shrink: "Shrink",
+        viewMatte: "View matte",
+      },
+    },
+    brightness: {
+      name: "Brightness",
+      desc: "Exposure gain — black stays black",
+      params: { amount: "Amount" },
+    },
+    contrast: {
+      name: "Contrast",
+      desc: "Snap around mid gray",
+      params: { amount: "Amount" },
+    },
+    highlights: {
+      name: "Highlights",
+      desc: "Adjust bright tones with a soft transition, protecting darker tones",
+      params: { amount: "Amount" },
+    },
+    saturation: {
+      name: "Saturation",
+      desc: "Color intensity, down to gray",
+      params: { amount: "Amount" },
+    },
+    sharpen: {
+      name: "Sharpen",
+      desc: "Crisp soft or downscaled footage",
+      params: { amount: "Amount" },
+    },
+  },
+  property_panel: {
+    // Spatial progress is a scalar track, displayed as a percentage.
+    path_progress: 'Path progress (%)',
+    heading: "Properties",
+    empty: "Select a clip to edit its properties.",
+    envelope: "Clip",
+    timing: "Timing",
+    flag_enabled: "Enabled",
+    source_media: "Source: {{name}}",
+    flag_disabled: "Disabled",
+    flag_locked: "Locked",
+    flag_unlocked: "Unlocked",
+    track_locked_hint: "The track is locked. Unlock it to edit clip timing.",
+    appearance: "Appearance",
+    effects: "Effects",
+    flip: "Flip",
+    horizontal: "Horizontal",
+    vertical: "Vertical",
+    fades: "Fade in & out",
+    motif_management: "Manage Motif",
+    // A Motif `media` prop: pick a pool image, or a video and the frame to take.
+    motif_media_none: "No picture",
+    motif_media_frame_at: "Frame at (s)",
+    text_layout: "Text box & spacing",
+    text_outline: "Outline",
+    advanced: "Advanced",
+    label: "Label",
+    enabled: "Enabled",
+    audio_units_hint:
+      "Audio edits land on exact 48 kHz samples, so these fields read and accept sub-frame times. Dragging still snaps to frames — samples are 0.042 px wide at maximum zoom. Use Alt+←/→ to nudge one sample, Alt+Shift+←/→ for 1 ms.",
+    t_start: "Start",
+    t_start_hint: "Move the clip, keeping its duration.",
+    t_end: "End",
+    kind: "Kind",
+    link_none: "Not linked",
+    link_of_one: "Link of {{count}} clip",
+    link_of_other: "Link of {{count}} clips",
+    // The Group section: the composition's own name, its frame size and length
+    // (both read-only here — a Group's size is copied at pre-compose), and the
+    // two navigation/structure buttons.
+    group: "Group",
+    group_name: "Name",
+    group_size: "Group size",
+    group_refs: "References",
+    group_open: "Open group",
+    group_ungroup: "Ungroup",
+    // The media branch: what an imported file IS. Read-only — the pool's
+    // context menu stays the one place its preview source is chosen.
+    media_resolution: "Resolution",
+    media_size: "File size",
+    media_location: "Location",
+    media_decode: "Decode",
+    media_codec: "Codec",
+    media_pix_fmt: "Pixel format",
+    media_color: "Color",
+    media_route_bypass: "Original",
+    media_route_direct_export: "Original, proxy for preview",
+    media_route_proxied: "Proxy",
+    media_route_native_sw: "Native software decode",
+    media_proxy_ready: "proxy ready",
+    media_proxy_pending: "proxy pending",
+    media_usage: "Used by",
+    media_unused: "Not used on any timeline.",
+    media_usage_go: "Go to this clip",
+    locked: "Locked",
+    duration: "Duration",
+    multi_primary: "Editing primary clip “{{label}}” — {{count}} clips selected; changes apply only to this clip.",
+    text: "Text",
+    content: "Content",
+    font_family: "Font family",
+    font_size_px: "Font size (px)",
+    text_reduced: "auto-reduced to {{px}} px",
+    text_overflowing: "overflowing — floored at {{px}} px",
+    text_box_mode: "Box",
+    text_box_mode_auto_width: "Auto width",
+    text_box_mode_auto_height: "Auto height",
+    text_box_mode_fixed: "Fixed",
+    text_box_unmeasured:
+      "Needs the clip's rendered size. Move the playhead over this clip, or drag a box handle in the preview.",
+    text_box_w: "Box width",
+    text_box_h: "Box height",
+    text_box_h_hint:
+      "A height turns wrapping into shrink-to-fit: the text is rendered smaller until it fits, down to 8 px.",
+    align: "Horizontal align",
+    align_left: "Left",
+    align_center: "Center",
+    align_right: "Right",
+    valign: "Vertical align",
+    valign_top: "Top",
+    valign_middle: "Middle",
+    valign_bottom: "Bottom",
+    line_height: "Line height (px)",
+    line_height_hint: "0 = automatic — the font's own line metrics.",
+    letter_spacing: "Letter spacing (px)",
+    // Width 0 is how the outline is removed; the colour row leaves with it.
+    outline_width: "Outline (px)",
+    outline_width_hint: "0 = no outline.",
+    outline_color: "Outline color",
+    color: "Color",
+    // `position` / `anchor` caption a MERGED axis row; `x` / `y` / `anchor_x`
+    // / `anchor_y` stay as the per-axis accessible names inside it.
+    position: "Position",
+    x: "X",
+    y: "Y",
+    opacity: "Opacity",
+    media: "Media",
+    audio: "Audio",
+    scale_x: "Scale X",
+    scale_y: "Scale Y",
+    scale: "Scale",
+    scale_link: "Link X/Y scale (uniform) — Scale Y becomes a copy of Scale X",
+    scale_unlink: "Unlink X/Y scale",
+    rotation: "Rotation (°)",
+    anchor: "Anchor",
+    anchor_x: "Anchor X",
+    anchor_y: "Anchor Y",
+    speed: "Speed",
+    fade_in: "Fade in",
+    fade_out: "Fade out",
+    fade_in_duration: "Fade-in duration",
+    fade_out_duration: "Fade-out duration",
+    flip_h: "Flip horizontal",
+    flip_v: "Flip vertical",
+    width: "Width",
+    height: "Height",
+    gain_db: "Gain (dB)",
+    pan: "Pan",
+    role: "Role",
+    transform: "Transform",
+    // The Pauses section, between the kind's own sections and Advanced.
+    pauses: "Pauses",
+    props: "Props",
+    unknown_motif: "Loading this Motif…",
+    motif_review_trust: "Review in Motifs panel",
+    bake_warming: "Warming preview… {{done}}/{{total}}",
+    bake_preview_ready: "Preview ready",
+    bake_queued: "Queued… {{done}}/{{total}}",
+    bake_paused: "Paused… {{done}}/{{total}}",
+    bake_retrying: "Retrying… {{done}}/{{total}}",
+    bake_pause_playback: "Background processing pauses during playback",
+    bake_pause_memory: "Waiting for available resources",
+    bake_pause_capacity: "Temporary cache is full; increase cache space",
+    bake_pause_disk: "Waiting for writable cache storage",
+    bake_baking: "Pre-baking… {{done}}/{{total}}",
+    bake_error: "Pre-bake failed",
+    motif_source: "Source",
+    motif_source_apply: "Apply",
+    motif_source_applying: "Applying…",
+    motif_source_hint: "Edits this project's copy: every clip of it changes. Apply to update the preview.",
+    transition: "Transition",
+    direction: "Direction",
+    transition_delete: "Delete transition",
+  },
+  captions: {
+    title: "Captions",
+    empty: "Import a subtitle file or transcribe a clip to create captions.",
+    style_heading: "Style",
+    // The two words beside the number fields; the aria-label below says what 0
+    // does, because the field has no visible way to.
+    size_label: "Size",
+    outline_label: "Outline",
+    outline_width: "Outline width (px), 0 for none",
+    seek_to: "Go to caption at {{timecode}}",
+  },
+  // Clip-compute jobs: transcribe_clip / describe_clip
+  // (docs/performance-settings.md#admission-lanes, ADR 0121).
+  compute: {
+    // One per key `phaseLabel` (shared/compute-jobs.ts) emits — tool-neutral,
+    // for any surface that only has the phase. A queued job's reason is the
+    // admission condition that is closed, said as what it waits FOR.
+    phase: {
+      queued: "Waiting to start",
+      queued_memory: "Waiting for memory to free up",
+      queued_finalization: "Waiting for an export to finish",
+      queued_budget: "Waiting for processing capacity",
+      extracting: "Extracting {{done}}/{{total}}",
+      normalizing: "Normalizing audio",
+      loading_model: "Loading model",
+      inferring: "Running the model",
+      inferring_counted: "Running the model {{done}}/{{total}}",
+      applying: "Applying results",
+    },
+    // What job surfaces (the Activity row, the status bar, in-context
+    // indicators) draw. They know the tool, so a phase can say what it does.
+    // A resource refusal, summarized (`compute/computeRefusalMessage.ts`). {{task}} is
+    // "Transcription" / "Description".
+    refusal: {
+      task_transcribe: "Transcription",
+      task_describe: "Description",
+      memory: "{{task}} could not start: the computer is short of memory. Close other apps or wait for memory to recover, then retry. If it keeps happening, adjust the Memory target in Settings → Performance.",
+      finalization: "{{task}} is waiting for an export to finish. Retry when the export completes.",
+      budget: "{{task}} could not start within 60 s: processing capacity is in use by other work, such as proxy generation. Retry when it finishes, or raise Processing effort or the Memory target in Settings → Performance.",
+      allowance: "{{task}} needs more working memory than the current Memory target allows. Raise the Memory target in Settings → Performance, then retry.",
+      queue: "Too many tasks are queued. Retry when the current work finishes.",
+      busy: "{{task}} could not get processing resources. Retry shortly; if it keeps happening, check Settings → Performance.",
+      open_settings: "Open Performance settings",
+      details: "Technical details",
+    },
+    ui: {
+      // The budget wait names what holds the capacity: the derivatives pill
+      // beside it is usually the answer.
+      queued_budget_detail: "Waiting for processing capacity — background work such as proxy generation is using it",
+      extracting_audio: "Extracting audio",
+      sampling_frames: "Sampling frames {{done}}/{{total}}",
+      transcribing: "Transcribing",
+      transcribing_percent: "Transcribing {{percent}}%",
+      describing: "Describing",
+      describing_counted: "Describing {{done}}/{{total}}",
+      applying_captions: "Adding captions",
+      // In-context overlay over the source range a job reads.
+      transcribing_range: "Transcribing this range…",
+      describing_range: "Describing this range…",
+      // The short form wherever the reason does not fit; the reason goes in
+      // the title.
+      waiting_short: "Waiting for resources",
+      waited: "waiting {{duration}}",
+      // A working phase that has not changed (counts included) for a while.
+      stalled: "No progress for {{duration}}",
+      stalled_hint: "The current step has not reported progress for a while. It may still be working — a long source can take minutes per step.",
+      caller_disconnected: "Caller disconnected — still running",
+      caller_disconnected_hint: "The agent that asked for this is no longer connected. The work continues, and a retry picks up its result.",
+      cancel: "Cancel",
+      cancel_transcribe: "Cancel transcription",
+      cancel_describe: "Cancel description",
+      cancelling: "Cancelling…",
+      cancelled: "Cancelled",
+      cancel_failed: "Could not cancel: {{reason}}",
+      tool_transcribe: "Transcribe",
+      tool_describe: "Describe",
+      // Durations, coarsest unit first, no leading zeros.
+      duration_seconds: "{{s}}s",
+      duration_minutes: "{{m}}m {{s}}s",
+      duration_hours: "{{h}}h {{m}}m",
+      // Completion notice: a job the person started (or joined) ended while
+      // they may be looking elsewhere.
+      notice_transcribe_done_title: "Transcription finished",
+      notice_transcribe_done_body: "“{{clip}}” is transcribed.",
+      notice_describe_done_title: "Description finished",
+      notice_describe_done_body: "“{{clip}}” is described.",
+      notice_transcribe_failed_title: "Transcription failed",
+      notice_transcribe_failed_body: "Transcribing “{{clip}}” failed: {{reason}}",
+      notice_describe_failed_title: "Description failed",
+      notice_describe_failed_body: "Describing “{{clip}}” failed: {{reason}}",
+      notice_transcribe_cancelled_body: "Transcribing “{{clip}}” was cancelled.",
+      notice_describe_cancelled_body: "Describing “{{clip}}” was cancelled.",
+      notice_transcribe_cancelled_title: "Transcription cancelled",
+      notice_describe_cancelled_title: "Description cancelled",
+      notice_dismiss: "Dismiss",
+    },
+  },
+  audio_roles: { dialogue: "Dialogue", music: "Music", sfx: "SFX", voiceover: "Voiceover" },
+  mixer: {
+    title: "Mixer",
+    gain_db: "{{role}} gain (dB)",
+    gain_value: "{{value}} dB",
+    gain_fader: "{{role}} gain fader",
+    mute_hint: "Mute {{role}} everywhere",
+    solo_hint: "Solo {{role}} (mutes the others)",
+    implied_mute_badge: "Silenced",
+    implied_mute_hint: "{{role}} is silent because another role is soloed",
+    reset_hint: "Reset {{role}} gain to 0 dB",
+    db_scale: "dB scale",
+    role_meter: "{{role}} level meter",
+    master: "Master",
+    master_meter: "Master output meter",
+    master_rms: "RMS {{value}}",
+    master_peak: "Peak {{value}} dB",
+    peak_hold: "Peak hold {{value}} dB, click to reset",
+  },
+  motif_picker: {
+    heading: "Motifs",
+    loading: "Loading motifs…",
+    empty: "No motifs available.",
+    preview_heading: "Preview",
+    preview_canvas_size: "{{w}}×{{h}} canvas",
+    preview_loading: "Loading preview…",
+    props_heading: "Props",
+    no_props: "(no editable props)",
+    timing_heading: "Timing",
+    insert_at: "Insert at",
+    track_label: "Track",
+    track_overlay_auto: "New track (auto-create)",
+    duration_hint:
+      "Clip length defaults to {{value}} (the motif's default duration). Trim later in the timeline if you need a different length.",
+    add: "Add to timeline",
+    adding: "Adding…",
+    new_button: "New Motif",
+    import_button: "Import Motif",
+    export_button: "Export Motif ZIP",
+    delete_button: "Delete Motif",
+    delete_confirm: 'Move “{{name}}” and all its versions to the trash? Projects keep their own copies. You can restore it from the trash.',
+    history_button: "Version history",
+    history_title: "Versions of “{{name}}”",
+    history_loading: "Loading versions…",
+    history_version: "Version {{version}}",
+    history_current: "Current",
+    history_restore: "Restore",
+    history_restore_version: "Restore version {{version}}",
+    cancel: "Cancel",
+    cover_unavailable: "Cover unavailable",
+    untitled_name: "Untitled Motif",
+    search_placeholder: "Search motifs…",
+    search_clear: "Clear search",
+    no_matches: "No motifs match “{{query}}”.",
+    status: {
+      installed: "Saved",
+      builtin: "Built-in",
+      in_sync: "Same as library",
+      update_available: "Update available",
+      modified: "Modified",
+      project_only: "Project only",
+      missing: "Missing",
+      invalid: "Invalid",
+      untrusted: "Not trusted",
+    },
+    group_project: "This project",
+    group_library: "Library",
+    project_empty: "No Motifs in this project yet. Add one from the library.",
+    in_project: "In this project",
+    in_project_missing: "In this project · missing",
+    in_project_invalid: "In this project · invalid",
+    in_project_untrusted: "In this project · not trusted",
+    place_copy_hint: "Adding copies it into this project.",
+    update_button: "Update project copy",
+    update_short: "Update",
+    update_hint: "Replace this project's copy with the library's version. Undo brings it back.",
+    restore_button: "Restore from library",
+    restore_short: "Restore",
+    restore_hint: "Put the library's version back in this project's Motifs folder. Undo brings the broken copy back.",
+    unfinished_moved: "Unfinished files moved to {{path}}.",
+    save_button: "Save to library",
+    save_confirm_title: "Replace “{{name}}” in the library?",
+    save_confirm_body: "This project's copy becomes version {{to}} of “{{name}}”. Projects that use it keep their own copies and show an update.",
+    save_replace: "Replace",
+    save_as_new: "Save as a new Motif",
+    saving: "Saving…",
+    remove_button: "Remove from project",
+    unavailable_title: "“{{name}}” can't render",
+    unavailable_hint: "Restore its folder under Motifs/{{id}}/, fix its files, or restore it from the library.",
+    // A project Motif that cannot render (motifs/MotifProblem.tsx); an
+    // invalid one's package error follows on its own line, untranslated.
+    problem: {
+      missing: "Motifs/{{id}}/ is missing",
+      invalid: "Motifs/{{id}}/ is not a valid Motif",
+      untrusted: "Not trusted on this machine",
+    },
+  },
+  // A project Motif whose revision is not trusted on this machine, in its
+  // row's pane (motifs/TrustCard.tsx). The summary is a static read of its files.
+  motif_trust: {
+    title: "Not trusted on this machine",
+    lead: "This Motif came with the project; its code has not run here.",
+    loading: "Reading its files…",
+    files: "Files",
+    files_value_one: "{{count}} file · {{size}}",
+    files_value_other: "{{count}} files · {{size}}",
+    binary: "{{count}} not text",
+    scripts: "Scripts",
+    workers: "Workers",
+    wasm: "WebAssembly",
+    minified: "Long minified lines",
+    minified_item: "{{path}} ({{chars}} characters)",
+    unscanned: "Too large to scan",
+    more: "+{{count}} more",
+    trust: "Trust",
+    trusting: "Trusting…",
+    changed: "Its files changed. This is what they hold now.",
+    hint: "Not sure? Ask your agent to look first: read_motif reads its files as text and never runs them.",
+  },
+  motif_proposal: {
+    heading_one: "1 Motif awaiting your approval",
+    heading_many: "{{count}} Motifs awaiting your approval",
+    notice: "Motif awaiting approval",
+    notice_many: "{{count}} Motifs awaiting approval",
+    notice_hint: "An agent proposed publishing a Motif. Open Motifs to preview it and approve or reject it.",
+    region: "Proposed publication: {{name}}",
+    target_new: "New Motif “{{id}}”",
+    target_update: "Replaces “{{id}}” version {{from}} → {{to}}",
+    diff_heading: "Changes",
+    diff_new: "Not in the library yet.",
+    diff_none: "Same files and props as the library version.",
+    diff_files: "Files — added: {{added}} · removed: {{removed}} · changed: {{changed}}",
+    diff_props: "Props — added: {{added}} · removed: {{removed}} · changed: {{changed}}",
+    diff_empty_list: "none",
+    approval_effect: "Approving changes the library only. No project changes.",
+    approve_as_new: "Approve as a new Motif",
+    note_label: "Note for the agent (optional)",
+    note_placeholder: "Why, or what to change",
+    approve: "Approve",
+    reject: "Reject",
+    deciding: "Saving…",
+  },
+  status_bar: {
+    label: "Activity log",
+    empty: "No activity yet",
+    source_user: "User",
+    source_agent: "Agent · {{client}}",
+    source_system: "System",
+    open_log: "Open the log",
+    close_log: "Close the log",
+    unseen_errors_one: "{{count}} new error",
+    unseen_errors_other: "{{count}} new errors",
+    announce_error_prefix: "Error",
+    // Background work in one pill (logs/WorkPill.tsx): one piece of work is
+    // named by what it does, several are counted.
+    work: {
+      title: "Background work",
+      many: "{{count}} in progress",
+      waiting: "{{count}} waiting",
+      transcribing: "Transcribing",
+      describing: "Describing",
+      derivatives: "Generating derivatives",
+      agent: "Agent working",
+      group_compute: "Clip jobs",
+      group_agent: "Agent",
+      group_derivatives: "Derivatives",
+      open_agent_panel: "Open in Agent panel",
+      job_name: "{{tool}} · {{clip}}",
+      media_unnamed: "Media item",
+      kind_proxy: "Proxy",
+      kind_thumbnails: "Thumbnails",
+      kind_waveform: "Waveform",
+      kind_conform: "Audio conform",
+      kind_audio_fx: "Audio effects",
+      group_export: "Export",
+      // The export leads the pill; the rest of the work is counted after it.
+      with_more: "{{label}} · {{count}} more",
+    },
+  },
+  save_status: {
+    badge: "Save failed",
+    announce: "Save failed: {{reason}}",
+    last_saved: "Last saved at {{time}}",
+    never_saved: "Not saved since the project was opened",
+    card_body: "Recent edits are not on disk yet. WeftCut keeps trying to save them.",
+    folder: "Project folder: {{dir}}",
+    retry: "Retry now",
+    retrying: "Saving…",
+    retry_failed: "Save failed again.",
+    save_as: "Save As…",
+    open_folder: "Open folder",
+    open_folder_failed: "Could not open the folder: {{detail}}",
+    reason: {
+      disk_full: "The disk is full.",
+      no_permission: "WeftCut is not allowed to write to the project folder.",
+      in_use: "Another program is using the project file.",
+      folder_missing: "The project folder is missing.",
+      read_only: "The project folder is on a read-only drive.",
+      other: "The project file could not be written ({{code}}).",
+      unknown: "The project file could not be written.",
+    },
+  },
+  // The bell and its notification center (notifications/NotificationBell.tsx).
+  notifications: {
+    title: "Needs attention",
+    empty: "Nothing needs attention",
+    bell: "Needs attention: {{level}}",
+    bell_clear: "Nothing needs attention",
+    level_info: "info",
+    level_warn: "warning",
+    level_error: "error",
+    dismiss_hint_settings: "Hides it here; it stays in Settings · {{page}}",
+    dismiss_hint_update: "No reminder or automatic download for this version; Help · Check for Updates still offers it",
+    review_title_one: "{{count}} agent change to review",
+    review_title_other: "{{count}} agent changes to review",
+    review_body: "Approve or revert them in the Agent panel’s Changes tab.",
+    review_action: "Open review",
+    update_action: "View",
+    update_body_available: "Download it, then restart to update.",
+    update_body_ready: "Restart the app to install it.",
+    update_body_error: "Open the update to try again.",
+  },
+  log: {
+    changed_range_at: "Changed range {{index}} of {{count}} · {{line}}",
+    changed_range_last: "No later changed range",
+    changed_range_first: "No earlier changed range",
+    save_failing: "Save failed: project.json cannot be written",
+    save_recovered: "Project saved again",
+    level_filter: "Severity filter",
+    level_all: "All",
+    level_info: "Info+",
+    level_warn: "Warn+",
+    level_errorOnly: "Errors only",
+    category_filter: "Category filter",
+    category_Shortcut: "Shortcut",
+    category_Mcp: "MCP",
+    category_Job: "Job",
+    category_Export: "Export",
+    category_Import: "Import",
+    category_Project: "Project",
+    category_System: "System",
+    category_Agent: "Agent",
+    source_filter: "Source filter",
+    source_User: "User",
+    source_Agent: "Agent",
+    source_System: "System",
+    search_placeholder: "Search messages and details…",
+    autoscroll_on: "Autoscroll: on",
+    autoscroll_off: "Autoscroll: off",
+    autoscroll_hint: "Toggle auto-scroll to newest entry",
+    copy: "Copy",
+    clear: "Clear",
+    open_folder: "Open log folder",
+    open_folder_unavailable_hint: "Open a workspace first.",
+    close: "Close activity log",
+    resize: "Resize console height",
+    empty: "No entries match the current filters.",
+    op_counter_hint: "Expand state changes for this op",
+    toggle_details: "Toggle details",
+    showing_of: "showing {{shown}} / {{total}}",
+    op_state_Started: "Started",
+    op_state_Ok: "Done",
+    op_state_Err: "Failed",
+    export_started: "Exporting {{path}}",
+    export_ok: "Exported {{path}}",
+    export_failed: "Export failed: {{error}}",
+    export_cancelled: "Export cancelled",
+    cleared: "Log cleared",
+    scale_layer_unavailable: "Cannot resize this clip — preview dimensions are unavailable or the clip has zero size",
+    center_layer_unstaged:
+      "Cannot center a clip the preview has not staged yet — its size is unknown",
+    cross_composition_copy:
+      "A clip cannot be copied across timelines — release without Alt to move it there",
+    paste_keyframes_no_target: "Select a clip to paste keyframes onto",
+    paste_keyframes_skipped:
+      "Skipped {{params}} — the selected clips do not carry it",
+    auto_caption_started: "Transcribing “{{clip}}”",
+    // Several clips are counted, not listed: their names are in the Caption
+    // Panel the moment the cues land, and a row that named six clips would be a
+    // paragraph. The failure row names the ONE clip that matters.
+    auto_caption_started_many: "Transcribing {{count}} clips",
+    auto_caption_done: "{{cues}} caption cues added ({{engine}})",
+    auto_caption_failed: "Transcribing “{{clip}}” failed: {{reason}}",
+    // A cancelled job is not a failure: the clip is named, nothing else is said.
+    auto_caption_cancelled: "Transcribing “{{clip}}” was cancelled",
+    auto_caption_quiet: "“{{clip}}” has low source audio volume. Transcription may miss speech or detect the wrong language.",
+    auto_caption_level_unavailable: "Could not check the source audio volume of “{{clip}}”.",
+    auto_caption_normalize_requested: "Normalizing the transcription copy of “{{clip}}” at your request.",
+    auto_caption_normalized: "Transcription copy of “{{clip}}”: gain +{{gain}} dB. Source and timeline volume unchanged.",
+    shots_analyze_started: "Analyzing shots in “{{clip}}”",
+    // The CANDIDATE count, not a shot count: the scan's product is the
+    // candidate list, and how many shots come out of it is whatever threshold
+    // is read next.
+    shots_analyze_done: "{{candidates}} shot candidates found in “{{clip}}”",
+    // Only reached when the failure is not a structured refusal — a refusal
+    // carries its own key and closes the op under that instead.
+    shots_analyze_failed: "Shot analysis of “{{clip}}” failed: {{error}}",
+    // The SPAN count both ways: it is what the pass costs (three ffmpeg
+    // extracts each, for the spans no pass had measured) and what came back.
+    shots_stats_started: "Measuring {{spans}} shots in “{{clip}}”",
+    shots_stats_done: "{{spans}} shots measured in “{{clip}}”",
+    // Only reached when the failure is not a structured refusal, as above.
+    shots_stats_failed:
+      "Measuring shots in “{{clip}}” failed: {{error}}",
+    // One Started row per verb rather than one with the verb interpolated: a
+    // discard announces two counts, and a translated sentence cannot carry an
+    // untranslated verb name. The Started rows say how much of the review went
+    // out; the terminal rows say what came back, which for a discard is
+    // survivors and not the boundaries it cut at.
+    shots_apply_split_started: "Splitting “{{clip}}” at {{cuts}} shot cuts",
+    shots_apply_split_done: "“{{clip}}” split into {{segments}} segments",
+    shots_apply_mark_started: "Marking {{cuts}} shot cuts in “{{clip}}”",
+    shots_apply_mark_done:
+      "{{markers}} shot cut markers added to “{{clip}}”",
+    shots_apply_discard_started:
+      "Splitting “{{clip}}” at {{cuts}} shot cuts, discarding {{discarded}} shots",
+    shots_apply_discard_done:
+      "{{segments}} segments kept from “{{clip}}”, {{discarded}} discarded",
+    // Only reached when the failure is not a structured refusal — a refusal
+    // closes the op under its own curated key instead.
+    shots_apply_failed:
+      "Applying shot cuts to “{{clip}}” failed: {{error}}",
+    // Two terminal rows and not one with a flag, because the difference is what
+    // the run COST: a cached hit billed nothing, and that is the fact worth
+    // reading in the record.
+    voiceover_started: "Generating voiceover — {{chars}} characters, {{voice}}",
+    voiceover_done: "Voiceover added — {{chars}} characters, {{voice}}",
+    voiceover_done_cached:
+      "Voiceover added — reused cached audio, nothing billed",
+    mark_pauses_started: "Marking pauses in “{{clip}}”",
+    // The COUNT is the whole point of the row: the marks land in the ruler's
+    // lower half, which the user may not have been looking at.
+    mark_pauses_done: "{{markers}} pause markers added to “{{clip}}”",
+    remove_pauses_started: "Removing pauses from “{{clip}}”",
+    // The TOTAL beside the count, unlike the marking row's count alone: a
+    // removal shortens the film, and how much it took out is what says how far
+    // everything downstream moved. It is the sum of the CORES cut, not of the
+    // pauses found — each one keeps its pad.
+    remove_pauses_done:
+      "{{removed}} pauses removed from “{{clip}}”, {{total}} in all",
+    describe_started: "Describing “{{clip}}”",
+    // The engine AND the model, unlike the transcription row's engine alone:
+    // one runtime serves several vision models here, so the engine tag on its
+    // own does not say which weights answered.
+    describe_done:
+      "{{segments}} described spans in “{{clip}}” ({{engine}}, {{model}})",
+    describe_cancelled: "Describing “{{clip}}” was cancelled",
+    // A resource refusal, summarized (`compute/computeRefusalMessage.ts`); the native
+    // sentence stays in the row's details.
+    describe_failed: "Describing “{{clip}}” failed: {{reason}}",
+  },
+  // Edit-stack row labels — one per `HISTORY_SUMMARY` entry in
+  // main/state/history-labels.ts, which owns the English source text. The three
+  // templated summaries (media.remove_cascade, audio.set_role_gain,
+  // checkpoint.restore) take their `{{…}}` values from the entry's `label_args`;
+  // history-labels.test.ts gates the placeholders against what each builder
+  // actually supplies, so one can never render literally.
+  history: {
+    initial: "Initial",
+    layer: {
+      add: "Added clip",
+      add_multi: "Added {{count}} clips",
+      paste: "Pasted clip",
+      duplicate: "Duplicated clip",
+      paste_multi: "Duplicated {{count}} clips",
+      enabled_multi: "Enabled {{count}} clips",
+      disabled_multi: "Disabled {{count}} clips",
+      move: "Moved clip",
+      shift: "Shifted clips",
+      move_to_new_track: "Moved to a new track",
+      // The named form wins whenever the destination carries a stored label;
+      // the unnamed one covers a derived `Group N` and the root, neither of
+      // which main can name.
+      move_to_composition: "Moved {{count}} clips to {{composition}}",
+      move_to_composition_unnamed: "Moved {{count}} clips elsewhere",
+      restack: "Restacked clip",
+      trim: "Trimmed clip",
+      split: "Split clip",
+      split_by_shots: "Split clip by shots",
+      delete_multi: "Deleted clips",
+      ripple_delete: "Ripple deleted clips",
+      split_and_ripple: "Split clip and closed the gaps",
+      update: "Updated clip",
+      update_params: "Updated clip params",
+      keyframe_param: "Keyframed clip param",
+      keyframe_params: "Keyframed clip params",
+      keyframe_params_multi: "Keyframed params across clips",
+      scale_link: "Linked scale",
+      scale_unlink: "Unlinked scale",
+      separate_audio: "Separated audio",
+      add_av_pair: "Added A/V pair",
+    },
+    // A selected gap closed (docs/features.md#ripple-delete): the subject is
+    // the gap, no clip went.
+    gap: {
+      close: "Closed gap",
+    },
+    track: {
+      add: "Added track",
+      delete: "Deleted track",
+      move: "Moved track",
+      rename: "Renamed track",
+      add_caption: "Added captions",
+    },
+    marker: {
+      add: "Added marker",
+      add_shots: "Added shot markers",
+      update: "Updated marker",
+      remove: "Removed marker",
+      attach: "Anchored marker to clip",
+      detach: "Detached marker",
+    },
+    effect: {
+      add: "Added effect",
+      update: "Updated effect",
+      reorder: "Reordered effect",
+      remove: "Removed effect",
+    },
+    transition: {
+      add: "Added transition",
+      update: "Updated transition",
+      remove: "Removed transition",
+    },
+    link: {
+      create: "Created link",
+      dissolve: "Dissolved link",
+      add_members: "Added link members",
+      remove_members: "Removed link members",
+    },
+    group: {
+      create: "Grouped {{count}} clips",
+      add_members: "Added {{count}} clips to Group",
+      ungroup: "Ungrouped",
+      rename: "Renamed Group",
+    },
+    composition: { delete: "Deleted Group" },
+    caption: { restyle: "Restyled captions", correct: "Corrected caption text", merge: "Merged captions" },
+    style: { restyle: "Restyled to the project style" },
+    media: {
+      remove_cascade:
+        "Removed media {{media}} and {{count}} referencing clip(s)",
+    },
+    audio: { set_role_gain: "Set {{role}} role gain" },
+    motif: {
+      add: "Added Motif {{motif}}",
+      edit: "Edited Motif {{motif}}",
+      remove: "Removed Motif {{motif}}",
+      update: "Updated Motif {{motif}} from the library",
+    },
+    checkpoint: { restore: "Restored to checkpoint “{{label}}”" },
+    review: { revert: "Reverted unreviewed changes" },
+  },
+  // The History Panel's own chrome. The ROW text comes from `history.*` above
+  // (main records the key at commit time); everything here is panel furniture.
+  history_panel: {
+    // No "empty" string: the stack always holds at least the `Initial` seed and
+    // the read cannot fail, so the only rowless moment is before the first
+    // fetch settles.
+    loading: "Loading history…",
+    // Eviction header. Non-interactive: those snapshots are gone, so there is
+    // nothing to jump to.
+    evicted_one: "{{count}} earlier step is out of range",
+    evicted_other: "{{count}} earlier steps are out of range",
+    jump_hint: "Jump to this state",
+    current_hint: "Current state",
+    redo_hint: "Jump forward to this state",
+    locked_hint: "History is locked: {{reason}}",
+    actor_user: "You",
+    agent_client: "Agent: {{client}}",
+    group_steps_one: "{{count}} step",
+    group_steps_other: "{{count}} steps",
+    group_jump_hint: "Jump to the state before this run",
+    // Boundary case: eviction ate the run's predecessor, so no stack index
+    // holds "before this run" any more.
+    group_jump_unavailable: "The state before this run is out of range",
+    expand_group: "Show every step",
+    collapse_group: "Collapse the run",
+    // Joins entity names on a row and the counted phrases in a group header.
+    list_separator: ", ",
+    // Aggregate counting: `Split layer ×2, Added marker ×4`.
+    aggregate_item: "{{label}} ×{{count}}",
+    // ── Checkpoints (own section above the stack) ────────────────────────────
+    checkpoints_title: "Checkpoints",
+    // Load-bearing, not chrome: checkpoints are absent from serialize.ts /
+    // persistence.ts and `replace_state` clears them, so a user reading them as
+    // durable saves loses work.
+    checkpoints_note: "This session only — checkpoints are cleared when the project closes.",
+    checkpoint_create: "New",
+    checkpoint_create_hint: "Save the current state as a checkpoint",
+    checkpoint_create_title: "New Checkpoint",
+    checkpoint_create_confirm: "Create",
+    checkpoint_cancel: "Cancel",
+    checkpoint_label: "Name",
+    checkpoint_label_placeholder: "Rough cut done",
+    checkpoint_restore: "Restore",
+    checkpoint_restore_hint: "Restore the state this checkpoint holds",
+    checkpoint_delete: "Delete",
+    checkpoint_delete_hint: "Delete this checkpoint",
+    checkpoint_delete_title: "Delete checkpoint",
+    checkpoint_delete_body: "Checkpoint “{{label}}” will be deleted.",
+    // Whose checkpoint this is. The destructive case is cross-actor: an agent
+    // session's `Pre-agent:` checkpoint may be that session's only way back, and
+    // nothing else in the dialog says the checkpoint isn't yours.
+    checkpoint_delete_owner_user: "You created this checkpoint.",
+    checkpoint_delete_owner_agent: "Agent “{{client}}” created this checkpoint.",
+    checkpoint_delete_note: "Deleting a checkpoint cannot be undone.",
+    checkpoint_delete_confirm: "Delete",
+    checkpoint_deleting: "Deleting…",
+  },
+  // Display labels for Rust-side enum discriminants. Keep keys lowercase so
+  // `t("kinds." + value.toLowerCase())` works directly.
+  kinds: {
+    // MediaKind / TrackKind
+    video: "Video",
+    audio: "Audio",
+    image: "Image",
+    subtitle: "Subtitle",
+    // LayerParams discriminants
+    videoclip: "Video",
+    imageoverlay: "Image",
+    text: "Text",
+    motif: "Motif",
+    color: "Color",
+    compositionref: "Group",
+    // Markers have no kind discriminant; the history panel's entity-label chain
+    // uses this as their last rung so a blank-labelled marker never renders as a
+    // raw uuid (main/state/history-labels.ts).
+    marker: "Marker",
+  },
+  // The voiceover dialog.
+  transcription_input: {
+    title: "Check audio before transcription",
+    quiet: "These clips have low source audio volume. Transcription may miss words or detect the wrong language.",
+    unavailable: "Audio levels could not be checked for these clips. Their waveforms may still be preparing.",
+    unchanged: "Continue at original volume uses the audio as-is. Your media files and timeline volume stay unchanged with either option.",
+    normalize_note: "Normalize and transcribe adjusts only this run’s audio copies for the low-volume clips listed above. Target peak: −3 dBFS; maximum boost: 24 dB. Actual gain is measured again and logged. Silence and unchecked clips stay at original volume; background noise may also become louder.",
+    estimate: "estimated boost +{{gain}} dB",
+    normalize: "Normalize and transcribe",
+    remedy: "You can cancel to check the source audio first. Transcription reads the original source; timeline volume and effects do not change its input.",
+    cancel: "Cancel",
+    continue: "Continue at original volume",
+  },
+  voiceover: {
+    title: "Voiceover",
+    script: "Script",
+    // Counter, always shown — an over-length script is refused here rather than
+    // by the provider, so the number has to be visible before the limit is hit.
+    script_count: "{{chars}} / {{max}} characters",
+    script_empty: "type the script to be spoken",
+    script_too_long: "{{over}} over the {{max}}-character limit for one voiceover",
+    voice: "Voice",
+    speed: "Speed",
+    track: "Track",
+    placement: "Where it lands",
+    placement_append: "After everything else",
+    placement_append_desc: "Starts at {{time}}, past the end of the timeline.",
+    placement_playhead: "At the playhead",
+    placement_playhead_desc: "Starts at {{time}}.",
+    // Said before the button, not after the bill: this is the only entry in the
+    // editor that spends money per use, and the cache is what makes a re-run of
+    // the same script free.
+    cost: "Generating new audio is a paid request. The same script, voice and speed reuses the audio already made, at no cost.",
+    cancel: "Cancel",
+    confirm: "Generate",
+    running: "Generating…",
+  },
+  // The Pauses section of the Attribute Panel. Its home is a panel section and
+  // not a dialog because tuning a threshold is something a person does WHILE
+  // looking at the waveform and playing the clip (spec Decision 3), so the copy
+  // here has to work in a narrow column beside the timeline rather than in a
+  // form with room for hints.
+  //
+  // The UI word is PAUSE on every line here: a stretch of quiet inside speech
+  // is what the feature is about, and the old noun collided with mute. The one
+  // exception is the slider end below, where the phrase names the sound itself.
+  pauses: {
+    preset: "Preset",
+    preset_modified: "{{name}} · Modified",
+    presets_builtin: "Built-in presets",
+    presets_personal: "My presets",
+    presets_empty: "No saved presets yet",
+    presets_loading: "Loading presets…",
+    preset_save_as: "Save as preset…",
+    preset_update: "Update “{{name}}”",
+    presets_manage: "Manage presets…",
+    presets_scope: "Available across projects. Changes do not alter parameters already applied to a project.",
+    preset_name: "Preset name",
+    preset_values: "Threshold {{thresholdDb}} dB · shortest pause {{minMs}} ms · keep {{padMs}} ms each side",
+    preset_duplicate: "A preset with this name already exists.",
+    preset_save: "Save",
+    preset_cancel: "Cancel",
+    preset_done: "Done",
+    preset_rename: "Rename",
+    preset_delete: "Delete",
+    preset_rename_named: "Rename “{{name}}”",
+    preset_delete_named: "Delete “{{name}}”",
+    preset_saved: "Preset saved",
+    preset_deleted: "Deleted “{{name}}”. Current parameters are unchanged.",
+    preset_save_failed: "Could not save presets: {{reason}}",
+    parameters_save_failed: "Could not remember these parameters: {{reason}}",
+    threshold_hint: "Lower values detect only very quiet audio. Higher values include more room noise and may include quiet speech.",
+    noise_floor_pending: "Noise floor —",
+    found_one: "Found 1 pause",
+    found_other: "Found {{count}} pauses",
+    result_detail: "Removes {{removed}} · leaves {{result}}",
+    seconds: "{{value}} s",
+    detect_failed: "Could not detect pauses",
+    // Named on the delegating clip, so the user knows the numbers are not about
+    // the picture they selected.
+    delegated: "Measured on the linked audio “{{clip}}”",
+    // Starting points, not modes: each sets the threshold and the minimum and
+    // then gets out of the way. Named for the RECORDING, because that is what
+    // the user knows about their own material — a dB figure is not.
+    preset_speech: "Speech / podcast",
+    preset_noisy: "Noisy room",
+    preset_music: "Music / ambience",
+    // A readout rather than a fourth choice: it lights to say the two numbers
+    // below are the user's own.
+    preset_custom: "Custom",
+    threshold: "Threshold",
+    // Decibels and not amplitude, unlike the tool's own parameter: 0..1 is
+    // linear on a logarithmic quantity, so one step of it is 6 dB at the bottom
+    // of the range and 0.4 dB at the top. The section converts.
+    db: "{{db}} dB",
+    // Measured from the clip's own peaks, which is what makes Auto worth a
+    // button: it knows something about this recording that the user does not.
+    noise_floor: "Noise floor ≈ {{db}} dB",
+    use_suggested: "Use suggested",
+    suggestion_hint: "Set the threshold to {{db}} dB based on this clip’s noise floor and detect pauses again.",
+    suggestion_pending: "A suggested threshold will be available after the waveform is measured.",
+    min_length: "Minimum pause",
+    min_length_hint: "Audio must remain below the threshold for at least this duration to count as a pause.",
+    // “Keep”, not “pad” or “trim”: the number is what SURVIVES on each side of a
+    // pause, and a removal that erased them outright makes speech breathless.
+    pad: "Keep per side",
+    pad_hint: "When removing pauses, keep this duration on each side that joins the surrounding audio for a more natural cut. This does not affect pause markers.",
+    unit_ms: "ms",
+    // Three numbers and no list: nobody confirms forty rows one by one. WHERE
+    // the pauses are is answered by the bands on the clip, how it sounds by the
+    // audition, and what it costs by this line.
+    summary_one: "1 pause · removes {{removed}} · result {{result}}",
+    summary_other: "{{count}} pauses · removes {{removed}} · result {{result}}",
+    none: "No pauses detected with the current settings",
+    detecting: "Reading the waveform…",
+    // A state, not a failure: on a fresh import the peaks are still being
+    // generated, and the section retries by itself once they are.
+    waiting_waveform: "Waiting for the waveform…",
+    // “Result”, because what plays is the stitched OUTCOME of a removal and not
+    // the clip as it stands.
+    audition: "Audition result",
+    audition_stop: "Stop audition",
+    mark: "Mark pauses",
+    marking: "Marking…",
+    remove: "Remove pauses",
+    removing: "Removing…",
+    // The parameters are remembered per project, so there has to be a way back.
+    reset: "Reset parameters to defaults",
+  },
+  search: {
+    placeholder: "Search commands, media, clips, captions, descriptions…",
+    no_results: "No results for “{{query}}”",
+    group_command: "Commands",
+    group_media: "Media",
+    group_group: "Groups",
+    group_track: "Tracks",
+    group_clip: "Clips",
+    group_caption: "Captions",
+    group_marker: "Markers",
+    group_description: "Descriptions",
+    reveal_in_pool: "Reveal in media pool",
+    unused: "Not on the timeline",
+    missing_badge: "missing",
+    show_more: "Show {{count}} more…",
+  },
+};
+
+export default enUS;
+export type Resources = typeof enUS;

@@ -1,0 +1,587 @@
+
+
+.preview { grid-area: preview; }
+
+.preview-inline-text-editor {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* The Text tool's click surface. Sized to the CANVAS box by TextToolOverlay.tsx
+   rather than inset:0, so the I-beam and the surface stop at the letterbox. */
+.preview-text-tool {
+  position: absolute;
+  cursor: text;
+  touch-action: none;
+}
+
+/* While the Text tool is armed the gizmo is display-only: every press on the
+   frame belongs to the tool's hit test, not to a drag handle
+   (TransformGizmo.tsx sets `data-inert`). `!important` because the targets set
+   `pointer-events: all` inline, and an ancestor's `none` does not reach a
+   descendant that names its own value. */
+.transform-gizmo[data-inert="true"] * {
+  pointer-events: none !important;
+}
+
+.preview-inline-text-editor textarea {
+  position: absolute;
+  visibility: hidden;
+  transform-origin: top left;
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  outline: 2px solid var(--ring);
+  background: var(--background);
+  color: var(--foreground);
+  caret-color: var(--foreground);
+  resize: none;
+  pointer-events: auto;
+}
+
+.preview {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: stretch;
+  /* Unified with every other Panel on --card; still light enough that the
+     edges of dark footage stay visible against the canvas surround. */
+  background: var(--card);
+  min-height: 0;
+}
+
+/* The render-target control sits over the picture it names. A toolbar row, not
+   a header bar: the Panel's title is its dock tab. */
+.preview-target-bar {
+  /* One shared dimension keeps selects, fields and icon toggles aligned. */
+  --preview-control-height: calc(24 * var(--ui-px));
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+  padding: calc(4 * var(--ui-px)) calc(8 * var(--ui-px));
+  background: var(--card);
+  border-bottom: 1px solid var(--border-soft);
+  flex: 0 0 auto;
+  /* Always one row, so turning the grid on never changes the bar's height or
+     re-fits the canvas under the user's alignment work. As it narrows, the
+     target label truncates first, then the grid toolbar scrolls inside its own
+     box, and the zoom readout keeps its place; only past both does the row
+     scroll. No scrollbar: a classic one is in flow and would change the height
+     this rule exists to hold (the Quick Actions strip's reason, workspace.css). */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.preview-target-bar .app-select {
+  height: var(--preview-control-height);
+  padding: 0 calc(6 * var(--ui-px));
+  font-size: var(--font-size-caption);
+}
+
+.preview-target-select {
+  /* Far ahead of the grid toolbar's 1, so the label truncates to its floor
+     before the grid starts to give way (the bar's order above). */
+  flex: 0 100 auto;
+  min-width: calc(72 * var(--ui-px));
+  max-width: calc(280 * var(--ui-px));
+}
+
+.preview-target-select > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Both preview dropdowns use the compact toolbar scale and the trigger's
+   surface. The zoom menu also sizes from its anchor, like the target Select. */
+.preview-select-popup {
+  background: var(--popover);
+}
+
+.preview-select-popup .app-menu-item {
+  padding: calc(4 * var(--ui-px)) calc(8 * var(--ui-px));
+  font-size: var(--font-size-caption);
+}
+
+/* The zoom readout doubles as its menu, so it sits at the far end of the
+   toolbar row where every monitor's zoom control sits. */
+.preview-target-bar .preview-zoom-select {
+  margin-left: auto;
+  /* A fixed floor so the toolbar does not jiggle as the percentage changes
+     width under the wheel. Outranks .app-select's own min-width. */
+  min-width: 5.5rem;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Shown while the grid is on, between the target and the zoom readout. It
+   gives way before the zoom readout does: it shrinks and scrolls its own
+   controls (wheel, or Tab into a hidden one), scrollbar hidden for the bar's
+   reason. The padding, cancelled by the margin, keeps the focus rings of its
+   edge controls inside the box that now clips them. */
+.preview-grid-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(5 * var(--ui-px));
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  padding: calc(3 * var(--ui-px));
+  margin: calc(-3 * var(--ui-px));
+  font-variant-numeric: tabular-nums;
+}
+.preview-grid-axis { display: inline-flex; align-items: center; gap: calc(2 * var(--ui-px)); }
+/* Two centred digits need room beside the 16px hover steppers and 2px inset.
+   56 UI pixels leaves a small gap without shifting the number off centre. */
+.preview-grid-toolbar .preview-grid-count { width: calc(56 * var(--ui-px)); min-width: 0; }
+.preview-grid-toolbar .preview-grid-count .app-input {
+  height: var(--preview-control-height);
+  padding: 0 calc(4 * var(--ui-px));
+}
+.preview-grid-times { color: var(--muted-foreground); font-size: var(--font-size-caption); }
+.preview-grid-axis-toggle {
+  width: var(--preview-control-height);
+  height: var(--preview-control-height);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--muted-foreground);
+}
+.preview-grid-axis-toggle[aria-pressed="true"] {
+  color: var(--foreground);
+  background: var(--accent);
+  border-color: var(--border-soft);
+}
+.preview-grid-eye-toggle { margin-inline-start: calc(3 * var(--ui-px)); }
+.preview-grid-axis-toggle:hover { background: var(--accent); }
+.preview-grid-axis-toggle:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+
+.video-surface {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.video-surface:not(:has(.preview-video)) {
+  outline: 1px dashed var(--border);
+  outline-offset: -8px;
+}
+
+.preview-video {
+  width: 100%;
+  height: 100%;
+}
+
+/* The panel owns every pixel outside the composition. The Pixi host is a
+   transparent centering layer; only the tightly contain-sized canvas paints. */
+.pixi-preview-host {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  container-type: size;
+}
+
+.pixi-preview-canvas {
+  display: block;
+  flex: none;
+  width: var(--pixi-preview-canvas-width);
+  height: var(--pixi-preview-canvas-height);
+  max-width: none;
+  max-height: none;
+}
+
+.preview-grid-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  fill: none;
+}
+
+.preview-grid-under {
+  stroke: rgb(0 0 0 / 48%);
+  stroke-width: 2.5px;
+}
+
+.preview-grid-line {
+  stroke: rgb(255 255 255 / 46%);
+  stroke-width: 1px;
+}
+
+.preview-hand-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.preview-hand-overlay[data-dragging="true"] { cursor: grabbing; }
+
+/* A middle-button pan is available under every tool, so the grabbing cursor
+   has to come from the surface rather than from the Hand tool's overlay. */
+.preview-video[data-panning="true"] { cursor: grabbing; }
+
+.preview-rebuilding {
+  position: absolute;
+  top: calc(12 * var(--ui-px));
+  right: calc(12 * var(--ui-px));
+  display: inline-flex;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+  padding: calc(4 * var(--ui-px)) calc(10 * var(--ui-px));
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(96, 165, 250, 0.32);
+  color: var(--color-blue-200);
+  font-size: var(--font-size-caption);
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}
+
+.preview-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(10 * var(--ui-px));
+}
+
+.preview-suspended {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(10 * var(--ui-px));
+  pointer-events: none;
+}
+
+.preview-export-capacity {
+  position: absolute;
+  inset-inline: calc(8 * var(--ui-px));
+  bottom: calc(8 * var(--ui-px));
+  padding: calc(6 * var(--ui-px)) calc(10 * var(--ui-px));
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--font-size-caption);
+  text-align: center;
+  pointer-events: none;
+}
+
+.preview-spinner {
+  width: calc(24 * var(--ui-px));
+  height: calc(24 * var(--ui-px));
+  border-radius: 50%;
+  border: 2px solid var(--border-on-dark);
+  border-top-color: var(--color-blue-400);
+  animation: preview-spin 0.9s linear infinite;
+}
+
+.preview-spinner-inline {
+  width: calc(12 * var(--ui-px));
+  height: calc(12 * var(--ui-px));
+  border-radius: 50%;
+  border: 2px solid var(--border-on-dark);
+  border-top-color: var(--muted-foreground);
+  animation: preview-spin 0.9s linear infinite;
+  display: inline-block;
+}
+
+@keyframes preview-spin {
+  to { transform: rotate(360deg); }
+}
+
+.preview-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+  max-width: 80%;
+  padding: calc(12 * var(--ui-px)) calc(16 * var(--ui-px));
+  border: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent);
+  background: rgba(127, 29, 29, 0.18);
+  border-radius: var(--radius-card);
+  color: var(--color-red-200);
+  text-align: center;
+}
+
+.preview-error-title {
+  font-weight: 600;
+  font-size: var(--font-size-label);
+}
+
+.preview-error-detail {
+  font-size: var(--font-size-caption);
+  color: var(--color-red-300);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  word-break: break-word;
+  /* Keep long stack traces / error blobs from blowing out the surface. */
+  max-height: 6em;
+  overflow: auto;
+}
+
+.preview-retry {
+  background: var(--hover-neutral);
+  border: 1px solid var(--border-on-dark);
+  color: var(--foreground);
+  border-radius: var(--radius-control);
+  padding: calc(4 * var(--ui-px)) calc(12 * var(--ui-px));
+  font-size: var(--font-size-body);
+  cursor: pointer;
+}
+
+.preview-retry:hover {
+  background: var(--active-neutral);
+}
+
+.preview-transport {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+  padding: calc(4 * var(--ui-px)) calc(8 * var(--ui-px));
+  background: var(--card);
+  border-top: 1px solid var(--border-soft);
+  flex: 0 0 auto;
+}
+
+.preview-transport .transport-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(4 * var(--ui-px));
+}
+
+.preview-timecode {
+  justify-self: start;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-body);
+  color: var(--muted-foreground);
+  padding-left: calc(4 * var(--ui-px));
+}
+
+.preview-meta-cell {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: calc(10 * var(--ui-px));
+}
+
+.preview-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-caption);
+  color: var(--color-gray-500);
+  font-variant-numeric: tabular-nums;
+  padding-right: calc(4 * var(--ui-px));
+  user-select: none;
+}
+
+.audio-playback-status {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4 * var(--ui-px));
+  min-width: 0;
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  user-select: none;
+}
+.audio-playback-status.is-error { color: var(--warning); }
+.audio-playback-status svg {
+  flex-shrink: 0;
+}
+.audio-playback-status-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Give the current status priority over canvas metadata in a narrow panel. */
+.audio-playback-status ~ .preview-meta { flex: 1 1 0; }
+
+/* The renderer cannot draw something in view (RendererLimitIndicator):
+   quiet text, the reason and fix in its tooltip. */
+.renderer-limit-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+  user-select: none;
+  cursor: help;
+}
+
+/* Dropped-frame indicator: dim while merely reporting a past-session
+   count, full --warning while decode is actively behind. */
+.dropped-frames-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4 * var(--ui-px));
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  user-select: none;
+  cursor: default;
+}
+
+.dropped-frames-indicator .dropped-frames-dot {
+  width: calc(7 * var(--ui-px));
+  height: calc(7 * var(--ui-px));
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+
+.dropped-frames-indicator.is-active {
+  color: var(--warning);
+}
+
+.dropped-frames-indicator.is-active .dropped-frames-dot {
+  background: var(--warning);
+}
+
+/* The round icon buttons only: the row's other buttons (the timecode, the
+   Motif proposal note) size to their text. */
+.transport-buttons button {
+  background: transparent;
+  color: var(--muted-foreground);
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  width: calc(30 * var(--ui-px));
+  height: calc(30 * var(--ui-px));
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.transport-buttons button:hover:not(:disabled) {
+  background: var(--hover-neutral-strong);
+  color: var(--foreground);
+}
+
+.transport-buttons button:active:not(:disabled) {
+  background: var(--active-neutral);
+}
+
+.transport-buttons button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.preview-failed-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(12 * var(--ui-px));
+  background: rgba(15, 23, 42, 0.55);
+  color: var(--color-red-200);
+  font-size: var(--font-size-label);
+  pointer-events: auto;
+}
+
+.preview-failed-strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: calc(4 * var(--ui-px));
+  background: rgba(248, 113, 113, 0.9);
+}
+
+.preview-failed-retry {
+  padding: calc(6 * var(--ui-px)) calc(14 * var(--ui-px));
+  border-radius: var(--radius-card);
+  border: 1px solid rgba(248, 113, 113, 0.6);
+  background: rgba(127, 29, 29, 0.6);
+  color: var(--color-red-200);
+  cursor: pointer;
+  font-size: var(--font-size-body);
+}
+
+.preview-failed-retry:hover {
+  background: rgba(127, 29, 29, 0.85);
+}
+.html-transform-empty {
+  display: flex;
+  flex-direction: column;
+  gap: calc(8 * var(--ui-px));
+}
+.html-transform-empty .placeholder {
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+  margin: 0;
+  line-height: 1.4;
+}
+.html-transform-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: calc(4 * var(--ui-px));
+}
+.html-transform-header .effect-name {
+  font-size: var(--font-size-caption);
+  color: var(--color-gray-300);
+  font-weight: 600;
+}
+.html-transform-editor {
+  display: flex;
+  flex-direction: column;
+  gap: calc(8 * var(--ui-px));
+}
+.html-transform-hint {
+  margin: calc(6 * var(--ui-px)) 0 0 0;
+  font-size: var(--font-size-micro);
+  color: var(--color-gray-500);
+  line-height: 1.4;
+}
+
+/* An agent's Motif publication awaits approval: same low key as the
+   renderer-limit note, a button only so a click opens the Motifs panel. */
+.motif-proposal-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.motif-proposal-status:hover { color: var(--foreground); }

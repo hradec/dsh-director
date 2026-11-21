@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 480" width="600" height="480">
+  <!-- The fallback picture: a placeholder (hills under a sun) in the clipping
+       style's flat fills and heavy strokes, shown until a photo is set.
+       Replace this file in a fork with your own drawing; keep the viewBox's
+       aspect or change it freely. -->
+  <g stroke="#16130F" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="70" y="60" width="460" height="360" rx="6" fill="#F2ECDF"/>
+    <path fill="#E8D9BC" d="M74 360 L 220 205 L 310 300 L 380 240 L 526 380 L 526 416 L 74 416 Z"/>
+    <circle cx="420" cy="145" r="42" fill="#D2261C"/>
+  </g>
+</svg>

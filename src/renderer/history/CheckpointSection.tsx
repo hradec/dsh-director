@@ -1,0 +1,255 @@
+import { useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Bot, Plus, User } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { AppDialog } from "../components/AppDialog";
+import { tryMutate } from "../errors/tryMutate";
+import {
+  projectDeleteCheckpoint,
+  projectRestoreCheckpoint,
+  type HistoryCheckpointSummary,
+} from "../ipc";
+import { refreshHistoryView } from "../state/historyStore";
+import { openCheckpointPrompt } from "./checkpointPrompt";
+import { formatClock } from "./historyRows";
+import { AppIcon } from "@/components/AppIcon";
+
+/// Named checkpoints, in their OWN section above the stack — never inline pins
+/// (spec decision 9). Two independent reasons:
+///
+///   - `NamedCheckpoint` carries no `op_id`, only a `created_at`, so there is no
+///     stack row to anchor it to — and the stack truncates and evicts out from
+///     under it anyway;
+///   - the click semantics differ. A stack row moves the CURSOR;
+///     `restore_checkpoint` RECORDS a new entry instead. Drawing the two in one
+///     list would imply "click = jump" and lie about what a click does.
+///
+/// The new entry restore records shows up in the stack below, one row further
+/// on. That is correct, not a bug.
+
+interface CheckpointSectionProps {
+  checkpoints: readonly HistoryCheckpointSummary[];
+  /// Non-null while an agent holds the revert lock. Disables **Restore only** —
+  /// see the note on the button.
+  lockReason: string | null;
+}
+
+export function CheckpointSection({
+  checkpoints,
+  lockReason,
+}: CheckpointSectionProps) {
+  const { t } = useTranslation();
+  /// The row whose delete is awaiting confirmation, or null.
+  const [pendingDelete, setPendingDelete] =
+    useState<HistoryCheckpointSummary | null>(null);
+  /// Ids with an action in flight, so a double-click can't fire twice.
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const onRestore = async (id: string) => {
+    // `!== null`, not truthiness: only `null` means unlocked, and the reason's
+    // CONTENT is never what decides. Tested identically in `disabled` below.
+    if (lockReason !== null) return; // belt-and-suspenders; the backend also rejects
+    setBusyId(id);
+    // The command awaits project publication; history independently follows its
+    // project:changed event. Create and delete still need the history-only
+    // refresh below because they do not change project content.
+    await tryMutate(
+      () => projectRestoreCheckpoint(id),
+      "project_restore_checkpoint",
+    );
+    setBusyId(null);
+  };
+
+  const onConfirmDelete = async (id: string) => {
+    setBusyId(id);
+    await tryMutate(() => projectDeleteCheckpoint(id), "project_delete_checkpoint");
+    setBusyId(null);
+    setPendingDelete(null);
+    // Refetch on FAILURE as much as on success. `delete_checkpoint` changes no
+    // project state, so nothing broadcasts and the Panel would keep drawing the
+    // row it just destroyed — and the likeliest
+    // failure is `CheckpointNotFound`, i.e. the row on screen was already stale.
+    // Skipping the refetch there pins the stale row permanently and makes every
+    // retry fail the same way.
+    await refreshHistoryView();
+  };
+
+  return (
+    <section className="history-checkpoints" data-history-section="checkpoints">
+      <header className="history-checkpoints-header">
+        <span className="history-checkpoints-title">
+          {t("history_panel.checkpoints_title")}
+        </span>
+        <Button
+          variant="ghost"
+          size="xs"
+          onClick={openCheckpointPrompt}
+          title={t("history_panel.checkpoint_create_hint")}
+        >
+          <AppIcon icon={Plus} size="body" aria-hidden="true" />
+          {t("history_panel.checkpoint_create")}
+        </Button>
+      </header>
+      {/* Not decoration. Checkpoints are absent from `serialize.ts` /
+          `persistence.ts` and `replace_state` clears them
+          (docs/features.md:39), so a user who reads these as durable saves
+          loses work. Making them durable needs `.vproj` migration — issue #14,
+          out of scope here. */}
+      <p className="checkpoint-session-note">
+        {t("history_panel.checkpoints_note")}
+      </p>
+      {/* No empty-state line: with zero checkpoints the section is just its
+          header and the note above, and the New button beside the title (with
+          its tooltip) already says what to do. */}
+      {checkpoints.length > 0 && (
+        <ul className="history-checkpoint-list">
+          {checkpoints.map((checkpoint) => {
+            const client =
+              checkpoint.actor.kind === "Agent" ? checkpoint.actor.client : null;
+            const busy = busyId === checkpoint.id;
+            return (
+              <li
+                key={checkpoint.id}
+                className="history-checkpoint-row"
+                data-checkpoint-id={checkpoint.id}
+              >
+                <span className="history-row-time">
+                  {formatClock(checkpoint.created_at)}
+                </span>
+                {/* Same actor vocabulary as the stack rows: one glyph, one
+                    data-actor hook, the client name in the accessible label. */}
+                <span
+                  className="history-row-actor"
+                  data-actor={client === null ? "user" : "agent"}
+                  aria-label={
+                    client === null
+                      ? t("history_panel.actor_user")
+                      : t("history_panel.agent_client", { client })
+                  }
+                >
+                  {client === null ? (
+                    <AppIcon icon={User} size="body" aria-hidden="true" />
+                  ) : (
+                    <AppIcon icon={Bot} size="body" aria-hidden="true" />
+                  )}
+                </span>
+                <span
+                  className="history-checkpoint-label"
+                  title={checkpoint.label}
+                >
+                  {checkpoint.label}
+                </span>
+                {/* ONLY Restore disables under the lock. The lock rejects
+                    REVERT paths (docs/features.md#undo-stack-scope) and restore
+                    is one; create and delete are not, and the backend serves
+                    both while locked. */}
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  className="history-checkpoint-restore"
+                  disabled={lockReason !== null || busy}
+                  title={
+                    lockReason !== null
+                      ? t("history_panel.locked_hint", { reason: lockReason })
+                      : t("history_panel.checkpoint_restore_hint")
+                  }
+                  onClick={() => void onRestore(checkpoint.id)}
+                >
+                  {t("history_panel.checkpoint_restore")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="history-checkpoint-delete"
+                  disabled={busy}
+                  title={t("history_panel.checkpoint_delete_hint")}
+                  onClick={() => setPendingDelete(checkpoint)}
+                >
+                  {t("history_panel.checkpoint_delete")}
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {pendingDelete && (
+        <DeleteCheckpointDialog
+          target={pendingDelete}
+          deleting={busyId === pendingDelete.id}
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={() => void onConfirmDelete(pendingDelete.id)}
+        />
+      )}
+    </section>
+  );
+}
+
+/// Delete confirms; create does not. A checkpoint is a named recovery point
+/// pinning a whole snapshot, and dropping it records nothing — so Ctrl-Z does
+/// not bring it back and there is no second chance anywhere. Create is cheap
+/// and reversible by exactly this action, which is why only one side asks.
+///
+/// The dialog names the checkpoint's OWNER, because the destructive case is
+/// cross-actor: a user can delete an agent session's `Pre-agent: <reason>`
+/// checkpoint, which is that session's only way back. Delete is deliberately NOT
+/// gated on the revert lock — the lock rejects revert paths and a delete reverts
+/// nothing, and gating it would not help anyway (the user could delete before or
+/// after the session). Saying whose it is, is the honest fix.
+///
+/// Built on `AppDialog` + a destructive footer button, the same shape
+/// `MediaPool`'s remove-media confirmation uses — the codebase's one
+/// destructive-confirm primitive.
+function DeleteCheckpointDialog({
+  target,
+  deleting,
+  onCancel,
+  onConfirm,
+}: {
+  target: HistoryCheckpointSummary;
+  deleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useTranslation();
+  const client =
+    target.actor.kind === "Agent" ? target.actor.client : null;
+  return (
+    <AppDialog
+      title={t("history_panel.checkpoint_delete_title")}
+      onClose={deleting ? undefined : onCancel}
+      panelClassName="settings-panel checkpoint-delete-dialog"
+    >
+      <div className="settings-body">
+        <div className="settings-card">
+          <p className="settings-blurb">
+            {t("history_panel.checkpoint_delete_body", { label: target.label })}
+          </p>
+          <p className="settings-blurb checkpoint-delete-owner">
+            {client === null
+              ? t("history_panel.checkpoint_delete_owner_user")
+              : t("history_panel.checkpoint_delete_owner_agent", { client })}
+          </p>
+          <p className="settings-warn">
+            {t("history_panel.checkpoint_delete_note")}
+          </p>
+          <div className="export-actions">
+            <Button size="lg" disabled={deleting} onClick={onCancel}>
+              {t("history_panel.checkpoint_cancel")}
+            </Button>
+            <Button
+              variant="destructive"
+              size="lg"
+              disabled={deleting}
+              onClick={onConfirm}
+            >
+              {deleting
+                ? t("history_panel.checkpoint_deleting")
+                : t("history_panel.checkpoint_delete_confirm")}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </AppDialog>
+  );
+}

@@ -1,0 +1,242 @@
+// Internal entity comparison shared by history and diff.
+import type { AudioRole, Composition, Layer, Link, Marker, MediaItem, Project, Track, TrackRole, Transition, Uuid } from './model'
+import { entityKey, type EntityKey, type EntityKind } from '../../shared/review'
+import { motifEntry } from '../../shared/motifs/projectMotifs'
+
+// ── Entities ──────────────────────────────────────────────────────────────────
+
+/** One entity's compared value plus where it lives. Composition and Track
+ *  values are slim (only compared fields). A composition's `track_order` (its tracks'
+ *  ids, top of the list first) is compared because it is the z-order: a
+ *  `move_track` reorder is a reviewable `placement` change of the
+ *  composition. Layer/Marker/Transition/Link hold the model object itself
+ *  (shared with the snapshot, never copied). */
+export type EntityValue =
+  | { kind: 'AudioRole'; id: AudioRole; gain_db: number }
+  | { kind: 'Media'; id: Uuid; media: MediaItem }
+  | { kind: 'Motif'; id: string; revision: string | null }
+  | { kind: 'Composition'; id: Uuid; label: string | null; track_order: readonly Uuid[] }
+  | { kind: 'Track'; id: Uuid; composition_id: Uuid; label: string | null; role: TrackRole | null }
+  | { kind: 'Layer'; id: Uuid; composition_id: Uuid; track_id: Uuid; layer: Layer }
+  | { kind: 'Marker'; id: Uuid; composition_id: Uuid; marker: Marker }
+  | { kind: 'Transition'; id: Uuid; composition_id: Uuid; transition: Transition }
+  | { kind: 'Link'; id: Uuid; composition_id: Uuid; link: Link }
+
+export type EntityIndex = ReadonlyMap<EntityKey, EntityValue>
+
+export { entityKey }
+function keyOf(v: EntityValue): EntityKey { return entityKey(v.kind, v.id) }
+
+// Per-composition memo: immer shares untouched compositions between snapshots,
+// so walking a history of snapshots extracts each composition object once.
+const compositionMemo = new WeakMap<Composition, readonly EntityValue[]>()
+function compositionEntities(c: Composition): readonly EntityValue[] {
+  const hit = compositionMemo.get(c)
+  if (hit) return hit
+  const out: EntityValue[] = [{ kind: 'Composition', id: c.id, label: c.label, track_order: c.tracks.map((t) => t.id) }]
+  for (const t of c.tracks) {
+    out.push({ kind: 'Track', id: t.id, composition_id: c.id, label: t.label, role: t.role })
+    for (const l of t.layers) out.push({ kind: 'Layer', id: l.id, composition_id: c.id, track_id: t.id, layer: l })
+  }
+  for (const m of c.markers) out.push({ kind: 'Marker', id: m.id, composition_id: c.id, marker: m })
+  for (const tr of c.transitions) out.push({ kind: 'Transition', id: tr.id, composition_id: c.id, transition: tr })
+  for (const g of c.links) out.push({ kind: 'Link', id: g.id, composition_id: c.id, link: g })
+  compositionMemo.set(c, out)
+  return out
+}
+
+const projectMemo = new WeakMap<Project, EntityIndex>()
+const AUDIO_ROLES = ['dialogue', 'music', 'sfx', 'voiceover'] as const satisfies readonly AudioRole[]
+/** Recorded project fields outside compositions. Media compares membership
+ *  only: imports and derivative/path/hash updates patch every snapshot, while
+ *  force-removal is recorded with its deleted clips. Missing role rows mean
+ *  the same default 0 dB bus, not an added or removed bus. A Motif compares
+ *  the revision its folder holds, which is what its layers play; an entry
+ *  comes and goes with the layers placing or dropping it, which tell that
+ *  themselves (`motifChanged`). */
+function projectEntities(p: Project): EntityValue[] {
+  return [
+    ...AUDIO_ROLES.map(id => ({ kind: 'AudioRole' as const, id, gain_db: p.audio_roles[id]?.gain_db ?? 0 })),
+    ...Object.values(p.media_pool).map(media => ({ kind: 'Media' as const, id: media.id, media })),
+    ...Object.entries(p.motifs).map(([id, entry]) => ({ kind: 'Motif' as const, id, revision: entry.revision })),
+  ]
+}
+
+/** Whether Motif `id` plays differently: both sides hold it, at different
+ *  revisions. */
+export function motifChanged(before: Project, after: Project, id: string): boolean {
+  const a = motifEntry(before.motifs, id), b = motifEntry(after.motifs, id)
+  return a !== undefined && b !== undefined && a.revision !== b.revision
+}
+/** Every compared entity of `p`, by key. Memoized on project identity. */
+export function extractEntities(p: Project): EntityIndex {
+  const hit = projectMemo.get(p)
+  if (hit) return hit
+  const out = new Map<EntityKey, EntityValue>()
+  for (const v of projectEntities(p)) out.set(keyOf(v), v)
+  for (const c of Object.values(p.compositions)) {
+    const values = compositionEntities(c), keys = compositionKeys(c)
+    for (let i = 0; i < values.length; i++) out.set(keys[i]!, values[i]!)
+  }
+  projectMemo.set(p, out)
+  return out
+}
+
+// ── Equality ──────────────────────────────────────────────────────────────────
+
+/** Structural equality over JSON-shaped values; an `undefined` property equals
+ *  a missing one (the wire omits both). Reference-equal subtrees short-circuit,
+ *  which is what makes immer-shared snapshots cheap to compare. */
+export function jsonEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) if (!jsonEqual(a[i], b[i])) return false
+    return true
+  }
+  if (Array.isArray(b)) return false
+  const ra = a as Record<string, unknown>
+  const rb = b as Record<string, unknown>
+  for (const k of Object.keys(ra)) if (ra[k] !== undefined && !jsonEqual(ra[k], rb[k])) return false
+  for (const k of Object.keys(rb)) if (rb[k] !== undefined && ra[k] === undefined) return false
+  return true
+}
+
+export function transitionEqual(a: Transition, b: Transition): boolean {
+  // Compared: participants, duration, kind (+ direction). `extended_us` is the
+  // inverse ops' bookkeeping, not something the user reviews (spec table).
+  return a.from_layer === b.from_layer && a.to_layer === b.to_layer && a.duration_us === b.duration_us && jsonEqual(a.kind, b.kind)
+}
+export function linkLabel(l: Link): unknown { return (l as Link & { label?: unknown }).label ?? null }
+
+/** Same relative order of the tracks both sides hold. Adding or removing a
+ *  track is that track's own change, not a reorder of its composition. */
+export function trackOrderEqual(a: readonly Uuid[], b: readonly Uuid[]): boolean {
+  if (a === b) return true
+  const inA = new Set(a), inB = new Set(b)
+  const ca = a.filter((id) => inB.has(id)), cb = b.filter((id) => inA.has(id))
+  return ca.length === cb.length && ca.every((id, i) => id === cb[i])
+}
+
+/** Are two entity values equal under the compared fields (location included)? */
+export function entitiesEqual(a: EntityValue | undefined, b: EntityValue | undefined): boolean {
+  if (a === b) return true
+  if (!a || !b || a.kind !== b.kind || a.id !== b.id) return false
+  switch (a.kind) {
+    case 'AudioRole': return a.gain_db === (b as typeof a).gain_db
+    case 'Media': return true // pool membership, not derived resource metadata
+    case 'Motif': return a.revision === (b as typeof a).revision
+    case 'Composition': { const c = b as typeof a; return a.label === c.label && trackOrderEqual(a.track_order, c.track_order) }
+    case 'Track': { const t = b as typeof a; return a.composition_id === t.composition_id && a.label === t.label && a.role === t.role }
+    case 'Layer': { const l = b as typeof a; return a.composition_id === l.composition_id && a.track_id === l.track_id && jsonEqual(a.layer, l.layer) }
+    case 'Marker': { const m = b as typeof a; return a.composition_id === m.composition_id && jsonEqual(a.marker, m.marker) }
+    case 'Transition': { const t = b as typeof a; return a.composition_id === t.composition_id && transitionEqual(a.transition, t.transition) }
+    case 'Link': { const g = b as typeof a; return a.composition_id === g.composition_id && jsonEqual(a.link.members, g.link.members) && jsonEqual(linkLabel(a.link), linkLabel(g.link)) }
+  }
+}
+
+
+// ── Touched keys between consecutive snapshots ────────────────────────────────
+
+/**
+ * The keys of every entity whose compared value differs between two
+ * snapshots — what an Agent commit touched (ticket 05 calls this per commit).
+ * Walks by reference first: an untouched composition, track array, track or
+ * layer that immer shared between the two is skipped without a deep compare.
+ * Agrees with the key set of `diffProjects(before, after)`.
+ */
+export function touchedEntityKeys(before: Project, after: Project): Set<EntityKey> {
+  const out = new Set<EntityKey>()
+  if (before === after) return out
+  if (before.audio_roles !== after.audio_roles) for (const id of AUDIO_ROLES)
+    if ((before.audio_roles[id]?.gain_db ?? 0) !== (after.audio_roles[id]?.gain_db ?? 0)) out.add(entityKey('AudioRole', id))
+  if (before.media_pool !== after.media_pool) for (const id of new Set([...Object.keys(before.media_pool), ...Object.keys(after.media_pool)]))
+    if ((before.media_pool[id] === undefined) !== (after.media_pool[id] === undefined)) out.add(entityKey('Media', id))
+  if (before.motifs !== after.motifs) for (const id of Object.keys(after.motifs))
+    if (motifChanged(before, after, id)) out.add(entityKey('Motif', id))
+  if (before.compositions === after.compositions) return out
+  for (const id of new Set([...Object.keys(before.compositions), ...Object.keys(after.compositions)])) {
+    const a = before.compositions[id], b = after.compositions[id]
+    if (a === b) continue
+    if (!a || !b) {
+      for (const v of compositionEntities((a ?? b)!)) out.add(keyOf(v))
+      continue
+    }
+    if (a.label !== b.label) out.add(entityKey('Composition', id))
+    if (a.tracks !== b.tracks) {
+      if (!trackOrderEqual(a.tracks.map((t) => t.id), b.tracks.map((t) => t.id))) out.add(entityKey('Composition', id))
+      touchedTracks(a.tracks, b.tracks, out)
+    }
+    if (a.markers !== b.markers) touchedList(a.markers, b.markers, 'Marker', (x, y) => jsonEqual(x, y), out)
+    if (a.transitions !== b.transitions) touchedList(a.transitions, b.transitions, 'Transition', transitionEqual, out)
+    if (a.links !== b.links) touchedList(a.links, b.links, 'Link', (x, y) => jsonEqual(x.members, y.members) && jsonEqual(linkLabel(x), linkLabel(y)), out)
+  }
+  return out
+}
+
+function touchedList<T extends { id: Uuid }>(a: readonly T[], b: readonly T[], kind: EntityKind, eq: (x: T, y: T) => boolean, out: Set<EntityKey>): void {
+  const byId = new Map(a.map((x) => [x.id, x]))
+  for (const y of b) {
+    const x = byId.get(y.id)
+    byId.delete(y.id)
+    if (x !== y && (!x || !eq(x, y))) out.add(entityKey(kind, y.id))
+  }
+  for (const id of byId.keys()) out.add(entityKey(kind, id))
+}
+
+function touchedTracks(a: readonly Track[], b: readonly Track[], out: Set<EntityKey>): void {
+  // A layer key is touched when it left a track, joined one, or changed in
+  // place; a layer that moved between two tracks of this composition is seen
+  // on both and added once (Set). Cross-composition moves are seen per side.
+  const layersBefore = new Map<Uuid, { track: Uuid; layer: Layer }>()
+  const layersAfter = new Map<Uuid, { track: Uuid; layer: Layer }>()
+  const tracksBefore = new Map(a.map((t) => [t.id, t]))
+  for (const tb of b) {
+    const ta = tracksBefore.get(tb.id)
+    tracksBefore.delete(tb.id)
+    if (ta === tb) continue
+    if (!ta) out.add(entityKey('Track', tb.id))
+    else if (ta.label !== tb.label || ta.role !== tb.role) out.add(entityKey('Track', tb.id))
+    if (ta?.layers === tb.layers) continue
+    for (const l of ta?.layers ?? []) layersBefore.set(l.id, { track: ta!.id, layer: l })
+    for (const l of tb.layers) layersAfter.set(l.id, { track: tb.id, layer: l })
+  }
+  for (const ta of tracksBefore.values()) {
+    out.add(entityKey('Track', ta.id))
+    for (const l of ta.layers) layersBefore.set(l.id, { track: ta.id, layer: l })
+  }
+  // A layer on a reference-shared track is in neither map; ids are unique, so
+  // one found on a single side truly left or arrived on this composition.
+  for (const [id, x] of layersBefore) {
+    const y = layersAfter.get(id)
+    if (!y || x.track !== y.track || (x.layer !== y.layer && !jsonEqual(x.layer, y.layer))) out.add(entityKey('Layer', id))
+  }
+  for (const id of layersAfter.keys()) if (!layersBefore.has(id)) out.add(entityKey('Layer', id))
+}
+
+/** A composition's entity keys, kept per composition object. */
+const compositionKeyMemo = new WeakMap<Composition, readonly EntityKey[]>()
+function compositionKeys(c: Composition): readonly EntityKey[] {
+  let keys = compositionKeyMemo.get(c)
+  if (!keys) compositionKeyMemo.set(c, keys = compositionEntities(c).map(keyOf))
+  return keys
+}
+
+/** Comparison indexes and candidate keys; snapshot sharing stays private. */
+export function compareEntities(baseline: Project, current: Project): { before: EntityIndex; after: EntityIndex; keys: ReadonlySet<EntityKey> } {
+  const before = extractEntities(baseline)
+  const after = extractEntities(current)
+  if (before === after) return { before, after, keys: new Set() }
+  // Only keys whose owner may differ: an immer object shared between the
+  // two sides holds the very same entity values on both and cannot.
+  const keys = new Set<EntityKey>()
+  if (baseline.audio_roles !== current.audio_roles) for (const id of AUDIO_ROLES) keys.add(entityKey('AudioRole', id))
+  if (baseline.media_pool !== current.media_pool) for (const p of [baseline, current])
+    for (const id of Object.keys(p.media_pool)) keys.add(entityKey('Media', id))
+  if (baseline.motifs !== current.motifs) for (const id of Object.keys(current.motifs))
+    if (motifChanged(baseline, current, id)) keys.add(entityKey('Motif', id))
+  for (const p of [baseline, current])
+    for (const c of Object.values(p.compositions)) if (current.compositions[c.id] !== baseline.compositions[c.id]) for (const k of compositionKeys(c)) keys.add(k)
+  return { before, after, keys }
+}

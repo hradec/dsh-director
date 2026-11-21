@@ -1,0 +1,209 @@
+/// Two time domains, ONE grid implementation.
+///
+/// Video geometry lives on the composition frame grid; audio geometry lives on the
+/// fixed 48 kHz mix lattice (ADR 0037, 0038). Which lattice a layer uses is decided
+/// in exactly one place — `gridForLayerKind` below, which owns that rationale.
+///
+/// THE KEY FACT, and the reason this is not a second grid: a 48 kHz sample boundary
+/// IS a frame boundary at rate 48000/1.
+///   timeUsAtFrame(i, 48000, 1)  === round(i * 1e6 / 48000)   ← the sample time
+///   frameIndexRound(us, 48000, 1) === usToFrame(us, 48000)   ← the mixer's index
+/// (that second identity reduces to `(us*48000 + 500000)/1000000` on both sides —
+/// asserted in `main/state/snap.test.ts`.) So `domain` NAMES the lattice for
+/// diagnostics and messaging; it does not select a different algorithm. There is one
+/// i128 leaf implementation, which is what makes "zero rounding at the render seam"
+/// true rather than aspirational: the authoring index and the mixer's sample index
+/// are the same integer.
+///
+/// Lives in the renderer tree, beside `frames.ts`, because BOTH sides need it: the
+/// actor re-exports it through `main/state/snap.ts` (the same direction main already
+/// takes for the eval leaf), and the timeline UI imports it directly for nudges and
+/// readouts. A copy on each side would be exactly the drift this file prevents.
+import { frameIndexRound, snapFrameCeil, snapFrameFloor, snapFrameRound, timeUsAtFrame } from './eval'
+import type { GridDomain } from '../shared/commandErrors'
+
+/** The mix lattice, hard-coded in BOTH engines (`native/src/audio/mix.rs`
+ *  MIX_SAMPLE_RATE, and the TS twin's `chunkSchedule.ts` framesToUs). Do not add a
+ *  third: this constant is the authoring half of that same pair.
+ *
+ *  NOT `composition.sample_rate` — that field is read only as the EXPORT target, so
+ *  it is a delivery parameter, moves no edit, and is deliberately never locked. */
+export const AUDIO_SAMPLE_RATE_HZ = 48_000
+
+/** Samples per millisecond — the coarse nudge tier's step (1 ms = 48 samples). */
+export const AUDIO_SAMPLES_PER_MS = AUDIO_SAMPLE_RATE_HZ / 1000
+
+/** Which lattice a time lives on. Diagnostics only — see the note above.
+ *  Declared in shared/commandErrors.ts (the refusal wire contract names it in
+ *  `OffGridLayerBoundary.grid`); re-exported here so grid consumers keep one
+ *  import site for all lattice vocabulary. */
+export type { GridDomain } from '../shared/commandErrors'
+
+/** A rate pair, structurally compatible with the actor's `Rational`. */
+export interface RateLike {
+  num: number
+  den: number
+}
+
+/** A lattice: canonical times are `round(i * 1e6 * den / num)` for integer `i`. */
+export interface Grid extends RateLike {
+  domain: GridDomain
+}
+
+/** The 48 kHz sample lattice. A module constant because it never varies: the mix
+ *  rate is fixed, so audio precision does NOT change when the video fps does. */
+export const AUDIO_GRID: Grid = { domain: 'sample', num: AUDIO_SAMPLE_RATE_HZ, den: 1 }
+
+/** The composition frame lattice for `fps`. */
+export function frameGrid(fps: RateLike): Grid {
+  return { domain: 'frame', num: fps.num, den: fps.den }
+}
+
+/** THE grid lookup — the single seam every enforcement and authoring site shares
+ *  (`validate.ts`'s predicate, the mutation snaps incl. `move`'s link fan-out,
+ *  `serialize.ts`'s load repair, and the UI's nudge + readout paths). Adding another
+ *  site means calling this, never re-deriving the choice.
+ *
+ *  `kind` is a plain `string` on purpose: `repairGrid` runs on the WIRE shape before
+ *  the cast to `Project`, and the renderer reads kinds off the project summary, so
+ *  neither side has the narrowed union to hand. An unrecognized kind answers the
+ *  frame grid — the conservative default, since every visual kind is on it and a
+ *  corrupt kind is validate's to reject. */
+export function gridForLayerKind(kind: string, fps: RateLike): Grid {
+  return kind === 'Audio' ? AUDIO_GRID : frameGrid(fps)
+}
+
+/** Which layers may not sit on top of each other on one track. */
+export type OverlapClass = 'visual' | 'audio'
+
+/** THE same-class rule: visual-class layers may not overlap visual, audio may not
+ *  overlap audio, and the two classes coexist freely at the same time (the
+ *  combined row the timeline draws).
+ *
+ *  Stated as "everything that is not Audio is visual" rather than as an allowlist
+ *  of visual kinds, so a CompositionRef falls on the visual side by construction:
+ *  a Group clip composites like any clip — it may hold audio INSIDE it and still
+ *  be a picture — and may be a transition participant for the same reason
+ *  (ADR 0052 §4).
+ *
+ *  Beside `gridForLayerKind`, and structural for the same reason it takes a plain
+ *  `string` kind: the actor's overlap scan reads it off a `LayerParams`, its batch
+ *  pre-checks off a clone plan, and the ripple planner off its own view. Two
+ *  copies of "what counts as the same class" is exactly the drift a shared seam
+ *  prevents. */
+export function layerOverlapClass(params: { kind: string }): OverlapClass {
+  return params.kind === 'Audio' ? 'audio' : 'visual'
+}
+
+/** Nearest lattice point (half-up) — the snap every mutator uses. */
+export function snapOnGrid(tUs: number, g: Grid): number {
+  return snapFrameRound(tUs, g.num, g.den)
+}
+
+/** Lattice point at or below `tUs` — outward-safe for a low bound. */
+export function snapDownOnGrid(tUs: number, g: Grid): number {
+  return snapFrameFloor(tUs, g.num, g.den)
+}
+
+/** Lattice point at or above `tUs` — outward-safe for a high bound. */
+export function snapUpOnGrid(tUs: number, g: Grid): number {
+  return snapFrameCeil(tUs, g.num, g.den)
+}
+
+/** Index of the lattice point nearest `tUs`. For `AUDIO_GRID` this IS the mixer's
+ *  sample-frame index (`usToFrame(tUs, 48000)`), which is what makes a one-sample
+ *  nudge exact rather than approximately one sample. */
+export function gridIndex(tUs: number, g: Grid): number {
+  return frameIndexRound(tUs, g.num, g.den)
+}
+
+/** Canonical µs of lattice point `i`. */
+export function timeUsAtGridIndex(i: number, g: Grid): number {
+  return timeUsAtFrame(i, g.num, g.den)
+}
+
+/** True when `tUs` is a lattice point — equivalently, when snapping is identity.
+ *  A degenerate rate has no lattice; `InvalidFps` owns that. */
+export function isCanonicalOnGrid(tUs: number, g: Grid): boolean {
+  if (g.num <= 0 || g.den <= 0) return true
+  return snapOnGrid(tUs, g) === tUs
+}
+
+/** `tUs` stepped by `steps` lattice points, clamped at 0.
+ *
+ *  Resolved through the INDEX, never by adding a quantum's width in µs. That is the
+ *  whole reason a nudge is exact: lattice spacing is not an integer number of
+ *  microseconds (48 kHz alternates 20/21 µs), so `tUs + steps * 20.83` accumulates
+ *  error and 10 000 nudges out-and-back would not return to the start — the same
+ *  defect class as the video frame-step bug. Index arithmetic is exact by
+ *  construction, so out-and-back is the identity for any step count. */
+export function stepOnGrid(tUs: number, steps: number, g: Grid): number {
+  return timeUsAtGridIndex(Math.max(0, gridIndex(tUs, g) + steps), g)
+}
+
+/** One member of a set on the move: whatever carries a kind and a span. Neither
+ *  side's layer model appears here — the actor adapts its `Layer`, the timeline
+ *  adapts its `DragSubject` — so this stays a statement about lattices. */
+export interface ShiftMember {
+  id: string
+  kind: string
+  tStartUs: number
+  tEndUs: number
+}
+
+/** Where every member of a set lands when the whole set shifts by `deltaUs`.
+ *
+ *  THE arithmetic of a move, and the reason it is one function rather than one
+ *  per caller. Four sites need it — `applyMoveLayer`, `applyMoveLayersToComposition`,
+ *  the timeline's move projection and the cross-Panel ghost — and the first two
+ *  DECIDE where a clip goes while the last two PROMISE it in advance, drawing the
+ *  answer and, in the projection's case, holding the project to it until it
+ *  matches. A promise computed by an arithmetic the mutation does not share is one
+ *  the project can never satisfy.
+ *
+ *  Two rules, and both are the ones a hand-written copy gets wrong:
+ *
+ *  - BOTH endpoints take the same `deltaUs` and are snapped. Never
+ *    `landing + duration`: a duration is the difference of two lattice points and
+ *    is not itself one, so the sum is off-lattice wherever a frame is not a whole
+ *    number of microseconds — 1 µs at 60 fps, on roughly 30 % of landings.
+ *  - Each member snaps on ITS OWN lattice (`gridForLayerKind`), never the anchor's.
+ *    That is what carries a deliberately slipped A/V sync offset through a
+ *    whole-link move intact (R2-D7): the offset is stored as geometry and nothing
+ *    else, so it survives exactly as long as every member keeps landing on the
+ *    lattice it was authored on.
+ *
+ *  Pure, and deliberately free of policy: the zero boundary is `floorShiftAtZero`
+ *  for a caller that CLAMPS and a refusal for a caller that does not
+ *  (`applyMoveLayersToComposition` refuses, on the grounds that sliding a set off
+ *  the picture it was placed against is not a repair). */
+export function shiftOnGrids(
+  members: readonly ShiftMember[],
+  deltaUs: number,
+  fps: RateLike,
+): Map<string, { tStartUs: number; tEndUs: number }> {
+  const landings = new Map<string, { tStartUs: number; tEndUs: number }>()
+  for (const m of members) {
+    const g = gridForLayerKind(m.kind, fps)
+    landings.set(m.id, {
+      tStartUs: snapOnGrid(m.tStartUs + deltaUs, g),
+      tEndUs: snapOnGrid(m.tEndUs + deltaUs, g),
+    })
+  }
+  return landings
+}
+
+/** `deltaUs` floored so the EARLIEST member lands on 0 — the set stopping as ONE
+ *  body rather than each member clamped where it lands.
+ *
+ *  Clamping per member would flatten the set's phase against the boundary, which
+ *  is the same data loss as re-snapping a sibling on the anchor's lattice: an
+ *  A/V pair dragged past zero would arrive in sync having started slipped. 0 is a
+ *  lattice point on every grid, so the floored delta needs no snap of its own —
+ *  `shiftOnGrids` still snaps every member, and the earliest one is already
+ *  canonical at 0. */
+export function floorShiftAtZero(members: readonly ShiftMember[], deltaUs: number): number {
+  let earliest = Infinity
+  for (const m of members) earliest = Math.min(earliest, m.tStartUs)
+  return earliest === Infinity ? deltaUs : Math.max(deltaUs, -earliest)
+}

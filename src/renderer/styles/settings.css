@@ -1,0 +1,1043 @@
+
+
+.kind-video { background: #1e3a5f; color: var(--color-blue-300); }
+.kind-audio { background: var(--color-green-900); color: var(--color-green-300); }
+.kind-image { background: #581c87; color: var(--color-purple-300); }
+.kind-subtitle { background: #713f12; color: var(--color-amber-300); }
+/* No `.kind-group`, deliberately: a Group is the one kind with no medium of
+   its own, so it keeps `.media-kind`'s neutral slate rather than borrowing a
+   colour that would claim it holds one (docs/features.md). */
+
+.settings-panel {
+  width: min(var(--dialog-width-standard), calc(100vw - calc(32 * var(--ui-px))));
+  max-height: calc(100vh - calc(64 * var(--ui-px)));
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-modal);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-panel header {
+  display: flex;
+  align-items: center;
+  padding: calc(12 * var(--ui-px)) calc(16 * var(--ui-px));
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.settings-panel header h2 {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.settings-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.settings-close:hover {
+  color: var(--foreground);
+}
+
+/* Section headings sit one step above row labels in the type hierarchy:
+ * `--font-size-label` is the "section labels" slot (see docs/ui-tokens.md),
+ * so a heading reads as the parent of the 13px/500 `.settings-toggle-label`
+ * rows beneath it instead of fading into them. */
+.settings-panel h3 {
+  margin: calc(16 * var(--ui-px)) 0 calc(8 * var(--ui-px));
+  font-size: var(--font-size-label);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.settings-blurb,
+.settings-status {
+  margin: 0 0 calc(12 * var(--ui-px));
+  font-size: var(--font-size-body);
+  color: var(--muted-foreground);
+}
+
+.settings-error {
+  margin: calc(8 * var(--ui-px)) 0;
+  font-size: var(--font-size-body);
+  color: var(--destructive);
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: var(--radius-control);
+  padding: calc(6 * var(--ui-px)) calc(10 * var(--ui-px));
+}
+
+/* Inline warning callout (amber, boxed) — louder than .settings-blurb but not
+   an error. Used for the experimental 10-bit export notice. */
+.settings-warn {
+  margin: calc(8 * var(--ui-px)) 0 calc(12 * var(--ui-px));
+  font-size: var(--font-size-body);
+  color: var(--foreground);
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: var(--radius-control);
+  padding: calc(8 * var(--ui-px)) calc(10 * var(--ui-px));
+  line-height: 1.45;
+}
+
+.settings-key-row {
+  margin: calc(8 * var(--ui-px)) 0 calc(16 * var(--ui-px));
+  padding: calc(10 * var(--ui-px));
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--popover);
+}
+
+
+
+
+.settings-pin-row {
+  display: flex;
+  align-items: center;
+  gap: calc(12 * var(--ui-px));
+  padding: calc(8 * var(--ui-px)) 0 calc(4 * var(--ui-px));
+}
+
+.settings-pin-checkbox {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+  cursor: pointer;
+  /* Push the timecode input to the right edge of the row. */
+  flex: 1 1 auto;
+}
+
+.settings-pin-checkbox .settings-toggle-label {
+  margin: 0;
+}
+
+.settings-input {
+  width: calc(132 * var(--ui-px));
+}
+
+.settings-input-narrow {
+  width: calc(64 * var(--ui-px));
+}
+
+/* Label on the left, control pushed to the right edge — the same shape as
+ * `.settings-pin-row`, for control rows that carry no checkbox. */
+.settings-control-row {
+  display: flex;
+  align-items: center;
+  gap: calc(12 * var(--ui-px));
+  padding: calc(8 * var(--ui-px)) 0 calc(4 * var(--ui-px));
+}
+
+.settings-control-row > .settings-toggle-label {
+  flex: 1 1 auto;
+}
+
+/* Performance uses the same label/hint and compact controls as General. Keep
+ * a stable value column without allowing the numeric input to fill the row. */
+.settings-performance-row {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.settings-performance-copy {
+  flex: 1 1 calc(230 * var(--ui-px));
+  min-width: 0;
+}
+
+.settings-performance-copy .settings-toggle-hint {
+  margin-bottom: 0;
+}
+
+.settings-performance-value {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+  flex: 0 0 auto;
+}
+
+.settings-performance-budget { margin-bottom: calc(20 * var(--ui-px)); }
+.settings-performance-actions { display: flex; align-items: center; flex-wrap: wrap; gap: calc(8 * var(--ui-px)); }
+
+.settings-performance-value .settings-input {
+  width: calc(100 * var(--ui-px));
+  flex: 0 0 calc(100 * var(--ui-px));
+}
+
+.settings-performance-value .settings-slider-unit {
+  white-space: nowrap;
+}
+
+.settings-performance-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: calc(12 * var(--ui-px));
+  flex-wrap: wrap;
+}
+
+.settings-performance-heading h3,
+.settings-performance-heading .settings-toggle-hint {
+  margin: 0;
+}
+
+.settings-performance-advanced {
+  margin-top: calc(16 * var(--ui-px));
+}
+
+.settings-performance-allocation {
+  display: grid;
+  gap: calc(8 * var(--ui-px));
+  font-size: var(--font-size-body);
+}
+
+.settings-performance-allocation > div {
+  display: flex;
+  justify-content: space-between;
+  gap: calc(16 * var(--ui-px));
+}
+
+.settings-performance-allocation dt { color: var(--muted-foreground); flex: 0 1 40%; }
+.settings-performance-allocation dd { margin: 0; min-width: 0; text-align: right; overflow-wrap: anywhere; }
+
+.settings-hardware-device {
+  border-top: 1px solid var(--border-soft);
+  padding: calc(10 * var(--ui-px)) 0;
+}
+.settings-hardware-name { display: flex; align-items: baseline; flex-wrap: wrap; gap: calc(4 * var(--ui-px)) calc(8 * var(--ui-px)); margin: 0 0 calc(6 * var(--ui-px)); font-weight: 500; font-size: var(--font-size-body); overflow-wrap: anywhere; }
+.settings-hardware-role { color: var(--muted-foreground); font-size: var(--font-size-caption); font-weight: 400; }
+.settings-decode-devices { list-style: none; padding: 0; margin: 0; display: grid; gap: calc(4 * var(--ui-px)); }
+.settings-hardware-subsection { margin-top: calc(16 * var(--ui-px)); padding-top: calc(12 * var(--ui-px)); border-top: 1px solid var(--border-soft); }
+.settings-hardware-subheading, .settings-hardware-codecs h4 { margin: 0 0 calc(8 * var(--ui-px)); font-weight: 500; font-size: var(--font-size-body); color: var(--foreground); }
+.settings-hardware-details { min-width: 0; color: var(--muted-foreground); font-size: var(--font-size-caption); overflow-wrap: anywhere; }
+.settings-hardware-details + .settings-hardware-details { margin-top: calc(8 * var(--ui-px)); }
+.settings-hardware-details summary { cursor: pointer; width: fit-content; }
+.settings-hardware-details summary:focus-visible { outline: 2px solid var(--ring); outline-offset: calc(3 * var(--ui-px)); }
+.settings-hardware-probe-actions { margin: calc(10 * var(--ui-px)) 0; }
+.settings-hardware-probe-actions .settings-toggle-hint { margin: 0; }
+.settings-hardware-diagnostics { width: min(var(--dialog-width-settings), calc(100vw - calc(32 * var(--ui-px)))); }
+.settings-hardware-refresh { order: -1; margin-right: calc(8 * var(--ui-px)); }
+.settings-hardware-probe-card { margin-bottom: calc(20 * var(--ui-px)); padding: calc(12 * var(--ui-px)); border: 1px solid var(--border); border-radius: var(--radius-card); background: color-mix(in srgb, var(--muted-foreground) 5%, var(--card)); }
+.settings-hardware-probe-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: calc(12 * var(--ui-px)) calc(16 * var(--ui-px)); }
+.settings-hardware-probe-heading > button { min-width: calc(120 * var(--ui-px)); }
+.settings-hardware-probe-copy { flex: 1 1 calc(260 * var(--ui-px)); min-width: 0; }
+.settings-hardware-probe-copy h3 { margin: 0; }
+.settings-hardware-probe-copy .settings-toggle-hint { margin: calc(6 * var(--ui-px)) 0 0; }
+.settings-hardware-probe-meta { display: flex; flex-wrap: wrap; gap: calc(6 * var(--ui-px)) calc(16 * var(--ui-px)); margin-top: calc(12 * var(--ui-px)); padding-top: calc(8 * var(--ui-px)); border-top: 1px solid var(--border-soft); font-size: var(--font-size-caption); color: var(--muted-foreground); }
+.settings-hardware-probe-error { margin: calc(8 * var(--ui-px)) 0 0; font-size: var(--font-size-caption); color: var(--destructive); }
+.settings-hardware-codecs + .settings-hardware-codecs { margin-top: calc(20 * var(--ui-px)); }
+.settings-hardware-codec-group { margin: calc(8 * var(--ui-px)) 0; padding: calc(10 * var(--ui-px)) calc(12 * var(--ui-px)); border: 1px solid var(--border-soft); border-radius: calc(6 * var(--ui-px)); }
+.settings-hardware-codec-group h5 { margin: 0; color: var(--foreground); font-size: var(--font-size-body); font-weight: 500; }
+.settings-hardware-codec-group > .settings-toggle-hint { margin: calc(4 * var(--ui-px)) 0 calc(8 * var(--ui-px)); }
+.settings-hardware-codecs ul { margin: 0; padding: 0; list-style: none; }
+.settings-hardware-codecs li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: baseline; gap: calc(4 * var(--ui-px)) calc(12 * var(--ui-px)); padding: calc(8 * var(--ui-px)) 0; border-top: 1px solid var(--border-soft); font-size: var(--font-size-body); color: var(--foreground); }
+.settings-hardware-codecs li > details { grid-column: 1 / -1; margin: 0; }
+.settings-hardware-bit-depth { color: var(--muted-foreground); font-size: var(--font-size-caption); }
+.settings-hardware-result { min-width: 0; text-align: right; }
+.settings-hardware-status { display: flex; flex-direction: column; align-items: flex-end; gap: calc(3 * var(--ui-px)); }
+.settings-hardware-verdict { font-size: var(--font-size-body); }
+.settings-hardware-verdict[data-status="available"] { color: var(--success); }
+.settings-hardware-reason { color: var(--muted-foreground); font-size: var(--font-size-caption); overflow-wrap: anywhere; }
+.settings-hardware-probe-output { max-height: calc(160 * var(--ui-px)); overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: calc(8 * var(--ui-px)) 0 0; padding: calc(8 * var(--ui-px)); border-radius: calc(4 * var(--ui-px)); background: var(--background); color: var(--muted-foreground); font: inherit; font-size: var(--font-size-caption); line-height: var(--line-height-body); }
+.settings-performance-reset { align-self: flex-start; }
+
+.settings-radio-card[data-disabled] {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.settings-select {
+  min-width: calc(168 * var(--ui-px));
+}
+
+/* Layout theme: popup-only tag on the preset suiting the current display. */
+.layout-theme-recommended {
+  flex: none;
+  margin-left: calc(12 * var(--ui-px));
+  padding: 0 calc(5 * var(--ui-px));
+  font-size: var(--font-size-micro);
+  line-height: var(--line-height-body);
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
+  border-radius: 999px;
+}
+
+.settings-performance-processing {
+  min-width: 0;
+  width: calc(126 * var(--ui-px));
+  flex: 0 0 calc(126 * var(--ui-px));
+}
+
+/* width × height + Apply. Wraps as a unit so a narrow panel breaks the group
+ * onto its own line rather than squeezing the number fields. */
+.settings-size-fields {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+  flex-wrap: wrap;
+}
+
+.settings-size-fields .app-number-field {
+  width: calc(88 * var(--ui-px));
+}
+
+.settings-slider-row {
+  display: flex;
+  align-items: center;
+  gap: calc(10 * var(--ui-px));
+  padding: 0 0 calc(6 * var(--ui-px));
+}
+
+.settings-slider-row .app-slider {
+  flex: 1 1 auto;
+  min-width: calc(120 * var(--ui-px));
+}
+
+/* Same role as `.settings-toggle-label` — the primary label of a control
+ * row — so it shares that type slot instead of reading as secondary text. */
+.settings-slider-label {
+  min-width: calc(92 * var(--ui-px));
+  font-size: var(--font-size-label);
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.settings-slider-unit {
+  font-size: var(--font-size-caption);
+  color: var(--color-gray-500);
+}
+
+.settings-key-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: calc(8 * var(--ui-px));
+}
+
+.settings-key-label {
+  font-size: var(--font-size-body);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.settings-badge {
+  margin-left: auto;
+  font-size: var(--font-size-micro);
+  padding: calc(2 * var(--ui-px)) calc(8 * var(--ui-px));
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.settings-badge-on {
+  color: var(--color-emerald-400);
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.4);
+}
+
+.settings-badge-off {
+  color: var(--muted-foreground);
+  background: rgba(156, 163, 175, 0.08);
+  border: 1px solid var(--border);
+}
+
+.settings-badge-beta {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: calc(1 * var(--ui-px)) calc(5 * var(--ui-px));
+  color: var(--color-amber-300);
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  line-height: 1.2;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* A second badge on the same row (e.g. the exact-word-timing capability badge
+   after the availability badge): only the first takes the auto push-right
+   margin, siblings just get a small gap. */
+.settings-badge + .settings-badge {
+  margin-left: calc(6 * var(--ui-px));
+}
+
+.settings-test-ok {
+  margin: calc(6 * var(--ui-px)) 0 0;
+  font-size: var(--font-size-caption);
+  color: var(--color-emerald-400);
+}
+
+.settings-test-err {
+  margin: calc(6 * var(--ui-px)) 0 0;
+  font-size: var(--font-size-caption);
+  color: var(--destructive);
+  word-break: break-word;
+}
+
+.settings-key-input-row {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+}
+
+.settings-key-input-row input {
+  flex: 1;
+}
+
+
+
+
+
+/* --- Data-location section (Change… / Open folder + migration progress) --- */
+.settings-data-location {
+  display: flex;
+  flex-direction: column;
+  gap: calc(10 * var(--ui-px));
+}
+
+.settings-data-location .settings-key-header {
+  margin-bottom: 0;
+}
+
+.settings-data-path {
+  margin: 0;
+  padding: calc(6 * var(--ui-px)) calc(8 * var(--ui-px));
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: var(--font-size-caption);
+  color: var(--foreground);
+  word-break: break-all;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-control);
+}
+
+.settings-data-migrate {
+  display: flex;
+  flex-direction: column;
+  gap: calc(8 * var(--ui-px));
+}
+
+.settings-data-migrate .settings-toggle-hint {
+  margin-top: 0;
+}
+
+/* --- Settings toggle row (used by reopen-on-launch) --- */
+
+.settings-toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(10 * var(--ui-px));
+  padding: calc(8 * var(--ui-px)) 0 calc(16 * var(--ui-px));
+  cursor: pointer;
+}
+
+.settings-toggle-row input[type="checkbox"] {
+  margin-top: calc(2 * var(--ui-px));
+}
+
+.settings-toggle-label {
+  display: block;
+  font-size: var(--font-size-label);
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+.settings-toggle-hint {
+  display: block;
+  font-size: var(--font-size-caption);
+  color: var(--color-gray-500);
+  margin-top: calc(2 * var(--ui-px));
+  max-width: calc(460 * var(--ui-px));
+  line-height: 1.45;
+}
+
+/* --- Settings panel body + card -------------------------------------- */
+/*
+ * The settings-panel root keeps `overflow: hidden` so the header stays
+ * pinned; the inner `.settings-body` wrapper carries the scroll.
+ * `min-height: 0` lets the flex item shrink below its content size —
+ * without it `overflow-y: auto` never engages because the body grows
+ * to fit its children.
+ *
+ * `.settings-body` is a pure scroll container — no padding, no border.
+ * `.settings-card` fills the body edge-to-edge with a subtle bg shift
+ * and owns all the inner padding. Inner elements (`<h3>`,
+ * `.settings-blurb`, `.settings-toggle-row`, etc.) carry no horizontal
+ * margin of their own — vertical rhythm is the only thing they still
+ * control.
+ */
+
+.settings-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.settings-card {
+  background: var(--card);
+  padding: calc(16 * var(--ui-px));
+}
+
+.settings-card > :first-child {
+  margin-top: 0;
+}
+
+.settings-card > :last-child {
+  margin-bottom: 0;
+}
+
+/* --- Sidebar (nav) variant of the settings dialog -------------------- */
+/*
+ * Only SettingsPanel opts in, via `.settings-panel--nav`. The bare
+ * `.settings-panel` chrome (shared with Export / close-guard / progress)
+ * keeps its 560px width + single-column body untouched.
+ */
+.settings-panel--nav {
+  width: min(var(--dialog-width-settings), calc(100vw - calc(32 * var(--ui-px))));
+  /* Fixed vertical share so tab switches don't resize the dialog: every
+     pane's content fits the same box, with per-pane overflow scrolling
+     inside `.settings-content` instead. */
+  height: min(var(--dialog-height-settings), calc(100vh - calc(64 * var(--ui-px))));
+}
+
+.settings-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.settings-nav {
+  flex: 0 0 var(--settings-nav-width);
+  min-height: 0;
+  overflow-y: auto;
+  padding: calc(8 * var(--ui-px));
+  display: flex;
+  flex-direction: column;
+  gap: calc(2 * var(--ui-px));
+  border-right: 1px solid var(--border-soft);
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+  appearance: none;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-card);
+  padding: calc(7 * var(--ui-px)) calc(10 * var(--ui-px));
+  font-size: var(--font-size-label);
+  font-weight: 500;
+  text-align: left;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.settings-nav-item:hover {
+  color: var(--foreground);
+}
+
+.settings-nav-item.is-active {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.settings-nav-item:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+/* Stream-excluded category (export dialog: Video when audio-only, Audio when
+ * video-only) — dimmed but still navigable; its pane shows an "excluded" note. */
+.settings-nav-item.is-dim {
+  opacity: 0.45;
+}
+
+.settings-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: calc(16 * var(--ui-px));
+  background: var(--card);
+}
+
+.settings-pane > :first-child {
+  margin-top: 0;
+}
+
+.settings-pane-title {
+  margin: 0 0 calc(14 * var(--ui-px));
+  padding-bottom: calc(8 * var(--ui-px));
+  font-size: var(--font-size-title);
+  font-weight: 600;
+  color: var(--foreground);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/*
+ * One spacing source per section. Each `.settings-section` is a flex
+ * column whose single `gap` sets BOTH the heading->content gap and the
+ * row->row gap, so they're identical everywhere; adjacent sections are
+ * separated by a hairline with even air on both sides. The row elements'
+ * own ad-hoc vertical padding/margins are zeroed so they can't
+ * reintroduce the old uneven rhythm.
+ */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: calc(10 * var(--ui-px));
+}
+
+.settings-section + .settings-section {
+  margin-top: calc(16 * var(--ui-px));
+  padding-top: calc(16 * var(--ui-px));
+  border-top: 1px solid var(--border-soft);
+}
+
+.settings-section > *,
+.settings-section > h3 {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.settings-section > .settings-toggle-row,
+.settings-section > .settings-slider-row,
+.settings-section > .settings-control-row,
+.settings-section > .settings-pin-row {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.keybindings {
+  margin: 0 0 calc(16 * var(--ui-px));
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  padding: calc(8 * var(--ui-px));
+  background: var(--popover);
+}
+
+.keybindings-toolbar {
+  display: flex;
+  gap: calc(8 * var(--ui-px));
+  padding: 0 calc(4 * var(--ui-px)) calc(8 * var(--ui-px));
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: calc(8 * var(--ui-px));
+}
+
+
+
+.keybindings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-body);
+}
+
+.keybindings-row > td {
+  padding: calc(4 * var(--ui-px)) calc(4 * var(--ui-px));
+  vertical-align: middle;
+}
+
+.keybindings-label {
+  color: var(--color-gray-300);
+  white-space: nowrap;
+  padding-right: calc(12 * var(--ui-px)) !important;
+  width: 1%;
+}
+
+/* The dispatch rule under an action's label. Wraps and is width-capped, unlike
+   the label above it: the column is shrink-to-fit and nowrap, so a sentence
+   left to inherit that would push the chord chips off the panel. */
+.keybindings-hint {
+  margin-top: calc(2 * var(--ui-px));
+  max-width: 34ch;
+  white-space: normal;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+  line-height: 1.35;
+}
+
+.keybindings-chords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(4 * var(--ui-px));
+  align-items: center;
+}
+
+.keybindings-empty {
+  color: var(--color-gray-500);
+  font-style: italic;
+}
+
+.keybindings-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4 * var(--ui-px));
+  background: var(--secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: calc(2 * var(--ui-px)) calc(4 * var(--ui-px)) calc(2 * var(--ui-px)) calc(8 * var(--ui-px));
+  font-variant-numeric: tabular-nums;
+}
+
+.keybindings-chip-label {
+  font-size: var(--font-size-caption);
+  color: var(--foreground);
+}
+
+.keybindings-chip-remove {
+  background: transparent;
+  border: none;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 calc(2 * var(--ui-px));
+}
+
+.keybindings-chip-remove:hover {
+  color: var(--destructive);
+}
+
+.keybindings-add {
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--muted-foreground);
+  border-radius: var(--radius-control);
+  padding: calc(2 * var(--ui-px)) calc(8 * var(--ui-px));
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
+
+.keybindings-add:hover {
+  border-color: var(--color-blue-300);
+  color: var(--color-blue-300);
+}
+
+.keybindings-row-actions {
+  text-align: right;
+  width: 1%;
+  white-space: nowrap;
+}
+
+.keybindings-reset {
+  background: transparent;
+  border: none;
+  color: var(--color-blue-300);
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+  padding: calc(2 * var(--ui-px)) calc(4 * var(--ui-px));
+}
+
+.keybindings-reset:hover {
+  text-decoration: underline;
+}
+
+.kbd-capture {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-control);
+  padding: calc(2 * var(--ui-px)) calc(8 * var(--ui-px));
+  font-size: var(--font-size-caption);
+  outline: none;
+}
+
+.kbd-capture-waiting {
+  background: rgba(147, 197, 253, 0.1);
+  border: 1px solid var(--ring);
+  color: var(--color-blue-300);
+  animation: kbd-capture-pulse 1.2s ease-in-out infinite;
+}
+
+.kbd-capture-conflict {
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid var(--color-red-500);
+  color: var(--color-red-300);
+}
+
+@keyframes kbd-capture-pulse {
+  0%, 100% { border-color: var(--ring); }
+  50% { border-color: var(--color-blue-300); }
+}
+
+/* Preview-engine section in the Settings panel. */
+.settings-preview-engine {
+  display: flex;
+  flex-direction: column;
+  gap: calc(12 * var(--ui-px));
+}
+
+.settings-preview-options {
+  display: flex;
+  flex-direction: column;
+  gap: calc(8 * var(--ui-px));
+}
+
+.settings-preview-option {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(8 * var(--ui-px));
+  cursor: pointer;
+  padding: calc(4 * var(--ui-px)) 0;
+}
+
+.settings-preview-option input[type="radio"] {
+  margin-top: calc(2 * var(--ui-px));
+}
+
+.settings-preview-status {
+  background: rgba(0, 0, 0, 0.2);
+  padding: calc(8 * var(--ui-px)) calc(10 * var(--ui-px));
+  border-radius: var(--radius-card);
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--ui-px));
+  font-size: var(--font-size-body);
+}
+
+.settings-preview-status code {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0 calc(4 * var(--ui-px));
+  border-radius: var(--radius-control);
+  font-family: ui-monospace, Menlo, monospace;
+}
+.field-editor {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--ui-px));
+  padding: calc(6 * var(--ui-px)) calc(8 * var(--ui-px));
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+}
+.field-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.field-label {
+  font-size: var(--font-size-caption);
+  color: var(--color-slate-300);
+}
+.field-value {
+  background: var(--card);
+  border: 1px solid var(--border-soft);
+  color: var(--foreground);
+  padding: calc(2 * var(--ui-px)) calc(6 * var(--ui-px));
+  font-size: var(--font-size-body);
+  border-radius: var(--radius-control);
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Preview choice groups (decode engine cards / resolution segments) ---
+ * Label + control + hint stack with a tighter rhythm than the section gap
+ * the groups sit inside. */
+
+.settings-choice-group {
+  display: flex;
+  flex-direction: column;
+  gap: calc(6 * var(--ui-px));
+}
+
+/* Decode engine radio cards — every option visible with its trade-off
+ * inline, instead of a dropdown + hint pair. */
+.settings-radio-cards {
+  display: flex;
+  flex-direction: column;
+  gap: calc(6 * var(--ui-px));
+}
+
+.settings-radio-card {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(10 * var(--ui-px));
+  padding: calc(8 * var(--ui-px)) calc(10 * var(--ui-px));
+  background: var(--popover);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.settings-radio-card[data-checked] {
+  border-color: var(--ring);
+}
+
+.settings-radio-card:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+  box-shadow: var(--focus-ring);
+}
+
+.settings-radio-card[data-disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-radio-card-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: calc(14 * var(--ui-px));
+  height: calc(14 * var(--ui-px));
+  margin-top: calc(2 * var(--ui-px));
+  background: var(--secondary);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+}
+
+.settings-radio-card[data-checked] .settings-radio-card-dot {
+  border-color: var(--primary);
+}
+
+.settings-radio-card-indicator {
+  display: block;
+  width: calc(6 * var(--ui-px));
+  height: calc(6 * var(--ui-px));
+  border-radius: 50%;
+  background: var(--primary);
+}
+
+.settings-radio-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: calc(1 * var(--ui-px));
+  min-width: 0;
+}
+
+.settings-radio-card-title {
+  font-size: var(--font-size-label);
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.settings-radio-card-desc {
+  font-size: var(--font-size-caption);
+  color: var(--color-gray-500);
+  line-height: 1.4;
+}
+
+/* Playback resolution three-stop slider — smooth (¼) on the left, quality
+ * (Full) on the right. Reuses the .app-slider* skin; the rules below add the
+ * end captions, the stop dots inside the track, and the tick labels under
+ * it. */
+.settings-resolution-slider {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(10 * var(--ui-px));
+}
+
+.settings-resolution-end {
+  flex-shrink: 0;
+  font-size: var(--font-size-caption);
+  color: var(--color-gray-500);
+  /* Optically center the captions on the 16px slider control row, not on
+   * the control + tick-labels column they flank. */
+  line-height: calc(16 * var(--ui-px));
+}
+
+.settings-resolution-track {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Stop dot on the track — one per fraction. Painted after the indicator so
+ * it stays visible on the filled side; the thumb (later in DOM) covers the
+ * dot at the current stop. */
+.settings-resolution-stop {
+  position: absolute;
+  top: 50%;
+  width: calc(5 * var(--ui-px));
+  height: calc(5 * var(--ui-px));
+  border-radius: 50%;
+  background: var(--foreground);
+  opacity: 0.35;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* Tick labels under the track: first/last hug their stop, the middle one
+ * centers; the label at the current stop highlights. */
+.settings-resolution-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: calc(2 * var(--ui-px));
+  font-size: var(--font-size-caption);
+  color: var(--color-gray-500);
+}
+
+.settings-resolution-ticks > span {
+  flex: 1;
+  text-align: center;
+}
+
+.settings-resolution-ticks > span:first-child {
+  text-align: left;
+}
+
+.settings-resolution-ticks > span:last-child {
+  text-align: right;
+}
+
+.settings-resolution-ticks > span.is-active {
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+.settings-model-section { display: flex; flex-direction: column; gap: calc(12 * var(--ui-px)); }
+.settings-model-selector { display: flex; align-items: center; gap: calc(12 * var(--ui-px)); }
+.settings-model-selector .app-select { flex: 1; min-width: 0; }
+.settings-model-card { border: 1px solid var(--border); border-radius: var(--radius-panel); padding: calc(16 * var(--ui-px)); display: flex; flex-direction: column; gap: calc(12 * var(--ui-px)); }
+.settings-model-card-header { display: flex; align-items: center; flex-wrap: wrap; gap: calc(8 * var(--ui-px)); }
+.settings-model-card-header strong { font-size: var(--font-size-body); margin-right: auto; }
+.settings-model-state { margin: 0; font-size: var(--font-size-caption); color: var(--muted-foreground); }
+.settings-model-actions { display: flex; flex-wrap: wrap; align-items: center; gap: calc(8 * var(--ui-px)); }
+.settings-model-advanced { border-top: 1px solid var(--border); padding-top: calc(14 * var(--ui-px)); display: flex; flex-direction: column; gap: calc(12 * var(--ui-px)); }
+.settings-model-advanced[hidden] { display: none; }
+.settings-model-card .settings-slider-label { min-width: calc(90 * var(--ui-px)); }
+.settings-model-card .settings-key-input-row { min-width: 0; }
+.settings-model-card .settings-key-input-row > input { min-width: 0; flex: 1; }
+.settings-model-card .settings-test-err { white-space: pre-wrap; overflow-wrap: anywhere; max-height: calc(160 * var(--ui-px)); overflow: auto; }
+.settings-model-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-model-trigger > svg { flex-shrink: 0; margin-left: auto; }
+.settings-model-menu { min-width: var(--anchor-width); max-width: min(calc(480 * var(--ui-px)), calc(100vw - calc(32 * var(--ui-px)))); }
+.settings-model-menu .app-menu-item { gap: calc(8 * var(--ui-px)); }
+.settings-model-menu-options { max-height: min(calc(360 * var(--ui-px)), calc(var(--available-height, calc(500 * var(--ui-px))) - calc(90 * var(--ui-px)))); overflow-y: auto; }
+.settings-model-option-text { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.settings-model-option-text > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-model-option-detail, .settings-model-option-state { font-size: var(--font-size-caption); color: var(--muted-foreground); }
+.settings-model-option-state { margin-left: auto; flex-shrink: 0; }
+.settings-model-section > .settings-blurb, .settings-model-section > .settings-toggle-hint { margin: 0; }
+.settings-model-dialog { width: min(var(--dialog-width-model), calc(100vw - calc(40 * var(--ui-px)))); max-width: calc(100vw - calc(40 * var(--ui-px))); max-height: min(var(--dialog-height-model), calc(100vh - calc(64 * var(--ui-px)))); overflow: hidden; }
+.settings-model-dialog-body { overflow-y: auto; display: flex; flex-direction: column; gap: calc(16 * var(--ui-px)); padding: calc(18 * var(--ui-px)); font-size: var(--font-size-body); }
+.settings-model-summary > strong { font-size: var(--font-size-label); }
+.settings-model-editor, .settings-model-fields { display: flex; flex-direction: column; gap: calc(14 * var(--ui-px)); min-width: 0; }
+.settings-model-editor .settings-slider-label { min-width: calc(100 * var(--ui-px)); }
+.settings-model-editor .settings-key-input-row > input { min-width: 0; flex: 1; }
+.settings-model-editor .settings-key-input-row { min-width: 0; }
+.settings-model-fields > .settings-toggle-hint { margin: 0; }
+/* Keep native disclosure layout: its hidden content must not leave a flex gap
+ * when collapsed. The inner field stack owns spacing between expanded rows. */
+.settings-model-disclosure > summary { cursor: pointer; font-size: var(--font-size-label); }
+.settings-model-disclosure > .settings-model-fields { padding-top: calc(12 * var(--ui-px)); }
+.settings-model-adapters { display: flex; flex-direction: column; gap: calc(10 * var(--ui-px)); }
+.settings-model-adapters > button { justify-content: space-between; height: auto; min-height: calc(44 * var(--ui-px)); }
+.settings-model-adapters > button > span { color: var(--muted-foreground); }
+.settings-model-confirm { border: 1px solid var(--border); border-radius: var(--radius-card); padding: calc(14 * var(--ui-px)); font-size: var(--font-size-label); }
+.settings-model-confirm p { margin: calc(10 * var(--ui-px)) 0; }
+.settings-model-address { margin: 0; font-size: var(--font-size-caption); color: var(--muted-foreground); overflow-wrap: anywhere; }
+.settings-model-summary .settings-toggle-hint { margin: 0; }
+.settings-analysis-options { margin-top: calc(24 * var(--ui-px)); padding-top: calc(20 * var(--ui-px)); border-top: 1px solid var(--border); }
+.settings-model-dialog .settings-test-err { overflow-wrap: anywhere; white-space: pre-wrap; }
+
+.settings-model-inline-editor { border-top: 1px solid var(--border); padding-top: calc(16 * var(--ui-px)); }
+.settings-model-candidate > strong { font-size: var(--font-size-label); }
+.settings-model-swap { display: flex; justify-content: center; color: var(--muted-foreground); }

@@ -1,0 +1,1644 @@
+import { AppMenuPositioner } from "../components/PopupPositioner";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+  type RefObject,
+} from "react";
+import {
+  DockviewReact,
+  themeAbyss,
+  type DockviewApi,
+  type DockviewMessages,
+  type DockviewReadyEvent,
+  type DockviewTheme,
+  type DroptargetOverlayModel,
+  type DropOverlayModelParams,
+  type IDockviewHeaderActionsProps,
+  type IDockviewPanelHeaderProps,
+  type IDockviewPanelProps,
+} from "dockview-react";
+import { Menu as MenuPrimitive } from "@base-ui/react/menu";
+import {
+  ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  ChevronUpIcon,
+  GripHorizontalIcon,
+  GripVerticalIcon,
+  LockIcon,
+  TextAlignStartIcon,
+} from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { useUiScale } from "../settings/layoutTheme";
+import { UI_METRICS } from "../settings/uiMetrics";
+import "dockview-react/dist/styles/dockview.css";
+
+import { tryMutate } from "../errors/tryMutate";
+import { blurAfterMouseActivation } from "../components/blurAfterMouseActivation";
+import {
+  useEdgeOverflow,
+  type EdgeAxis,
+} from "../hooks/useEdgeOverflow";
+import { Timeline } from "../timeline/Timeline";
+import { PreviewSection } from "../app/PreviewSection";
+import { MediaDropZone, MediaPool } from "../panels/MediaPool";
+import { TransitionsPanel } from "../panels/TransitionsPanel";
+import { AttributePanel } from "../panels/AttributePanel";
+import { CaptionPanel } from "../panels/CaptionPanel";
+import { EffectPanel } from "../panels/EffectPanel";
+import { MarkerPanel } from "../panels/MarkerPanel";
+import { PlayheadPanel } from "../panels/PlayheadPanel";
+import {
+  QuickActionsPanel,
+  useStripOrientation,
+  type StripOrientation,
+} from "../panels/QuickActionsPanel";
+import { RoleMixerPanel } from "../panels/RoleMixerPanel";
+import { AgentPanel } from "../agent/AgentPanel";
+import { HistoryPanel } from "../history/HistoryPanel";
+import { ShotsPanel } from "../shots/ShotsPanel";
+import {
+  importCancel,
+  restackLayer,
+  updateLayer,
+  type ImportEntry,
+  type KeybindingsMap,
+  type ProjectSummary,
+} from "../ipc";
+import { type MediaReadiness } from "../panels/mediaReadiness";
+import { type OptimizeInfo } from "../panels/importOptimize";
+import { bumpPreviewLayoutEpoch } from "../preview/layoutRectCache";
+import { type PreviewSurfaceHandle } from "../preview/PreviewSurface";
+import { useFocusedPlayheadUsThrottled } from "../state/playheadProjection";
+import {
+  useComposition,
+  useCompositionRefCounts,
+  useGroupOrdinals,
+  useOpenComposition,
+  useProjectStore,
+} from "../state/projectStore";
+import {
+  compositionPlacements,
+  focusComposition,
+  restoreCompositionTabs,
+  switchAnchor,
+  syncOpenCompositions,
+  useAnchorPath,
+} from "../state/compositionAnchorStore";
+import { jumpToTimeUs } from "../state/navigation";
+import { setTool, useActiveTool } from "../state/toolStore";
+import { useCursorAnchor } from "../timeline/contextMenuAnchor";
+import { closeContextMenuOn, Menu, MenuItem, SubMenu } from "../menu/Menu";
+import { FOCUS_REGION_INSTANCE_ATTR } from "../focus/focusRegion";
+import {
+  anchorEntryLabel,
+  compositionPathText,
+  timelineTabLabel,
+} from "./timelineTabName";
+import { registerTimelinePanels } from "./timelinePanels";
+import {
+  DockWorkspaceAdapter,
+  EDGE_DOCK_FRACTION,
+  type DockWorkspaceController,
+} from "./dockWorkspaceAdapter";
+import {
+  DOCK_COMPONENT_ID,
+  DOCK_TAB_COMPONENT_ID,
+  PANEL_KINDS,
+  PANEL_REGISTRY,
+  stripThickness,
+  isPanelKind,
+  panelIdOf,
+  parsePanelId,
+  type DockPanelParams,
+  type PanelId,
+  type PanelKind,
+} from "./panelRegistry";
+import { AppIcon } from "@/components/AppIcon";
+
+export interface DockPanelContracts {
+  summary: ProjectSummary | null;
+  previewRef: RefObject<PreviewSurfaceHandle | null>;
+  onSeek: (timeUs: number) => void;
+  onTogglePlay: () => void;
+  editingLocked?: boolean;
+  backgroundExportActive?: boolean;
+  previewDecodableOf: (mediaId: string) => boolean;
+  revealedTrackId: string | null;
+  keybindings: KeybindingsMap;
+  importsById: ReadonlyMap<string, ImportEntry>;
+  readinessById: ReadonlyMap<string, MediaReadiness>;
+  readinessOf: (id: string) => MediaReadiness;
+  optimizeById: ReadonlyMap<string, OptimizeInfo>;
+  onMutated: () => Promise<void>;
+  onImportMedia: () => Promise<void>;
+  selectedLayerId: string | null;
+  onSelectLayer: (layerId: string | null) => void;
+  onRevealTrack: (trackId: string, layerId: string) => void;
+}
+
+const ContractsContext = createContext<DockPanelContracts | null>(null);
+
+export interface DockPanelRuntimeContract {
+  kind: PanelKind;
+  /** This Panel's Dock address, and the instance behind it — the composition a
+   *  timeline Panel is bound to, null for a Panel that is its kind. */
+  id: PanelId;
+  instance: string | null;
+  isVisible: boolean;
+  /** This Panel's own Dockview api. Exposed so a Panel that must react to its
+   *  OWN geometry (the Quick Actions strip flipping axis) can subscribe for
+   *  itself. Live dimensions must never be hoisted into this contract: it is
+   *  shared by every Panel, so that would re-render all of them on every
+   *  splitter drag. */
+  api: IDockviewPanelProps<DockPanelParams>["api"];
+  /** The workspace-wide api, for Panels that must react to layout changes
+   *  (whether they still sit alone in their Group). Stable for the Dock's
+   *  lifetime. */
+  containerApi: IDockviewPanelProps<DockPanelParams>["containerApi"];
+}
+
+const DockPanelRuntimeContext = createContext<DockPanelRuntimeContract | null>(
+  null,
+);
+
+/** What a Panel's own chrome — its tab, its grip menu, its hover surface — can
+ *  ask of the Workspace. Addressed by id, since the caller is one Panel acting
+ *  on itself; `openPanel` is the exception because a menu names a kind. */
+interface WorkspaceChromeCommands {
+  closePanel(id: PanelId): void;
+  setHoveredPanel(id: PanelId | null): void;
+  toggleMaximize(id?: PanelId): void;
+  openPanel(kind: PanelKind): void;
+  resetWorkspace(): void;
+}
+
+const WorkspaceChromeContext = createContext<WorkspaceChromeCommands | null>(
+  null,
+);
+
+function useContracts(): DockPanelContracts {
+  const contracts = useContext(ContractsContext);
+  if (!contracts) throw new Error("Dock Panel rendered outside DockWorkspace");
+  return contracts;
+}
+
+/** Semantic Panel lifecycle state backed only by Dockview's public API. */
+export function useDockPanelRuntime(): DockPanelRuntimeContract {
+  const runtime = useContext(DockPanelRuntimeContext);
+  if (!runtime) throw new Error("Panel rendered outside its Dock runtime");
+  return runtime;
+}
+
+function useDockviewPanelVisibility(
+  api: IDockviewPanelProps<DockPanelParams>["api"],
+): boolean {
+  return useSyncExternalStore(
+    useCallback(
+      (onStoreChange) => {
+        const disposable = api.onDidVisibilityChange(onStoreChange);
+        return () => disposable.dispose();
+      },
+      [api],
+    ),
+    () => api.isVisible,
+    () => true,
+  );
+}
+
+function useWorkspaceChrome(): WorkspaceChromeCommands {
+  const chrome = useContext(WorkspaceChromeContext);
+  if (!chrome) throw new Error("Dock chrome rendered outside DockWorkspace");
+  return chrome;
+}
+
+function MediaDockPanel() {
+  const contracts = useContracts();
+  const summary = contracts.summary;
+  // Every Panel below shows the FOCUSED composition — the one whose timeline
+  // Panel last held the keyboard (`compositionAnchorStore.ts`): its tracks,
+  // links, transitions and duration. The summary itself still supplies what is
+  // project-wide — media, history. The timeline Panel is the one exception; it
+  // shows the composition its own address names.
+  const comp = useOpenComposition();
+  return (
+    <MediaDropZone>
+      <MediaPool
+        media={summary?.media ?? []}
+        readinessById={contracts.readinessById}
+        optimizeById={contracts.optimizeById}
+        fpsNum={comp?.fps_num ?? 30}
+        fpsDen={comp?.fps_den ?? 1}
+        importsById={contracts.importsById}
+        onCancelImport={async (id) => {
+          await importCancel(id).catch(() => false);
+        }}
+        onMutated={contracts.onMutated}
+        onImportMedia={contracts.onImportMedia}
+      />
+    </MediaDropZone>
+  );
+}
+
+function PreviewDockPanel() {
+  const contracts = useContracts();
+  const runtime = useDockPanelRuntime();
+  return (
+    <PreviewSection
+      previewRef={contracts.previewRef}
+      summary={contracts.summary}
+      onTogglePlay={contracts.onTogglePlay}
+      editingLocked={contracts.editingLocked ?? false}
+      backgroundExportActive={contracts.backgroundExportActive ?? false}
+      previewDecodableOf={contracts.previewDecodableOf}
+      visible={runtime.isVisible}
+    />
+  );
+}
+
+const exitBladeTool = () => setTool("select");
+
+function TimelineDockPanel() {
+  const contracts = useContracts();
+  const runtime = useDockPanelRuntime();
+  const summary = contracts.summary;
+  // The armed tool is read here, not threaded through `contracts`: keeping it
+  // out of that memo means switching tools no longer rebuilds the contracts
+  // object and re-renders every other Panel. Timeline itself keeps its
+  // `bladeMode` boolean prop — it fans out to a dozen call sites in
+  // LayerBlock/TrackLane and none of them need to know about tools.
+  const bladeMode = useActiveTool() === "blade";
+  // This Panel's OWN composition, not the focused one (ADR 0053): a timeline
+  // renders the composition its address names, whichever tab has the keyboard.
+  // The instance is null only for the unbound row the Dock builds before the
+  // first summary names a root, which `compositionOrRoot` reads as the root.
+  const comp = useComposition(runtime.instance);
+  return (
+    <section className="timeline">
+      <Timeline
+        compositionId={runtime.instance}
+        tracks={comp?.tracks ?? []}
+        links={comp?.links ?? []}
+        transitions={comp?.transitions ?? []}
+        durationUs={comp?.duration_us ?? 0}
+        revealedTrackId={contracts.revealedTrackId}
+        keybindings={contracts.keybindings}
+        fpsNum={comp?.fps_num ?? 30}
+        fpsDen={comp?.fps_den ?? 1}
+        bladeMode={bladeMode && !contracts.editingLocked}
+        editingLocked={contracts.editingLocked ?? false}
+        media={summary?.media ?? []}
+        readinessOf={contracts.readinessOf}
+        visible={runtime.isVisible}
+        onExitBlade={exitBladeTool}
+        onSeek={contracts.onSeek}
+        onMutated={contracts.onMutated}
+      />
+    </section>
+  );
+}
+
+function QuickActionsDockPanel() {
+  const runtime = useDockPanelRuntime();
+  const axis = useStripAxis(runtime.api, runtime.containerApi);
+  const orientation = useStripOrientation(runtime.api, dockedOrientation(axis));
+  const sole = useIsSoleGroupPanel(runtime.api, runtime.containerApi);
+  useFixedStripThickness(runtime.api, runtime.containerApi, axis, sole);
+
+  /* Put the drag grip inline with the buttons by moving the whole group header
+   * to the strip's leading edge: a row of buttons wants the grip beside it
+   * (`left`), a column wants it above (`top`, Dockview's default).
+   *
+   * This is why the grip is in normal flow rather than overlaid on the content:
+   * `renderer: "always"` paints Panel content into `.dv-overlay-render-container`,
+   * a layer above the entire grid, so an overlaid header would be buried by its
+   * own Panel and the grip would silently stop dragging.
+   *
+   * Only while the strip is ALONE in its Group. Tabbed in with other Panels it
+   * shows a normal tab, and a sideways header would tip their tabs over too —
+   * hence the restore in the cleanup as well as the `sole` guard.
+   *
+   * Re-applied on every layout change against a freshly read `api.group`, for
+   * the same reason `useFixedStripThickness` re-pins: a restore rebuilds the
+   * Group object without changing any dep here, and `headerPosition` is not
+   * carried in a persisted snapshot (see `normalizeNode`) — so a restored bar
+   * comes back with Dockview's default `top` header and nothing re-aims it,
+   * leaving a row of buttons with the grip above them instead of beside them.
+   *
+   * The `!==` guard is load-bearing: Dockview's setter is not idempotent —
+   * it invalidates the header size and re-lays-out the active Panel on every
+   * write, which on a per-layout-change caller is a relayout loop. */
+  useEffect(() => {
+    const wanted = sole && orientation === "horizontal" ? "left" : "top";
+    const aim = () => {
+      const model = runtime.api.group.model;
+      if (model.headerPosition !== wanted) model.headerPosition = wanted;
+    };
+    aim();
+    const disposable = runtime.containerApi.onDidLayoutChange(aim);
+    return () => {
+      disposable.dispose();
+      const model = runtime.api.group.model;
+      if (model.headerPosition !== "top") model.headerPosition = "top";
+    };
+  }, [orientation, runtime.api, runtime.containerApi, sole]);
+
+  // No `weft-dock-panel-scroll` wrapper: the strip owns its own single-axis
+  // scroller (with end fades and wheel forwarding), which a generic
+  // both-axes scroll container would fight.
+  return (
+    <QuickActionsPanel geometry={runtime.api} docked={dockedOrientation(axis)} />
+  );
+}
+
+function AttributeDockPanel() {
+  const contracts = useContracts();
+  const runtime = useDockPanelRuntime();
+  // Panel-rate (tier 3) and PROJECTED: the rows read parameter values off the
+  // editing target's layers, so the moment is taken on that composition's clock.
+  const currentTimeUs = useFocusedPlayheadUsThrottled(100, runtime.isVisible);
+  const comp = useOpenComposition();
+  return (
+    <div className="weft-dock-panel-scroll">
+      <AttributePanel
+        tracks={comp?.tracks ?? []}
+        selectedLayerId={contracts.selectedLayerId}
+        onMutated={contracts.onMutated}
+        fpsNum={comp?.fps_num ?? 30}
+        fpsDen={comp?.fps_den ?? 1}
+        currentTimeUs={currentTimeUs}
+      />
+    </div>
+  );
+}
+
+function EffectDockPanel() {
+  const contracts = useContracts();
+  const runtime = useDockPanelRuntime();
+  const currentTimeUs = useFocusedPlayheadUsThrottled(100, runtime.isVisible);
+  const comp = useOpenComposition();
+  return (
+    <div className="weft-dock-panel-scroll">
+      <EffectPanel
+        tracks={comp?.tracks ?? []}
+        selectedLayerId={contracts.selectedLayerId}
+        currentTimeUs={currentTimeUs}
+        onMutated={contracts.onMutated}
+      />
+    </div>
+  );
+}
+
+function CaptionDockPanel() {
+  const contracts = useContracts();
+  return (
+    <div className="weft-dock-panel-scroll">
+      <CaptionPanel
+        onMutated={contracts.onMutated}
+        selectedLayerId={contracts.selectedLayerId}
+        onActivateCue={(layerId, trackId, startUs) => {
+          // Cue activation = select the Text Layer, seek to its start, and
+          // reveal it in Timeline — synchronizing caption navigation with
+          // timeline context (mirrors the Playhead Panel's explicit Go To).
+          contracts.onSelectLayer(layerId);
+          jumpToTimeUs(startUs);
+          contracts.onRevealTrack(trackId, layerId);
+        }}
+      />
+    </div>
+  );
+}
+
+/// No contracts: the Marker Panel spans the whole project rather than the
+/// focused composition, so it reads the summary straight off the store and
+/// navigates through the same primitives the search palette uses.
+function MarkerDockPanel() {
+  return (
+    <div className="weft-dock-panel-scroll">
+      <MarkerPanel />
+    </div>
+  );
+}
+
+function RoleMixerDockPanel() {
+  const contracts = useContracts();
+  const runtime = useDockPanelRuntime();
+  return (
+    <div className="weft-dock-panel-scroll">
+      <RoleMixerPanel onMutated={contracts.onMutated} visible={runtime.isVisible} />
+    </div>
+  );
+}
+
+function PlayheadDockPanel() {
+  const contracts = useContracts();
+  const runtime = useDockPanelRuntime();
+  const comp = useOpenComposition();
+  return (
+    <div className="weft-dock-panel-scroll">
+      <PlayheadPanel
+        tracks={comp?.tracks ?? []}
+        links={comp?.links ?? []}
+        selectedLayerId={contracts.selectedLayerId}
+        fpsNum={comp?.fps_num ?? 30}
+        fpsDen={comp?.fps_den ?? 1}
+        visible={runtime.isVisible}
+        onPick={(layerId, trackId) => {
+          // Reveal without seeking: the near-playhead window stays put.
+          contracts.onSelectLayer(layerId);
+          contracts.onRevealTrack(trackId, layerId);
+        }}
+        onGoTo={(layerId, trackId, startUs) => {
+          // Explicit navigation: seek the playhead and scroll into view.
+          contracts.onSelectLayer(layerId);
+          jumpToTimeUs(startUs);
+          contracts.onRevealTrack(trackId, layerId);
+        }}
+        onRename={async (layerId, nextLabel) => {
+          if (
+            await tryMutate(
+              () => updateLayer(layerId, { label: nextLabel }),
+              "Rename layer",
+            )
+          ) {
+            await contracts.onMutated();
+          }
+        }}
+        onRestack={async (layerId, anchor, position) => {
+          // One completed drag = one anchored restack op; the
+          // actor owns the sole-occupant/split degradation and the undo entry.
+          if (
+            await tryMutate(
+              () => restackLayer(layerId, anchor, position),
+              "Restack layer",
+            )
+          ) {
+            await contracts.onMutated();
+          }
+        }}
+      />
+    </div>
+  );
+}
+
+/// Same activity surface; only editor mode offers object navigation.
+function AgentDockPanel() {
+  // Dock panels stay mounted behind other tabs (`renderer: "always"`).
+  const runtime = useDockPanelRuntime();
+  return <AgentPanel editor onScreen={runtime.isVisible} />;
+}
+
+/// No `weft-dock-panel-scroll` wrapper and no contracts: the History Panel owns
+/// its own scroller (sticky cursor follow) and pulls the edit stack over its own
+/// IPC channel, so nothing about it rides the summary the other Panels share.
+function HistoryDockPanel() {
+  return <HistoryPanel />;
+}
+
+/// No contracts, for the Marker Panel's reason: the Shots Panel resolves its
+/// own subject from the selection and reads the shot channels itself, so nothing
+/// about it rides the summary the other Panels share. It scrolls in the shared
+/// wrapper — the list is the whole Panel and has no sticky chrome of its own.
+function ShotsDockPanel() {
+  return (
+    <div className="weft-dock-panel-scroll">
+      <ShotsPanel />
+    </div>
+  );
+}
+
+/// Reads its cut/playhead/selection inputs from the stores inside
+/// `applyTransition.ts`'s kernel, so the only contract it needs is the
+/// refresh callback every renderer-initiated mutation must invoke.
+function TransitionsDockPanel() {
+  const contracts = useContracts();
+  return (
+    <div className="weft-dock-panel-scroll">
+      <TransitionsPanel onMutated={contracts.onMutated} />
+    </div>
+  );
+}
+
+const PANEL_COMPONENTS: Readonly<Record<PanelKind, () => ReactElement>> = {
+  media: MediaDockPanel,
+  transitions: TransitionsDockPanel,
+  preview: PreviewDockPanel,
+  timeline: TimelineDockPanel,
+  "quick-actions": QuickActionsDockPanel,
+  attribute: AttributeDockPanel,
+  caption: CaptionDockPanel,
+  marker: MarkerDockPanel,
+  "role-mixer": RoleMixerDockPanel,
+  effect: EffectDockPanel,
+  playhead: PlayheadDockPanel,
+  agent: AgentDockPanel,
+  history: HistoryDockPanel,
+  shots: ShotsDockPanel,
+};
+
+export function WeftCutPanelRenderer({
+  api,
+  containerApi,
+  params,
+}: IDockviewPanelProps<DockPanelParams>) {
+  if (!isPanelKind(params.kind)) return null;
+  const Component = PANEL_COMPONENTS[params.kind];
+  const { editingLocked } = useContracts();
+  const locked = editingLocked === true && PANEL_REGISTRY[params.kind].duringExport === "locked";
+  const { t } = useTranslation();
+  const chrome = useWorkspaceChrome();
+  const isVisible = useDockviewPanelVisibility(api);
+  const instance = params.instance;
+  const runtime = useMemo<DockPanelRuntimeContract>(
+    () => ({
+      kind: params.kind,
+      id: panelIdOf(params.kind, instance),
+      instance,
+      isVisible,
+      api,
+      containerApi,
+    }),
+    [api, containerApi, instance, isVisible, params.kind],
+  );
+  return (
+    <DockPanelRuntimeContext.Provider value={runtime}>
+      <div className="weft-dock-panel-frame">
+        <div
+          className="weft-dock-panel"
+          inert={locked}
+          data-panel-kind={params.kind}
+          // The Panel IS the focus region (ADR 0041). `tabIndex={-1}` makes it a
+          // programmatic focus target and never a Tab stop: `useFocusRegions`
+          // focuses it when a press lands on non-focusable panel content, which
+          // both releases whatever field was parked and gives bare-key shortcuts
+          // a region to be scoped against. A separate attribute from
+          // `data-panel-kind` on purpose — that one is also on the tab
+          // renderers, which are chrome, not regions.
+          tabIndex={-1}
+          data-focus-region={params.kind}
+          // A SECOND attribute, never a richer value in the first one:
+          // `data-focus-region` is a `PanelKind` and `ActionDef.scope` is a list
+          // of them, so widening it would put an instance where the shortcut
+          // catalogue reads a kind. `useFocusRegions` is what pairs the two.
+          {...(instance === null ? {} : { [FOCUS_REGION_INSTANCE_ATTR]: instance })}
+          data-panel-visible={isVisible ? "true" : "false"}
+          onPointerEnter={() => chrome.setHoveredPanel(runtime.id)}
+          onPointerLeave={() => chrome.setHoveredPanel(null)}
+        >
+          <Component />
+        </div>
+        {/* The Panel behind is inert, so this overlay is the only thing a screen
+            reader can reach here: it carries the reason as text. */}
+        {locked && (
+          <div className="weft-dock-panel-lock" title={t("dock_workspace.locked_during_export")}>
+            <AppIcon icon={LockIcon} size="display" aria-hidden />
+            <span className="sr-only">{t("dock_workspace.locked_during_export")}</span>
+          </div>
+        )}
+      </div>
+    </DockPanelRuntimeContext.Provider>
+  );
+}
+
+/** The axis a Dock Group's own splitter runs along: `width` where its branch
+ *  lays children side by side, `height` where it stacks them. */
+type DockGroupAxis = "width" | "height";
+
+/**
+ * The axis this Group is sized along, read off the Splitview that holds it, or
+ * null for a Group outside the grid (floating, popped out) that has no splitter
+ * at all.
+ *
+ * Read from the DOM on purpose. The serialized tree (`containerApi.toJSON()`)
+ * carries the same fact, but serializing a grid that has a maximized Group makes
+ * Dockview leave and re-enter that maximized state — a side effect no render can
+ * afford to pay. Dockview's own stylesheet keys off these class names, so a
+ * rename would show up as broken chrome long before it silently changed an axis.
+ */
+function groupSplitAxis(element: HTMLElement): DockGroupAxis | null {
+  const splitview = element.closest(".dv-split-view-container");
+  if (!splitview) return null;
+  return splitview.classList.contains("dv-horizontal") ? "width" : "height";
+}
+
+function dockedOrientation(axis: DockGroupAxis | null): StripOrientation | null {
+  if (axis === null) return null;
+  return axis === "width" ? "vertical" : "horizontal";
+}
+
+/**
+ * Which way the strip's Group can be resized, and with it the way the bar runs:
+ * a Group that resizes in WIDTH is a column, so the buttons stack; one that
+ * resizes in HEIGHT is a row.
+ *
+ * Where it sits, not what shape it is, decides this. A bar docked beside the
+ * Timeline gets a cell far wider than it is tall, yet its only free edge is the
+ * vertical one — read that cell as a row and the bar lays its buttons out across
+ * an axis it cannot pin, leaving a horizontal strip adrift in a tall empty block.
+ */
+function useStripAxis(
+  api: IDockviewPanelProps<DockPanelParams>["api"],
+  containerApi: IDockviewPanelProps<DockPanelParams>["containerApi"],
+): DockGroupAxis | null {
+  return useSyncExternalStore(
+    useCallback(
+      (onStoreChange) => {
+        const disposable = containerApi.onDidLayoutChange(onStoreChange);
+        return () => disposable.dispose();
+      },
+      [containerApi],
+    ),
+    () => groupSplitAxis(api.group.element),
+    () => null,
+  );
+}
+
+/** True while this Panel is the only one in its Dock Group. Recomputed on any
+ *  layout change — the same coarse signal the adapter listens to, since tab
+ *  renderers are not re-run for group membership changes on their own. */
+function useIsSoleGroupPanel(
+  api: IDockviewPanelHeaderProps<DockPanelParams>["api"],
+  containerApi: IDockviewPanelHeaderProps<DockPanelParams>["containerApi"],
+): boolean {
+  return useSyncExternalStore(
+    useCallback(
+      (onStoreChange) => {
+        const disposable = containerApi.onDidLayoutChange(onStoreChange);
+        return () => disposable.dispose();
+      },
+      [containerApi],
+    ),
+    () => api.group.panels.length === 1,
+    () => true,
+  );
+}
+
+/**
+ * True from the moment a Dock drag starts until the tree it produced exists.
+ * Dockview announces the start and the incoming drop; the DOM covers the drag
+ * abandoned over nothing, which produces no Dockview event at all.
+ *
+ * A drop MUST end the window through Dockview, not through `dragend`: a Panel
+ * leaving a shared Group takes its tab — the drag source — with it, so the
+ * browser fires `dragend` at a node already detached from the document, where
+ * no listener here can ever see it. Wait for it and the window never closes.
+ */
+function useDockDragInFlight(
+  containerApi: IDockviewPanelProps<DockPanelParams>["containerApi"],
+): boolean {
+  const [dragging, setDragging] = useState(false);
+  useEffect(() => {
+    const start = () => setDragging(true);
+    const end = () => setDragging(false);
+    const disposables = [
+      containerApi.onWillDragGroup(start),
+      containerApi.onWillDragPanel(start),
+      // Dockview processes the move synchronously right after this event, so a
+      // microtask lands on the finished tree and still beats the next paint.
+      containerApi.onWillDrop(() => queueMicrotask(end)),
+    ];
+    document.addEventListener("dragend", end);
+    return () => {
+      disposables.forEach((disposable) => disposable.dispose());
+      document.removeEventListener("dragend", end);
+    };
+  }, [containerApi]);
+  return dragging;
+}
+
+/** Dockview's own "no maximum". A cap can only be released by overwriting it
+ *  with this: `setConstraints` ignores `undefined` rather than clearing. */
+const UNCAPPED = Number.MAX_SAFE_INTEGER;
+
+const UNCAPPED_GROUP = {
+  maximumWidth: UNCAPPED,
+  maximumHeight: UNCAPPED,
+} as const;
+
+type StripGroup = IDockviewPanelProps<DockPanelParams>["api"]["group"];
+
+interface StripGroupConstraints {
+  minimumWidth?: number;
+  maximumWidth?: number;
+  minimumHeight?: number;
+  maximumHeight?: number;
+}
+
+/** Every constraint write below goes through here so an unchanged value is
+ *  never re-applied. Dockview 8's `setConstraints` fires the group's
+ *  `onDidChange` — and with it a grid relayout — even when nothing changed
+ *  (v7 stayed quiet), and the pin re-applies on every layout change, so an
+ *  unconditional write closes the loop pin → relayout → pin…, which froze
+ *  the renderer on the first click after the v8 upgrade. Keyed weakly on the
+ *  group: a restore builds new group objects and naturally re-applies. */
+const lastAppliedConstraints = new WeakMap<object, string>();
+function applyGroupConstraints(
+  group: StripGroup,
+  constraints: StripGroupConstraints,
+): void {
+  const next = JSON.stringify(constraints);
+  if (lastAppliedConstraints.get(group) === next) return;
+  lastAppliedConstraints.set(group, next);
+  group.api.setConstraints(constraints);
+}
+
+/**
+ * Hold the strip's Group to `stripThickness()` across the axis its own splitter
+ * moves, so the bar reads as chrome instead of a Panel: docked as a column it is
+ * pinned that wide, as a row that tall, and — since Dockview disables a sash
+ * whose neighbour cannot change size — the splitter against it goes inert. The
+ * other axis is left alone, so the bar still spans whatever edge it landed on.
+ *
+ * Two limits on when the cap is applied are load-bearing:
+ *
+ *   - Only ever the Group's OWN axis, which is why this takes `axis` from the
+ *     Dock Tree rather than reading the bar's shape. A Gridview branch adopts
+ *     the smallest maximum its children declare along the branch's own axis, so
+ *     capping the other one shrink-wraps the whole branch instead of the bar: a
+ *     bar beside the Timeline that capped its height would squeeze the entire
+ *     Timeline row — bar and Timeline together — to 44 px tall.
+ *   - Never mid-drag. A re-dock re-splits the grid and clamps the result before
+ *     this effect can re-aim the cap, and the axis of the OLD position is the
+ *     wrong one for a perpendicular new one — dropping a column bar above Media
+ *     would leave Media's column shrink-wrapped to a sliver.
+ *
+ * Tabbed in with other Panels the Group must size for them, so the cap lifts
+ * there too — as it does on unmount, since the Group can outlive the strip.
+ *
+ * The cap goes on the GROUP by way of two Dockview limits: `setConstraints` on
+ * a Panel api fires into nothing (only Groups sit in the grid), and a
+ * function-valued constraint — which would re-aim itself and need none of the
+ * bookkeeping here — is evaluated once and frozen at the value it returned.
+ *
+ * Every write in here must be a real change — `applyGroupConstraints` and the
+ * `refused` set are what keep this hook from feeding Dockview 8's
+ * write→relayout→re-pin loop; see `applyGroupConstraints`.
+ */
+function useFixedStripThickness(
+  api: IDockviewPanelProps<DockPanelParams>["api"],
+  containerApi: IDockviewPanelProps<DockPanelParams>["containerApi"],
+  axis: DockGroupAxis | null,
+  sole: boolean,
+): void {
+  const dragging = useDockDragInFlight(containerApi);
+  const scale = useUiScale();
+  const thickness = stripThickness();
+  // The sizes Dockview settled on against our wishes, so a Group that cannot
+  // reach the thickness (a container too small to give it) stops trading
+  // resizes with the layout pass. A set, not the last value: a layout that
+  // ALTERNATES between two refusals would defeat a single-value guard and
+  // re-enter the resize trade on every pass.
+  const refused = useRef<Set<number>>(new Set());
+  // Which Group the refusals above were collected from, so a different one
+  // starts with a clean slate rather than inheriting sizes it never refused.
+  const pinned = useRef<StripGroup | null>(null);
+
+  useEffect(() => {
+    if (!sole || dragging || axis === null) {
+      applyGroupConstraints(api.group, UNCAPPED_GROUP);
+      return;
+    }
+    refused.current.clear();
+    const pin = () => {
+      // Read the Group at pin time, never once at effect setup: `api.group` is
+      // reassigned whenever the Panel changes Group, and a layout restore
+      // (`fromJSON`) rebuilds every Group object while reusing this Panel — so
+      // none of this effect's deps change and it never re-runs. A captured
+      // Group would leave the pin writing into the discarded object while the
+      // live one kept whatever size the restore's proportional relayout gave
+      // it: the bar silently widens with the window and, since the wrong width
+      // is autosaved, comes back wider on the next launch.
+      const group = api.group;
+      if (pinned.current !== group) {
+        pinned.current = group;
+        refused.current.clear();
+      }
+      applyGroupConstraints(
+        group,
+        axis === "width"
+          ? {
+              minimumWidth: thickness,
+              minimumHeight: thickness,
+              maximumWidth: thickness,
+              maximumHeight: UNCAPPED,
+            }
+          : {
+              minimumHeight: thickness,
+              minimumWidth: thickness,
+              maximumHeight: thickness,
+              maximumWidth: UNCAPPED,
+            },
+      );
+      // A constraint only bites on the next layout pass, which may never come:
+      // the resize is what snaps a restored or freshly dropped bar to thickness
+      // now. Read the Group's own size, not the Panel's — the Group is what the
+      // constraint sizes, and the header takes its slice out of the Panel.
+      const current = group.api[axis];
+      if (Math.round(current) === thickness) {
+        refused.current.clear();
+        return;
+      }
+      if (refused.current.has(current)) return;
+      refused.current.add(current);
+      group.api.setSize({ [axis]: thickness });
+    };
+    pin();
+    // Re-pin after any layout change: a drop that leaves the axis unchanged
+    // moves the bar without re-running this effect.
+    const disposable = containerApi.onDidLayoutChange(pin);
+    return () => {
+      disposable.dispose();
+      // The Group that actually carries the cap, which after a restore is not
+      // the one this effect started on.
+      applyGroupConstraints(pinned.current ?? api.group, UNCAPPED_GROUP);
+      pinned.current = null;
+    };
+  }, [api, axis, containerApi, dragging, sole, scale, thickness]);
+}
+
+/**
+ * The Quick Actions strip's tab, rendered as the in-row six-dot drag grip.
+ *
+ * This IS Dockview's native drag source — `workspace.css` collapses the group
+ * header out of flow and repositions this tab onto the grip slot the strip's
+ * content reserves, so the handle the user sees is the handle Dockview already
+ * knows how to drag. The alternative (hiding the header and starting the drag
+ * ourselves) needs dockview-core's unexported `LocalSelectionTransfer`
+ * singleton — the drop side reads that in-memory instance, not the
+ * `dataTransfer` payload, so a hand-rolled drag fails silently on upgrade.
+ *
+ * Deliberately NOT inheriting the normal tab's double-click-to-maximize: a
+ * 44px strip blown up to the whole window is never what the user meant.
+ */
+function DockGripTab({
+  kind,
+  id,
+  api,
+  containerApi,
+}: {
+  kind: PanelKind;
+  id: PanelId;
+  api: IDockviewPanelHeaderProps<DockPanelParams>["api"];
+  containerApi: IDockviewPanelHeaderProps<DockPanelParams>["containerApi"];
+}) {
+  const { t } = useTranslation();
+  const chrome = useWorkspaceChrome();
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  // Same inputs the strip body reads, so grip and body can never disagree about
+  // the axis.
+  const orientation = useStripOrientation(
+    api,
+    dockedOrientation(useStripAxis(api, containerApi)),
+  );
+  const label = t("dock_workspace.move_panel", {
+    title: t(PANEL_REGISTRY[kind].titleKey),
+  });
+  // A horizontal strip puts the grip on its left edge (a tall, narrow slot);
+  // a vertical strip puts it on top (short and wide). The glyph follows.
+  const Grip = orientation === "vertical" ? GripHorizontalIcon : GripVerticalIcon;
+  return (
+    <>
+      {/* No role/aria-label of its own: Dockview's `.dv-tab` wrapper around
+          this node is the focusable, labelled element ("Move <Panel>"), and
+          an aria-label on a presentational node would just be ignored. */}
+      <div
+        className="weft-dock-tab weft-dock-tab--grip"
+        data-panel-kind={kind}
+        data-orientation={orientation}
+        title={label}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          // Dockview's own tab `contextmenu` listener is a no-op here — the
+          // workspace deliberately passes no `getTabContextMenuItems` — so
+          // there is nothing to collide with.
+          setMenuAt({ x: event.clientX, y: event.clientY });
+        }}
+      >
+        <AppIcon icon={Grip} size="body" aria-hidden="true" />
+      </div>
+      {menuAt ? (
+        <PanelTabContextMenu
+          x={menuAt.x}
+          y={menuAt.y}
+          onClose={() => setMenuAt(null)}
+          onClosePanel={() => {
+            setMenuAt(null);
+            chrome.closePanel(id);
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/** Shared right-click close menu for Panel tabs and the Quick Actions grip. */
+function PanelTabContextMenu({
+  x,
+  y,
+  onClose,
+  onClosePanel,
+}: {
+  x: number;
+  y: number;
+  onClose: () => void;
+  onClosePanel: () => void;
+}) {
+  const { t } = useTranslation();
+  const anchor = useCursorAnchor(x, y);
+  return (
+    <MenuPrimitive.Root
+      open
+      modal={false}
+      onOpenChange={closeContextMenuOn(onClose)}
+    >
+      <MenuPrimitive.Portal>
+        <AppMenuPositioner
+          anchor={anchor}
+          side="bottom"
+          align="start"
+          sideOffset={0}
+          className="app-popup-positioner"
+        >
+          <MenuPrimitive.Popup className="app-menu-list">
+            <MenuItem
+              label={t("dock_workspace.close_panel")}
+              onSelect={onClosePanel}
+            />
+          </MenuPrimitive.Popup>
+        </AppMenuPositioner>
+      </MenuPrimitive.Portal>
+    </MenuPrimitive.Root>
+  );
+}
+
+/** The standard Panel tab: label, selection marker, hover tracking,
+ *  double-click-to-maximize, and right-click-to-close. */
+function DockPanelTab({
+  kind,
+  id,
+  title,
+}: {
+  kind: PanelKind | null;
+  id: PanelId | null;
+  title: string;
+}) {
+  const chrome = useWorkspaceChrome();
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  return (
+    <>
+      <div
+        className="weft-dock-tab"
+        data-panel-kind={kind ?? undefined}
+        onPointerEnter={() => chrome.setHoveredPanel(id)}
+        onPointerLeave={() => chrome.setHoveredPanel(null)}
+        onDoubleClick={(event) => {
+          if (!id) return;
+          event.preventDefault();
+          event.stopPropagation();
+          chrome.toggleMaximize(id);
+        }}
+        onContextMenu={(event) => {
+          if (!id) return;
+          event.preventDefault();
+          setMenuAt({ x: event.clientX, y: event.clientY });
+        }}
+      >
+        {/* Selection marker: CSS shows it (and the bottom accent) only on
+            `.dv-active-tab` — this renderer isn't re-run on activation
+            changes, so the marker lives in the DOM of every tab. */}
+        <span className="weft-dock-tab-label">{title}</span>
+        <AppIcon icon={TextAlignStartIcon} size="body" className="weft-dock-tab-active-icon" aria-hidden="true" />
+      </div>
+      {menuAt && id ? (
+        <PanelTabContextMenu
+          x={menuAt.x}
+          y={menuAt.y}
+          onClose={() => setMenuAt(null)}
+          onClosePanel={() => {
+            setMenuAt(null);
+            chrome.closePanel(id);
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * A timeline Panel's tab: the composition it shows, and the route it was
+ * opened along.
+ *
+ * This tab strip IS the navigation a breadcrumb row used to be (ADR 0053) —
+ * which is why the route lives in the tooltip rather than in a row of its own:
+ * a Panel whose title is its dock tab must not grow a second title inside
+ * itself, and the Dock already gives switching, reordering and pulling apart
+ * for free.
+ */
+function TimelineDockTab({
+  id,
+  compositionId,
+  panelTitle,
+}: {
+  id: PanelId;
+  compositionId: string;
+  /// The kind's own title, which a Panel showing the root prints unchanged.
+  panelTitle: string;
+}) {
+  const { t } = useTranslation();
+  const chrome = useWorkspaceChrome();
+  const summary = useProjectStore((s) => s.summary);
+  const ordinals = useGroupOrdinals();
+  const crumbs = useAnchorPath(compositionId);
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  return (
+    <>
+      <div
+        className="weft-dock-tab"
+        data-panel-kind="timeline"
+        // The other half of this tab's Panel id. Kind alone stops identifying a
+        // timeline tab the moment a second composition is open, and tab ORDER
+        // is not an identity — it changes with every drag. Paired with
+        // `data-panel-kind` for the same reason the Panel body splits its
+        // region name from its instance: one attribute stays a `PanelKind`.
+        data-panel-instance={compositionId}
+        title={compositionPathText(summary, crumbs, ordinals, t)}
+        onPointerEnter={() => chrome.setHoveredPanel(id)}
+        onPointerLeave={() => chrome.setHoveredPanel(null)}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          chrome.toggleMaximize(id);
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setMenuAt({ x: event.clientX, y: event.clientY });
+        }}
+      >
+        <span className="weft-dock-tab-label">
+          {timelineTabLabel(summary, compositionId, ordinals, panelTitle, t)}
+        </span>
+        <AppIcon icon={TextAlignStartIcon} size="body" className="weft-dock-tab-active-icon" aria-hidden="true" />
+      </div>
+      {menuAt ? (
+        <TimelineTabContextMenu
+          x={menuAt.x}
+          y={menuAt.y}
+          compositionId={compositionId}
+          onClose={() => setMenuAt(null)}
+          onClosePanel={() => {
+            setMenuAt(null);
+            chrome.closePanel(id);
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * The timeline tab's right-click menu, whose one non-obvious row is
+ * `Switch instance`.
+ *
+ * Root-to-local projection is unambiguous, local-to-root is not, so a Group
+ * placed more than once needs the tab to say WHICH placement its times are
+ * read against (ADR 0053 §5). Offered only where that ambiguity exists: with a
+ * single placement there is nothing to choose, and a submenu holding one
+ * checked row would be a question with one answer.
+ *
+ * Every row is a `MenuItem` — the rule the layer menu states — but the anchor
+ * rows carry no command form: an entry names one Group CLIP in one project, so
+ * there is no id a catalogue could hold, the same reason the layer menu renders
+ * its composition-scoped rename as a plain item.
+ */
+function TimelineTabContextMenu({
+  x,
+  y,
+  compositionId,
+  onClose,
+  onClosePanel,
+}: {
+  x: number;
+  y: number;
+  compositionId: string;
+  onClose: () => void;
+  onClosePanel: () => void;
+}) {
+  const { t } = useTranslation();
+  const summary = useProjectStore((s) => s.summary);
+  const ordinals = useGroupOrdinals();
+  const refCounts = useCompositionRefCounts();
+  const crumbs = useAnchorPath(compositionId);
+  const anchor = useCursorAnchor(x, y);
+  // Enumerated only where the ref count already says there is a choice, so the
+  // common single-placement tab pays nothing for a walk of the whole project.
+  const placements = useMemo(
+    () =>
+      summary && (refCounts.get(compositionId) ?? 0) > 1
+        ? compositionPlacements(summary, compositionId)
+        : [],
+    [compositionId, refCounts, summary],
+  );
+  const anchoredOn = crumbs.at(-1)?.layerId ?? null;
+  return (
+    <MenuPrimitive.Root
+      open
+      modal={false}
+      // A submenu lives in this menu, so the pointer-driven highlight has to go
+      // — see the LANDMINE on `SubMenu` in `menu/Menu.tsx`.
+      highlightItemOnHover={false}
+      onOpenChange={closeContextMenuOn(onClose)}
+    >
+      <MenuPrimitive.Portal>
+        <AppMenuPositioner
+          anchor={anchor}
+          side="bottom"
+          align="start"
+          sideOffset={0}
+          className="app-popup-positioner"
+        >
+          <MenuPrimitive.Popup className="app-menu-list">
+            {placements.length > 1 ? (
+              <SubMenu
+                label={t("dock_workspace.timeline_tab.switch_anchor")}
+                hint={t("dock_workspace.timeline_tab.switch_anchor_hint")}
+              >
+                {placements.map((placement) => (
+                  <MenuItem
+                    key={placement.layerId}
+                    label={anchorEntryLabel(summary, placement, ordinals, t)}
+                    checked={placement.layerId === anchoredOn}
+                    onSelect={() => {
+                      onClose();
+                      switchAnchor(compositionId, placement.layerId);
+                    }}
+                  />
+                ))}
+              </SubMenu>
+            ) : null}
+            <MenuItem
+              label={t("dock_workspace.close_panel")}
+              onSelect={onClosePanel}
+            />
+          </MenuPrimitive.Popup>
+        </AppMenuPositioner>
+      </MenuPrimitive.Portal>
+    </MenuPrimitive.Root>
+  );
+}
+
+/**
+ * Quick Actions' header tab, which has two forms.
+ *
+ * Alone in its Group it is the six-dot drag grip and nothing else. Tabbed in
+ * with other Panels it falls back to a standard tab — without one there would
+ * be no way to switch to it.
+ *
+ * Split into its own component so the sole-panel subscription is paid for by
+ * this one tab instead of by every tab in the workspace.
+ */
+function QuickActionsDockTab({
+  kind,
+  id,
+  title,
+  api,
+  containerApi,
+}: {
+  kind: PanelKind;
+  id: PanelId;
+  title: string;
+  api: IDockviewPanelHeaderProps<DockPanelParams>["api"];
+  containerApi: IDockviewPanelHeaderProps<DockPanelParams>["containerApi"];
+}) {
+  const sole = useIsSoleGroupPanel(api, containerApi);
+  return sole ? (
+    <DockGripTab kind={kind} id={id} api={api} containerApi={containerApi} />
+  ) : (
+    <DockPanelTab kind={kind} id={id} title={title} />
+  );
+}
+
+export function WeftCutDockTab({
+  api,
+  containerApi,
+  tabLocation,
+}: IDockviewPanelHeaderProps<DockPanelParams>) {
+  const { t } = useTranslation();
+  // The tab renderer is handed a raw Dockview id, so it reads the address
+  // rather than being told it. A tab on a panel this catalogue cannot resolve
+  // still renders, under whatever title Dockview kept.
+  const parsed = parsePanelId(api.id);
+  const kind = parsed?.kind ?? null;
+  const id = parsed ? panelIdOf(parsed.kind, parsed.instance) : null;
+  const title = kind ? t(PANEL_REGISTRY[kind].titleKey) : (api.title ?? api.id);
+
+  if (parsed && id && parsed.kind === "quick-actions" && tabLocation === "header") {
+    return (
+      <QuickActionsDockTab
+        kind={parsed.kind}
+        id={id}
+        title={title}
+        api={api}
+        containerApi={containerApi}
+      />
+    );
+  }
+
+  // Only a BOUND timeline gets the composition tab; the unbound row the Dock
+  // builds before the first summary has no composition to name yet.
+  if (parsed && id && parsed.kind === "timeline" && parsed.instance !== null) {
+    return (
+      <TimelineDockTab
+        id={id}
+        compositionId={parsed.instance}
+        panelTitle={title}
+      />
+    );
+  }
+
+  return <DockPanelTab kind={kind} id={id} title={title} />;
+}
+
+export function EmptyWorkspaceRecovery() {
+  const chrome = useWorkspaceChrome();
+  const { t } = useTranslation();
+  return (
+    <div
+      className="weft-dock-empty"
+      role="region"
+      aria-label={t("dock_workspace.empty_label")}
+    >
+      <p>{t("dock_workspace.all_closed")}</p>
+      <div className="weft-dock-empty-actions">
+        <Menu label={t("dock_workspace.open_panel")}>
+          {PANEL_KINDS.map((kind) => (
+            <MenuItem
+              key={kind}
+              label={t(PANEL_REGISTRY[kind].titleKey)}
+              onSelect={() => chrome.openPanel(kind)}
+            />
+          ))}
+        </Menu>
+        <button type="button" onClick={() => chrome.resetWorkspace()}>
+          {t("dock_workspace.reset")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const EDGE_GLYPH = {
+  horizontal: { start: ChevronLeftIcon, end: ChevronRightIcon },
+  vertical: { start: ChevronUpIcon, end: ChevronDownIcon },
+} as const;
+
+/**
+ * One end of a Group's tab strip: the gradient that says content is hidden that
+ * way, and the arrow that reveals it. Both float above the tabs and claim no
+ * layout width, which is what lets an end disappear at its stop without
+ * changing the strip's width — reserving the band instead would couple the two
+ * and oscillate. Why: docs/features.md#strip-overflow.
+ *
+ * Mounted through Dockview's header slots on either side of the tab strip, so
+ * the arrow lives outside `role="tablist"` and the tablist's own roving
+ * tabindex is untouched. Each slot is a zero-width box hugging one edge of the
+ * scroller, so the overlay only has to pin itself to that slot.
+ */
+function TabStripEdge({
+  group,
+  headerPosition,
+  activePanel,
+  toward,
+}: IDockviewHeaderActionsProps & { toward: "start" | "end" }) {
+  const { t } = useTranslation();
+  const axis: EdgeAxis =
+    headerPosition === "left" || headerPosition === "right"
+      ? "vertical"
+      : "horizontal";
+  // Dockview's scroller, which exists before this slot mounts. Assigned during
+  // render because the hook only ever reads `.current`, from its own effect.
+  const scroller = useRef<HTMLElement | null>(null);
+  scroller.current = group.model.tabsListElement;
+  const { overflowing, atStart, atEnd, step, clearOverlay, overlaySize } = useEdgeOverflow(
+    scroller,
+    axis,
+    ":scope > .dv-tab",
+  );
+
+  /* Keep a tab reached by keyboard clear of the overlay. Chromium's own
+   * focus-scroll honours `scroll-padding`, so this one line covers the entire
+   * arrow-key path through the tablist. Written from the constant rather than
+   * declared in CSS so the overlay's extent keeps a single home; idempotent, and
+   * both ends write the same value. */
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    el.style.scrollPaddingInline = `${overlaySize}px`;
+    el.style.scrollPaddingBlock = `${overlaySize}px`;
+  }, [overlaySize]);
+
+  /* Lift a freshly activated tab out from under the overlay. Dockview parks one
+   * flush against the scrollport's LEADING edge (`scrollLeft = offsetLeft`), so
+   * the leading overlay is the only one that can come to cover it — hence this
+   * end and not both. The keyboard's own focus-scroll takes a different route
+   * and is handled in CSS by `scroll-padding-inline`.
+   *
+   * Keyed on the active Panel alone, deliberately: re-running it on scroll would
+   * yank the strip back whenever the user scrolled the active tab out of the
+   * readable band, and the user's scroll has to win. */
+  const activePanelId = activePanel?.id;
+  useEffect(() => {
+    if (toward !== "start") return;
+    const tab = scroller.current?.querySelector<HTMLElement>(".dv-active-tab");
+    if (tab) clearOverlay(tab);
+  }, [toward, activePanelId, clearOverlay]);
+
+  if (!overflowing || (toward === "start" ? atStart : atEnd)) return null;
+  const Glyph = EDGE_GLYPH[axis][toward];
+  return (
+    <div
+      className="weft-tabstrip-edge"
+      data-toward={toward}
+      data-axis={axis}
+      /* The overlay's extent has one home — the constant the geometry also reads
+         — so the paint and the maths cannot drift apart. */
+      style={
+        axis === "horizontal"
+          ? { width: overlaySize }
+          : { height: overlaySize }
+      }
+    >
+      <button
+        type="button"
+        /* A pointer-only device: the tablist's own arrow keys already reach —
+           and activate — any tab, which beats scrolling to it. Out of the Tab
+           order, but still named for a screen reader browsing the header. */
+        tabIndex={-1}
+        aria-label={t(`dock_workspace.scroll_tabs.${toward}`)}
+        onClick={(event) => {
+          step(toward);
+          blurAfterMouseActivation(event);
+        }}
+      >
+        <AppIcon icon={Glyph} size="heading" aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
+/* Dockview keys header slots by component identity, so each end needs its own
+ * stable function. `prefix` renders before the tab strip, `left` immediately
+ * after it — the two edges of the scroller. */
+function TabStripLeadingEdge(props: IDockviewHeaderActionsProps) {
+  return <TabStripEdge {...props} toward="start" />;
+}
+
+function TabStripTrailingEdge(props: IDockviewHeaderActionsProps) {
+  return <TabStripEdge {...props} toward="end" />;
+}
+
+const DOCK_COMPONENTS = { [DOCK_COMPONENT_ID]: WeftCutPanelRenderer };
+const DOCK_TAB_COMPONENTS = { [DOCK_TAB_COMPONENT_ID]: WeftCutDockTab };
+
+/* Spaced theme: `gap` is layout-level (the shell sizes groups so a real gap
+ * sits between them), letting the sunken workspace background show through
+ * and separate Panels. `hideBorders` removes the grid's separator borders;
+ * it doesn't reach the v7 shell splitviews, so workspace.css also sets
+ * `--dv-separator-border: transparent` on `.dv-shell` (the same switch
+ * Dockview's own *Spaced themes use). Based on Abyss to keep its base
+ * `--dv-*` variable defaults; the className stays Abyss's so those base
+ * styles keep applying, while the app's own overrides live on
+ * `.weft-dockview` (the `className` prop). */
+const WEFT_DOCK_THEME: DockviewTheme = { ...themeAbyss, name: "weft", gap: UI_METRICS.dock.groupGap };
+
+/* Drop-target geometry, tuned so the highlight always equals the layout the
+ * drop will produce (a 50/50 split or a full-area tab merge) and targets are
+ * large enough to hit: a group's outer third splits, its middle merges.
+ * Dockview's default was a 20% activation zone, which made edge drops hard
+ * to hit. The adapter's split-drop repair is what makes the 50% band true —
+ * see captureSplitDropFix. */
+const GROUP_CONTENT_DROP_OVERLAY: DroptargetOverlayModel = {
+  activationSize: { value: 30, type: "percentage" },
+  size: { value: 50, type: "percentage" },
+};
+
+/* The whole-workspace edge band. Dockview's 10px default activation was
+ * nearly impossible to hit, so the band is widened to a real target; the
+ * band it draws spans `EDGE_DOCK_FRACTION` of the workspace because the
+ * adapter sizes an edge-docked group to exactly that fraction — again the
+ * highlight IS the landing size. The band listens on the capture phase and
+ * would swallow drops aimed at the tab strips inside it; the adapter bows it
+ * out over them (onWillShowOverlay) instead of keeping it disabled, which is
+ * what this option used to be. */
+const WORKSPACE_EDGE_DROP_OVERLAY: DroptargetOverlayModel = {
+  activationSize: { value: 32, type: "pixels" },
+  size: { value: EDGE_DOCK_FRACTION * 100, type: "percentage" },
+};
+
+function dropOverlayModel({
+  location,
+}: DropOverlayModelParams): DroptargetOverlayModel | undefined {
+  // Tab-strip and header drops keep the default whole-strip merge highlight.
+  return location === "content" ? GROUP_CONTENT_DROP_OVERLAY : undefined;
+}
+
+interface DockWorkspaceProps {
+  contracts: DockPanelContracts;
+  onControllerReady?: (controller: DockWorkspaceController | null) => void;
+  onResetWorkspace?: () => void;
+}
+
+export function DockWorkspace({
+  contracts,
+  onControllerReady,
+  onResetWorkspace,
+}: DockWorkspaceProps) {
+  const { t, i18n } = useTranslation();
+  const scale = useUiScale();
+  const theme = useMemo(() => ({ ...WEFT_DOCK_THEME, gap: UI_METRICS.dock.groupGap * scale }), [scale]);
+  const adapterRef = useRef<DockWorkspaceAdapter | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const messages = useMemo<Partial<DockviewMessages>>(
+    () => ({
+      panelOpened: (title) => t("dock_workspace.announce.opened", { title }),
+      panelClosed: (title) => t("dock_workspace.announce.closed", { title }),
+      groupMaximized: (title) => t("dock_workspace.announce.maximized", { title }),
+      groupRestored: (title) => t("dock_workspace.announce.restored", { title }),
+      movePickTarget: (source, target, current, total) =>
+        t("dock_workspace.announce.pick_target", { source, target, current, total }),
+      movePickEdge: (position, target) =>
+        t("dock_workspace.announce.pick_edge", {
+          position: t(`dock_workspace.position.${position}`),
+          target,
+        }),
+      moveCommitted: (source, target, position) =>
+        t("dock_workspace.announce.committed", {
+          source,
+          target,
+          position: t(`dock_workspace.position.${position}`),
+        }),
+      moveCancelled: () => t("dock_workspace.announce.cancelled"),
+      moveNotAllowed: () => t("dock_workspace.announce.not_allowed"),
+    }),
+    [t],
+  );
+
+  const chrome = useMemo<WorkspaceChromeCommands>(
+    () => ({
+      closePanel: (id) => adapterRef.current?.closePanel(id),
+      setHoveredPanel: (id) => adapterRef.current?.setHoveredPanel(id),
+      toggleMaximize: (id) => adapterRef.current?.toggleMaximize(id),
+      openPanel: (kind) => adapterRef.current?.openPanel(kind),
+      resetWorkspace: () => {
+        if (onResetWorkspace) onResetWorkspace();
+        else adapterRef.current?.resetWorkspace();
+      },
+    }),
+    [onResetWorkspace],
+  );
+
+  // The composition a timeline Panel is one of (ADR 0053). Read here, at the
+  // seam that composes Panels, so neither the catalogue nor the layout schema
+  // has to know a project exists.
+  const rootCompositionId = useProjectStore((s) => s.summary?.root_id ?? null);
+
+  // The Dock's api, recorded once per Dock instance. dockview-react keeps its
+  // instance across StrictMode's effect replay (and an <Activity> hide), so
+  // `onReady` fires once while this component's effects can set up twice:
+  // everything bound to the api lives in the effect below, where each setup
+  // has its own cleanup.
+  const dockApiRef = useRef<DockviewApi | null>(null);
+  const onReady = useCallback(({ api }: DockviewReadyEvent) => {
+    dockApiRef.current = api;
+  }, []);
+
+  // Declared ahead of every effect that reads `adapterRef`. The Dock calls
+  // `onReady` from its own mount effect, which React runs before this
+  // component's, so the api is recorded by the time this sets up.
+  useEffect(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    const adapter = new DockWorkspaceAdapter(api, sectionRef.current ?? undefined);
+    adapterRef.current = adapter;
+    // Which compositions have a Panel is a fact only the Dock holds, and the
+    // anchor store is what has to act on it — a tab dragged out, closed or
+    // never restored leaves an anchor with nothing to anchor.
+    //
+    // The Panel that was active last time the Dock said anything. Activating a
+    // timeline tab IS entering that composition — without it the tab strip
+    // would only change which timeline is on SCREEN, leaving the editing
+    // target (the inspector, a follow-focus preview, every timeline-scoped
+    // key) pointed at the tab the user just left.
+    //
+    // Edge-triggered, and that is the whole subtlety: the Dock reports every
+    // layout change through the same channel, so reading the active Panel on
+    // each one would re-enter whichever timeline is active whenever anything
+    // moved — and a drop into a background timeline, which must NOT take the
+    // keyboard, moves something every time.
+    let lastActive = adapter.getSnapshot().activePanel;
+    const unsubscribeOpenTimelines = adapter.subscribe(() => {
+      syncOpenCompositions(adapter.openTimelineCompositions());
+      const active = adapter.getSnapshot().activePanel;
+      if (active === lastActive) return;
+      lastActive = active;
+      // Only when the newly active Panel is a timeline: activating the
+      // inspector or the media pool must leave the last focused timeline
+      // exactly where it was, which is what `scope: "timeline"` resolves
+      // against (ADR 0041).
+      const parsed = parsePanelId(active);
+      if (parsed?.kind === "timeline" && parsed.instance !== null) {
+        focusComposition(parsed.instance);
+      }
+    });
+    // The preview overlays read a CACHED canvas box, because their loops run
+    // per frame (`preview/layoutRectCache.ts`). Moving a Panel is the one mover
+    // no observer on the canvas can see — a relayout can leave the box the same
+    // size at a new origin — so the Dock says so itself.
+    const previewLayout = api.onDidLayoutChange(() => bumpPreviewLayoutEpoch());
+    // Read live rather than from the render above: the baseline layout about
+    // to be built should be bound straight away wherever the summary already
+    // exists, before the `rootCompositionId` effect below runs.
+    adapter.setTimelineInstance(
+      useProjectStore.getState().summary?.root_id ?? null,
+    );
+    adapter.initializeEditingLayout();
+    onControllerReady?.(adapter);
+    return () => {
+      unsubscribeOpenTimelines();
+      previewLayout.dispose();
+      adapter.dispose();
+      adapterRef.current = null;
+      onControllerReady?.(null);
+    };
+  }, [onControllerReady]);
+
+  // The first summary of a session lands after the Dock has built its layout,
+  // so the timeline row is bound when the root composition finally names itself.
+  // Binding it is also the moment the rest of that project's tabs can be
+  // unfolded out of its `view.json`: the row they are added beside now exists,
+  // and the stale ones the binding closed are gone.
+  useEffect(() => {
+    adapterRef.current?.setTimelineInstance(rootCompositionId);
+    void restoreCompositionTabs();
+  }, [rootCompositionId]);
+
+  useEffect(() => {
+    adapterRef.current?.refreshPanelTitles();
+  }, [i18n.resolvedLanguage]);
+
+  // "Open a timeline for THIS composition" reaches the Dock from the anchor
+  // store and the navigation verbs, which name a composition and know nothing
+  // of Panels; this is the whole of the wire between them.
+  useEffect(
+    () =>
+      registerTimelinePanels({
+        open: (compositionId) =>
+          adapterRef.current?.openTimelinePanel(compositionId),
+        close: (compositionId) =>
+          adapterRef.current?.closeTimelinePanel(compositionId),
+      }),
+    [],
+  );
+
+  return (
+    <ContractsContext.Provider value={contracts}>
+      <WorkspaceChromeContext.Provider value={chrome}>
+        <section
+          ref={sectionRef}
+          className="dock-workspace"
+          aria-label={t("dock_workspace.editing_label")}
+        >
+          <DockviewReact
+            className="weft-dockview"
+            theme={theme}
+            hideBorders
+            components={DOCK_COMPONENTS}
+            tabComponents={DOCK_TAB_COMPONENTS}
+            watermarkComponent={EmptyWorkspaceRecovery}
+            /* Overflow is announced by the two floating edges below, not by a
+               named list of what is hidden — reaching a Panel by name belongs to
+               the View menu and the search palette
+               (docs/features.md#strip-overflow). */
+            disableTabsOverflowList
+            prefixHeaderActionsComponent={TabStripLeadingEdge}
+            leftHeaderActionsComponent={TabStripTrailingEdge}
+            onReady={onReady}
+            disableFloatingGroups
+            dndStrategy="html5"
+            noPanelsOverlay="watermark"
+            announcements
+            messages={messages}
+            dropOverlayModel={dropOverlayModel}
+            dndEdges={WORKSPACE_EDGE_DROP_OVERLAY}
+          />
+        </section>
+      </WorkspaceChromeContext.Provider>
+    </ContractsContext.Provider>
+  );
+}

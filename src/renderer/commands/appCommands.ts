@@ -1,0 +1,625 @@
+import { snapFrameRound } from "../frames";
+import { canEditCrop, canResetCrop, editCrop, resetCrop } from './cropCommands';
+import { canScaleLayer, scalePrimaryLayer } from './scaleCommands';
+import { useCropEditingStore } from '../state/cropEditingStore';
+import {
+  logEmit,
+  updateLayerParamTracks,
+  translatePositionPath,
+  type AppSettings,
+  type LayerSummary,
+} from "../ipc";
+import { autoKeyTrack } from "../keyframe/autoKey";
+import { readParamTrack } from "../keyframe/descriptors";
+import {
+  centerShift,
+  layerFrameAt,
+  TRANSFORMABLE_KINDS,
+} from "../preview/centerInFrame";
+import { getGizmoProbe } from "../preview/gizmoProbeRegistry";
+import { resolveAnimated } from "../render/animated";
+import type { HandlerMap } from "../shortcuts/useShortcuts";
+import { ACTION_DEFS, type ActionId } from "../shortcuts/defs";
+import { hasChangedRanges } from "../agent/rangeWalk";
+import {
+  followPlayheadEnabled,
+  markersVisible,
+  playbackResolution,
+  safeAreaGuidesVisible,
+  previewGridEnabled,
+  previewSnapEnabled,
+  togglePreviewGrid,
+  togglePreviewSnap,
+  setPlaybackResolution,
+  tailSnapEnabled,
+  toggleSafeAreaGuides,
+  toggleTailSnap,
+} from "../settings/appSettingsStore";
+import { useAgentActivity } from "../agent/activityStore";
+import { linkOverrideOn } from "../state/linkOverrideStore";
+import { focusedPlayheadUs } from "../state/playheadProjection";
+import { hasMarkedRange } from "../state/rangeStore";
+import { hasTransitionCut } from "../timeline/applyTransition";
+import {
+  canAddToGroupSelection,
+  canGroupSelection,
+  canUngroupSelection,
+} from "../timeline/groupEligibility";
+import { canMoveSelectionToRoot } from "../timeline/moveToCompositionEligibility";
+import { canRippleDeleteSelection } from "../timeline/rippleEligibility";
+import { canDescribeSelection } from "./describeCommands";
+import { canOpenSelectedGroup } from "./groupCommands";
+import { canDetectPausesSelection } from "./pauseCommands";
+import { canAutoCaptionSelection } from "./speechCommands";
+import { currentOpenComposition, useProjectStore } from "../state/projectStore";
+import {
+  currentSelection,
+  layerIdsOf,
+  primaryLayerIdOf,
+} from "../state/selectionStore";
+import { activeTool } from "../state/toolStore";
+import { canStepPreviewZoom, stepPreviewZoom } from "../state/previewViewStore";
+import { layerOverlapClass } from "../timeline/geometry";
+import {
+  evaluateTimelinePlacements,
+  SPAWN_TRACK_ID,
+  type TimelinePlacement,
+} from "../timeline/placement";
+import type { CommandDef } from "./registry";
+
+/// App-level command catalog for the palette: derived from the shortcut
+/// HandlerMap (so new shortcut actions appear automatically) plus the
+/// menu-only actions that have no binding. Pure factory — App calls
+/// it inside useCommandProvider's getter, so flags are read fresh on
+/// every listCommands().
+export interface AppCommandFlags {
+  busy: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  exportLocked: boolean;
+}
+
+/// Whether the project has any layer at all — the gate both pointer tools
+/// share: the Blade needs a layer to cut, and the Text tool needs the preview
+/// to have a canvas, which it only mounts once something is staged.
+///
+/// A live read of the mirror, not an `AppCommandFlags` field, for `clearRange`'s
+/// reason with a sharper edge: the Quick Actions strip subscribes to exactly
+/// this boolean, so when the first layer lands the strip re-renders in the SAME
+/// commit as App — before App's layout effect has swapped in the provider
+/// getter that carries the new flags. A flag would answer that render with the
+/// old value and nothing would re-render the strip afterwards, leaving both
+/// tool buttons greyed on a project that has a layer.
+export function projectHasLayers(): boolean {
+  return (useProjectStore.getState().summary?.layer_count ?? 0) > 0;
+}
+
+/// Command ids with no catalogue action of their own. An action that HAS a
+/// binding must not be listed here — it already arrives through the HandlerMap
+/// above, and adding it doubles it in the palette. Exported as a value so
+/// `menuSpec.ts` can type-lock its item ids to `ActionId | MenuOnlyCommandId`.
+export const MENU_ONLY_COMMAND_IDS = [
+  "addColorLayer",
+  "addTextLayer",
+  "openMotifPicker",
+  "openAgentPanel",
+  "enterAgentMode",
+  // Checkpoint CREATE only. Restore and Delete are per-row actions with no
+  // command form: a palette entry would have to name one of N checkpoints, and
+  // the registry has no parameterized-command shape (`CommandDef.run` takes
+  // nothing). The History Panel's section is their home.
+  //
+  // No keyboard binding either — `Mod+Z` / `Mod+Shift+Z` are the history keys
+  // and stay untouched; a checkpoint is a deliberate, named act, not a reflex.
+  "createCheckpoint",
+  // Raise-to-top. No binding on purpose — the key budget belongs to
+  // higher-frequency operations, and z-order rearrangement is not one
+  // (docs/features.md#track-placement).
+  "moveToNewTrack",
+  // Marker display. No binding on purpose: `M` went to `addMarkerAtPlayhead`
+  // (ACTION_DEFS) — the reservation this entry once held open, now spent — and
+  // the toggle itself is not a reflex. Being a no-binding command is also what
+  // makes the Quick Actions button resolvable and puts the toggle in the search
+  // palette for free. Marker rename/delete have no command form for the
+  // createCheckpoint reason above: they are per-row actions, and the registry
+  // has no parameterized-command shape. The marker context menu is their home.
+  "toggleMarkersVisible",
+  // Crossfade at the cut nearest the playhead (`transitionTargetCut`). The
+  // registry's no-arguments shape is exactly the Premiere "apply default
+  // transition" contract — the target comes from state, not a parameter. No
+  // binding on purpose (the key budget rule above); discoverability rides the
+  // strip button, the palette, and the Transitions panel instead.
+  "applyDefaultTransition",
+  // Voiceover. Menu-only and NOT an `ACTION_DEFS` entry, unlike its
+  // transcribe sibling: this operation has no scope at all — it needs a
+  // script, not a selection, and must be reachable with nothing selected — so
+  // an `ActionDef` would carry a `scope` field with nothing to say and a
+  // rebindable row for a key that acts on no object (`shortcuts/defs.ts` states
+  // the same rule for the self-contained block below).
+  "openVoiceoverDialog",
+] as const;
+
+export type MenuOnlyCommandId = (typeof MENU_ONLY_COMMAND_IDS)[number];
+
+export type MenuCommandDeps = Record<
+  MenuOnlyCommandId,
+  () => void | Promise<void>
+>;
+
+const MENU_ONLY_LABEL_KEYS: Record<MenuOnlyCommandId, string> = {
+  addColorLayer: "actions.add_color_layer",
+  addTextLayer: "actions.add_text_layer",
+  openMotifPicker: "actions.motifs",
+  openAgentPanel: "actions.open_agent_panel",
+  enterAgentMode: "actions.enter_agent_mode",
+  createCheckpoint: "actions.create_checkpoint",
+  moveToNewTrack: "actions.move_to_new_track",
+  toggleMarkersVisible: "actions.toggle_markers_visible",
+  applyDefaultTransition: "actions.apply_default_transition",
+  openVoiceoverDialog: "actions.open_voiceover",
+};
+
+/// Commands implemented HERE, in full. They differ from `MENU_ONLY_COMMAND_IDS`
+/// on one axis only: those borrow a closure from App (a dialog to open, a panel
+/// controller, a `refresh`), while these read the stores they need and commit
+/// through IPC, so threading a dependency through `buildAppCommands` would carry
+/// nothing.
+///
+/// No keyboard binding, for the key-budget reason spelled out above: the safe
+/// areas are a preference a user flips when a delivery spec asks for them, and
+/// the two centring ops are reached once per title, not per cut. Being
+/// no-binding commands is also what puts all three in the search palette for
+/// free. They are deliberately NOT `ACTION_DEFS` entries: `ActionDef.scope`
+/// gates KEY dispatch (ADR 0041) and every other field describes a chord, so an
+/// entry with no keys would add two rebindable rows to Settings → Keyboard whose
+/// bindings nothing dispatches.
+const SELF_CONTAINED_COMMAND_IDS = [
+  'fitLayerToFrame',
+  'fillLayerFrame',
+  'restoreLayerSize',
+  'editCrop',
+  'resetCrop',
+  "toggleSafeAreaGuides",
+  "togglePreviewGrid",
+  "togglePreviewSnap",
+  "centerHorizontally",
+  "centerVertically",
+  // Clip snapping. No binding for the key-budget reason above — and because
+  // the magnet's home in every NLE is a toolbar button, which is exactly what
+  // being a no-binding command makes resolvable (`quickActions.ts`).
+  "toggleTailSnap",
+  // The Review overlay (ADR 0115): the Review lane and the unreviewed-change
+  // marks on clips. Runtime state of the agent panel's store, like the material
+  // it shows. A no-binding command for the strip button and the palette — never
+  // a switch on the lane itself, which a switched-off overlay has removed.
+  "toggleReviewOverlay",
+  // Preview playback resolution, in two shapes because two surfaces want
+  // different things. The three ABSOLUTE setters are what the search palette
+  // needs: idempotent, individually nameable, and one step from any current
+  // value. `cyclePlaybackResolution` is what a 16 px strip button needs, where
+  // three buttons spend three slots to express one value.
+  //
+  // The cycle was rejected once, while the strip's glyph was a bare signal-bar
+  // ladder: a cycle has no defined direction from the middle value — the
+  // `toolStore.setTool` landmine, one value further along. What answers that is
+  // `PlaybackResolutionIcon`, which draws the value the button is ON. From any
+  // rung you can see which rung you are on, and the tooltip names the next one.
+  // The setters stay: the palette still cannot cycle its way anywhere.
+  "setPlaybackResolutionFull",
+  "setPlaybackResolutionHalf",
+  "setPlaybackResolutionQuarter",
+  "cyclePlaybackResolution",
+  // Preview zoom, the two steps only. The wheel is the gesture
+  // (docs/preview.md#interaction) and Fit carries the one key worth spending
+  // (`Z`, an `ACTION_DEFS` entry), so these two exist for the palette and for
+  // an agent: nameable, bounded, and one call from any current scale.
+  "previewZoomIn",
+  "previewZoomOut",
+] as const;
+
+export type SelfContainedCommandId = (typeof SELF_CONTAINED_COMMAND_IDS)[number];
+
+const SELF_CONTAINED_LABEL_KEYS: Record<SelfContainedCommandId, string> = {
+  fitLayerToFrame: 'layer_scale.fit',
+  fillLayerFrame: 'layer_scale.fill',
+  restoreLayerSize: 'layer_scale.original',
+  editCrop: 'crop.edit',
+  resetCrop: 'crop.reset',
+  toggleSafeAreaGuides: "actions.toggle_safe_area_guides",
+  togglePreviewGrid: "actions.toggle_preview_grid",
+  togglePreviewSnap: "actions.toggle_preview_snap",
+  centerHorizontally: "actions.center_horizontally",
+  centerVertically: "actions.center_vertically",
+  toggleTailSnap: "actions.toggle_tail_snap",
+  toggleReviewOverlay: "actions.toggle_review_overlay",
+  setPlaybackResolutionFull: "actions.playback_resolution_full",
+  setPlaybackResolutionHalf: "actions.playback_resolution_half",
+  setPlaybackResolutionQuarter: "actions.playback_resolution_quarter",
+  cyclePlaybackResolution: "actions.playback_resolution_cycle",
+  previewZoomIn: "actions.preview_zoom_in",
+  previewZoomOut: "actions.preview_zoom_out",
+};
+
+/// The rungs `cyclePlaybackResolution` walks, in order, wrapping at the end.
+///
+/// Descending quality is the direction the button is reached FOR: playback
+/// stutters, so you shed resolution. That is the REVERSE of the Settings
+/// slider's `RESOLUTION_STOPS`, which runs quarter→full because a slider's
+/// right-hand end has to be the better picture — two orders, each dictated by
+/// its own control, which is why neither can be derived from the other.
+export const PLAYBACK_RESOLUTION_CYCLE: readonly AppSettings["playback_resolution"][] =
+  ["full", "half", "quarter"];
+
+/// The rung after `current`. A value outside the ladder — an older settings
+/// file, a hand edit — has no successor, so `indexOf` returns -1 and the walk
+/// resumes at the top, the same direction every other defaulting in this
+/// feature takes.
+export function nextPlaybackResolution(
+  current: AppSettings["playback_resolution"],
+): AppSettings["playback_resolution"] {
+  const at = PLAYBACK_RESOLUTION_CYCLE.indexOf(current);
+  return PLAYBACK_RESOLUTION_CYCLE[(at + 1) % PLAYBACK_RESOLUTION_CYCLE.length]!;
+}
+
+/// A centring command's whole input: the layer, and the frame it is being
+/// centred in.
+interface CenterTarget {
+  layer: LayerSummary;
+  compW: number;
+  compH: number;
+  fpsNum: number;
+  fpsDen: number;
+}
+
+/// The layer a centring command would act on: the PRIMARY selection, the same
+/// one the on-canvas gizmo boxes. Not the whole multi-selection — centring N
+/// layers stacks them on one point, which is align-multiple's job, and the batch
+/// mutation writes one layer per call (so N layers would also be N undo steps).
+///
+/// Read live from both stores for the reason `canMoveSelectionToNewTrack`
+/// documents: this runs inside `listCommands()`, and App re-renders on neither.
+function centerTarget(): CenterTarget | null {
+  const layerId = primaryLayerIdOf(currentSelection());
+  const comp = currentOpenComposition();
+  if (!layerId || !comp) return null;
+  for (const track of comp.tracks) {
+    for (const layer of track.layers) {
+      if (layer.id !== layerId) continue;
+      if (!TRANSFORMABLE_KINDS.has(layer.params.kind)) return null;
+      return {
+        layer,
+        compW: comp.width,
+        compH: comp.height,
+        fpsNum: comp.fps_num,
+        fpsDen: comp.fps_den,
+      };
+    }
+  }
+  return null;
+}
+
+/// Below this a shift is float noise rather than an edit — the layer is already
+/// centred, and writing anyway would stamp a redundant keyframe on a keyframed
+/// track. Same threshold and same reason as the gizmo's `NOISE`.
+const CENTER_NOISE = 1e-9;
+
+/// The one refusal this pair can hit: the compositor has not staged the layer,
+/// so its footprint is unknowable — not zero. Moving it to a position derived
+/// from a guessed size would be a silent lie, so nothing is written and the
+/// status log says why.
+///
+/// Not a `logMutationFailure`: no mutation was attempted, so there is no
+/// `CommandError` to render. `Project` at `Warn` for the same reason a refused
+/// direct commit is `Project` — it is about this project's layer, not about the
+/// key that asked (docs/status-log.md).
+function refuseUnstaged(layerId: string, axis: "x" | "y"): void {
+  void logEmit({
+    level: "warn",
+    category: { kind: "Project" },
+    source: { kind: "User" },
+    message: "Cannot center a clip the preview has not staged yet",
+    i18n_key: "log.center_layer_unstaged",
+    details: { context: axis === "x" ? "center_horizontally" : "center_vertically", layerId },
+  });
+}
+
+/// Put the primary layer's visible box in the middle of the frame on ONE axis,
+/// in one commit — so it undoes as one step, like a gizmo gesture.
+///
+/// Everything is evaluated at the frame-snapped playhead: the same instant a
+/// keyframe would land on, so the box the shift is measured from and the base
+/// value the shift is added to cannot come from different times.
+async function centerPrimaryLayer(axis: "x" | "y"): Promise<void> {
+  const target = centerTarget();
+  // Prevented by `enabled`; a palette entry built before the selection changed
+  // can still reach here, and doing nothing is the honest answer to "no target".
+  if (!target) return;
+  const { layer, compW, compH } = target;
+  const size = getGizmoProbe()?.naturalSizeOf(layer.id);
+  if (!size || size.w <= 0 || size.h <= 0) return refuseUnstaged(layer.id, axis);
+  // Projected: the layer's start is on the editing target's clock, so the
+  // moment subtracted from it has to be the same clock's reading.
+  const tInLayerUs = snapFrameRound(
+    focusedPlayheadUs() - layer.t_start_us,
+    target.fpsNum,
+    target.fpsDen,
+  );
+  const frame = layerFrameAt(layer, layer.t_start_us + tInLayerUs, size);
+  const shift = centerShift(frame, compW, compH);
+  if (!shift) return refuseUnstaged(layer.id, axis);
+  const delta = axis === "x" ? shift.x : shift.y;
+  if (Math.abs(delta) < CENTER_NOISE) return;
+  const track = readParamTrack(layer.params, axis) ?? { mode: "Static" as const, value: 0 };
+  // Absolute, through `autoKeyTrack` — the shared "commit a scalar to an
+  // animatable param" rule, so this writes tracks exactly the way the inspector
+  // and the gizmo do (a Static track flattens, a Keyframed one takes a key).
+  const next = autoKeyTrack(track, tInLayerUs, resolveAnimated(track, tInLayerUs, 0) + delta);
+  // Uncaught on purpose: the registry funnel turns a rejection into the one
+  // `Shortcut`/Error row with the refusal's curated copy (commands/registry.ts).
+  if('position' in layer.params&&layer.params.position?.mode==='Path') {
+    await translatePositionPath(layer.id,axis==='x'?shift.x:0,axis==='y'?shift.y:0);
+  } else await updateLayerParamTracks(layer.id, [[axis, next]]);
+}
+
+/// "Move to a new track" is offered only when one fresh lane could actually hold
+/// the whole selection, so the impossible request is prevented rather than
+/// refused afterwards.
+///
+/// Both stores are read LIVE, for the reason `clearRange` reads `rangeStore`:
+/// App does not subscribe to the selection (a multi-select change would
+/// re-render the whole tree), so a flag captured at App render time would freeze
+/// the moment the user clicked a clip.
+///
+/// The overlap question is `evaluateTimelinePlacements`' own: projecting every
+/// selected layer onto `SPAWN_TRACK_ID` asks exactly "could one empty lane take
+/// them all", and `"collision"` is its answer for no.
+function canMoveSelectionToNewTrack(): boolean {
+  const selected = layerIdsOf(currentSelection());
+  if (selected.size === 0) return false;
+  const tracks = currentOpenComposition()?.tracks ?? [];
+  const placements: TimelinePlacement[] = [];
+  for (const track of tracks) {
+    for (const layer of track.layers) {
+      if (!selected.has(layer.id)) continue;
+      placements.push({
+        layerId: layer.id,
+        trackId: SPAWN_TRACK_ID,
+        tStartUs: layer.t_start_us,
+        tEndUs: layer.t_end_us,
+        overlapClass: layerOverlapClass(layer),
+        // Lock is not this predicate's question, and `"locked"` OUTRANKS
+        // `"collision"` in the verdict — feeding one in would let a locked clip
+        // mask the self-overlap this exists to catch. A locked source lane is
+        // the actor's refusal (`TrackLocked`).
+        locked: false,
+      });
+    }
+  }
+  // A selection the summary no longer holds: nothing to place.
+  if (placements.length === 0) return false;
+  return (
+    evaluateTimelinePlacements({
+      tracks,
+      placements,
+      replacedLayerIds: selected,
+    }).validity !== "collision"
+  );
+}
+
+export function buildAppCommands(
+  handlers: HandlerMap,
+  menu: MenuCommandDeps,
+  flags: AppCommandFlags,
+): CommandDef[] {
+  const enabledFor: Partial<Record<ActionId, () => boolean>> = {
+    save: () => !flags.busy,
+    saveAs: () => !flags.busy,
+    closeProject: () => !flags.busy,
+    undo: () => !flags.busy && flags.canUndo,
+    redo: () => !flags.busy && flags.canRedo,
+    importMedia: () => !flags.busy,
+    export: () => !flags.exportLocked,
+    toggleBladeMode: () => !flags.busy && projectHasLayers(),
+    // The Text tool's gate is the Blade's (`projectHasLayers`). The strip
+    // button's hint names the remedy; this predicate only greys it.
+    selectTextTool: () => !flags.busy && projectHasLayers(),
+    selectHandTool: () => projectHasLayers(),
+    previewZoomFit: () => projectHasLayers(),
+    // Read from the store rather than routed through `flags`, unlike every
+    // entry above. A flag is a snapshot taken at App render time, and App
+    // deliberately does NOT subscribe to `rangeStore` (marking in/out would
+    // re-render the whole tree — see `toolStore.ts` for the same reasoning),
+    // so the flag would go stale the moment the user pressed `I`. This
+    // predicate is evaluated inside `listCommands()`, so it always reads live.
+    clearRange: () => hasMarkedRange(),
+    // Ripple delete, live-read for `clearRange`'s reason and gated where plain
+    // Delete is not: the ripple can be genuinely impossible — a clip starting
+    // inside the span, a landing that would collide, a locked lane that would
+    // have to move — and the same predicate that greys this entry names which
+    // one on the surfaces that can show a sentence
+    // (`timeline/rippleEligibility.ts`). Plain Delete stays ungated because it
+    // always has an answer.
+    rippleDeleteSelected: canRippleDeleteSelection,
+    // The Group commands, live-read for the same reason and through the one
+    // predicate every surface shares (`timeline/groupEligibility.ts`,
+    // `timeline/moveToCompositionEligibility.ts`), so the Edit menu row, the
+    // strip button, the palette entry and the clip's context menu cannot
+    // disagree about whether the selection can be grouped. The disabled-reason
+    // strings live with the surfaces that can show one — the strip for the
+    // first two, the clip menu for `addToGroup` and `moveToComposition`.
+    groupSelected: canGroupSelection,
+    ungroupSelected: canUngroupSelection,
+    openGroup: canOpenSelectedGroup,
+    addToGroup: canAddToGroupSelection,
+    moveToComposition: canMoveSelectionToRoot,
+    // Live-read through the one predicate every surface shares
+    // (`speech/autoCaptionEligibility.ts`), for the Group commands' reason, plus
+    // one of its own: the gate also stands the command down while a run is in
+    // flight, and nothing rebuilds the catalogue when a transcription starts.
+    autoCaptionSelected: canAutoCaptionSelection,
+    // The shared audio-clip gate plus the one condition that belongs to
+    // pauses alone: a clip whose sound nothing plays has no subject to measure
+    // (`commands/pauseCommands.ts`).
+    detectPausesSelected: canDetectPausesSelection,
+    // The picture-clip gate, one notch narrower than the audio one above: a
+    // description reads FRAMES, so an Audio layer the two rows above accept is
+    // the wrong kind here (`describe/describeEligibility.ts`).
+    describeSelected: canDescribeSelection,
+    // Live-read for `clearRange`'s reason: the ranges move with every commit
+    // and App re-renders on none of them.
+    seekPrevChangedRange: hasChangedRanges,
+    seekNextChangedRange: hasChangedRanges,
+    playChangedRange: hasChangedRanges,
+  };
+
+  // The armed modal tool, read straight from `toolStore` for the same
+  // reason `clearRange` reads `rangeStore`: App doesn't subscribe to tool
+  // switches, so a flag would freeze on the App render that captured it.
+  const checkedFor: Partial<Record<ActionId, () => boolean>> = {
+    selectTool: () => activeTool() === "select",
+    toggleBladeMode: () => activeTool() === "blade",
+    selectTextTool: () => activeTool() === "text",
+    selectHandTool: () => activeTool() === "hand",
+    // Same live-read reason as `clearRange` below the flags: App does not
+    // re-render on an app-settings flip, so a captured flag would freeze.
+    toggleFollowPlayhead: () => followPlayheadEnabled(),
+    // Session store, same live-read rule: App never re-renders on the flip.
+    toggleLinkOverride: () => linkOverrideOn(),
+  };
+
+  const defs: CommandDef[] = [];
+  for (const id of Object.keys(handlers) as ActionId[]) {
+    // The palette shouldn't list "open the palette" inside itself.
+    if (id === "openSearchPalette") continue;
+    const run = handlers[id];
+    if (!run) continue;
+    const enabled = enabledFor[id];
+    const checked = checkedFor[id];
+    defs.push({
+      id,
+      actionId: id,
+      labelKey: ACTION_DEFS[id].labelKey,
+      ...(enabled ? { enabled } : {}),
+      ...(checked ? { checked } : {}),
+      run,
+    });
+  }
+
+  // Menu-only ids get gates too — same shape as `enabledFor` above, keyed on the
+  // other half of the id namespace.
+  const menuEnabledFor: Partial<Record<MenuOnlyCommandId, () => boolean>> = {
+    moveToNewTrack: canMoveSelectionToNewTrack,
+    // Live-read for the same reason as `clearRange`: whether an eligible cut
+    // exists changes with every edit, and App renders on none of them.
+    applyDefaultTransition: hasTransitionCut,
+  };
+
+  // …and check state, same shape and same rule as `checkedFor` above: a
+  // no-binding command can be a toggle just as easily as a binding-backed one.
+  const menuCheckedFor: Partial<Record<MenuOnlyCommandId, () => boolean>> = {
+    toggleMarkersVisible: () => markersVisible(),
+  };
+
+  for (const id of MENU_ONLY_COMMAND_IDS) {
+    const enabled = menuEnabledFor[id];
+    const checked = menuCheckedFor[id];
+    defs.push({
+      id,
+      labelKey: MENU_ONLY_LABEL_KEYS[id],
+      ...(enabled ? { enabled } : {}),
+      ...(checked ? { checked } : {}),
+      run: menu[id],
+    });
+  }
+
+  // The self-contained third of the namespace. Gates and runs sit together here
+  // because there is no dependency to receive them from.
+  //
+  // The centring pair gates on the SELECTION only, deliberately not on the
+  // probe: whether the compositor has the layer staged flickers with decoding
+  // and with the preview panel's own lifetime, and a command that greys itself
+  // out for reasons invisible on screen is worse than one that refuses out loud
+  // (`refuseUnstaged`).
+  const selfContained: Record<
+    SelfContainedCommandId,
+    { run: () => void | Promise<void>; enabled?: () => boolean; checked?: () => boolean }
+  > = {
+    fitLayerToFrame: { run: () => scalePrimaryLayer('fit'), enabled: () => !flags.busy && !flags.exportLocked && canScaleLayer() },
+    fillLayerFrame: { run: () => scalePrimaryLayer('fill'), enabled: () => !flags.busy && !flags.exportLocked && canScaleLayer() },
+    restoreLayerSize: { run: () => scalePrimaryLayer('original'), enabled: () => !flags.busy && !flags.exportLocked && canScaleLayer() },
+    editCrop: { run: editCrop, enabled: canEditCrop, checked: () => useCropEditingStore.getState().layerId !== null },
+    resetCrop: { run: resetCrop, enabled: canResetCrop },
+    previewZoomIn: {
+      run: () => stepPreviewZoom(1),
+      enabled: () => projectHasLayers() && canStepPreviewZoom(1),
+    },
+    previewZoomOut: {
+      run: () => stepPreviewZoom(-1),
+      enabled: () => projectHasLayers() && canStepPreviewZoom(-1),
+    },
+    togglePreviewGrid: {
+      run: () => void togglePreviewGrid(),
+      checked: () => previewGridEnabled(),
+    },
+    togglePreviewSnap: {
+      run: () => void togglePreviewSnap(),
+      checked: () => previewSnapEnabled(),
+    },
+    toggleSafeAreaGuides: {
+      run: () => void toggleSafeAreaGuides(),
+      checked: () => safeAreaGuidesVisible(),
+    },
+    centerHorizontally: {
+      run: () => centerPrimaryLayer("x"),
+      enabled: () => centerTarget() !== null,
+    },
+    centerVertically: {
+      run: () => centerPrimaryLayer("y"),
+      enabled: () => centerTarget() !== null,
+    },
+    toggleTailSnap: {
+      run: () => void toggleTailSnap(),
+      checked: () => tailSnapEnabled(),
+    },
+    toggleReviewOverlay: {
+      run: () => useAgentActivity.setState((s) => ({ reviewOverlay: !s.reviewOverlay })),
+      checked: () => useAgentActivity.getState().reviewOverlay,
+    },
+    // `checked`, not `enabled`: the current value is always re-selectable, and
+    // a greyed-out "Full" would say the mode is unavailable rather than
+    // already chosen. Same read-live rule as every predicate above.
+    setPlaybackResolutionFull: {
+      run: () => void setPlaybackResolution("full"),
+      checked: () => playbackResolution() === "full",
+    },
+    setPlaybackResolutionHalf: {
+      run: () => void setPlaybackResolution("half"),
+      checked: () => playbackResolution() === "half",
+    },
+    setPlaybackResolutionQuarter: {
+      run: () => void setPlaybackResolution("quarter"),
+      checked: () => playbackResolution() === "quarter",
+    },
+    // The strip's one-button form of the three setters above. No `checked`:
+    // "is the cycle on?" has no answer, and the three states it walks are
+    // reported by the glyph, not by a checkmark. The current value is read at
+    // CLICK time, not captured — Settings, the palette and this button all
+    // write the same field, so a captured value would be stale after any of
+    // the other two.
+    cyclePlaybackResolution: {
+      run: () =>
+        void setPlaybackResolution(nextPlaybackResolution(playbackResolution())),
+    },
+  };
+  for (const id of SELF_CONTAINED_COMMAND_IDS) {
+    const { run, enabled, checked } = selfContained[id];
+    defs.push({
+      id,
+      labelKey: SELF_CONTAINED_LABEL_KEYS[id],
+      ...(enabled ? { enabled } : {}),
+      ...(checked ? { checked } : {}),
+      run,
+    });
+  }
+  return defs;
+}

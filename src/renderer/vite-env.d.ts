@@ -1,0 +1,28 @@
+/// <reference types="vite/client" />
+/// <reference types="@webgpu/types" />
+
+// PixiJS 8.21 no longer loads these declarations on TypeScript 6+.
+// lib.dom still omits GPUBufferUsage, GPUTextureUsage, and GPUMapMode.
+
+// Set to "1" only by the E2E build (`VITE_WEFTCUT_E2E=1`); gates the dev-only
+// `window.__weftcutTest` hook so it's dead-code-eliminated from prod bundles.
+interface ImportMetaEnv {
+  readonly VITE_WEFTCUT_E2E?: string;
+}
+
+// Vite's `?url` import suffix yields a string URL for any asset. The
+// vite/client types cover common extensions but not arbitrary `*?url`
+// imports from node_modules, so declare the wildcard once here.
+declare module "*?url" {
+  const src: string;
+  export default src;
+}
+
+// Vite's `?arraybuffer` import suffix yields the asset's bytes as an
+// ArrayBuffer. vite/client types the suffix for known asset extensions but not
+// for arbitrary `*?arraybuffer` imports from node_modules (the E2E test hook
+// embeds a woff2 this way), so declare the wildcard here.
+declare module "*?arraybuffer" {
+  const bytes: ArrayBuffer;
+  export default bytes;
+}

@@ -1,0 +1,471 @@
+import { readLayerParamTrack } from "../keyframe/channels";
+import {
+  useCallback,
+  useMemo,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import { useTranslation } from "react-i18next";
+import type { AnimTrack, Rgba, TrackSummary } from "../ipc";
+import { keyframeAbsoluteX, trackKeyframeProperties } from "./geometry";
+import { uiPixels, useUiScale } from "../settings/layoutTheme";
+import { UI_METRICS } from "../settings/uiMetrics";
+import {
+  isHiddenTwinAxis,
+  type ParamDescriptor,
+  type ParamTrack,
+  type RgbaParamDescriptor,
+} from "../keyframe/descriptors";
+import {
+  extrapolateClass,
+  extrapolateGlyph,
+  extrapolateLabelKey,
+  interpGlyphClass,
+} from "../keyframe/curve";
+import { isNumberTrack, useTrackPreview } from "../keyframe/easingPreviewStore";
+import { useKeyframeDrag } from "../keyframe/useKeyframeDrag";
+import { ColorLane } from "./ColorLane";
+import {
+  selectKeyframe,
+  keyframeKey,
+  useIsKeyframeSelected,
+  useKeyframeSelectionStore,
+} from "../keyframe/selectionStore";
+import { setContinuity, setTangent } from "../keyframe/edits";
+import { useKeyframeBatchCommit } from "./keyframeBatch";
+import { transportSeek } from "../state/playbackStore";
+import { useLocalPlayheadUsThrottled } from "../state/playheadProjection";
+import {
+  setKeyframeFocus,
+  useFocusedParamKeyForTrackLayers,
+  useKeyframeFocusStore,
+} from "../keyframe/focusStore";
+import { useMarqueeAnchor } from "./hooks/useMarqueeAnchor";
+import { KeyframeCurveGraph } from "./KeyframeCurveGraph";
+import { EasingMenu } from "./EasingMenu";
+import { KeyframeNavigator } from "./KeyframeNavigator";
+import { KeyframeValueField } from "./KeyframeValueField";
+
+const KF = UI_METRICS.timeline.keyframe;
+/// Sub-lane row height, collapsed or expanded. Callers subscribe with
+/// `useUiScale()` so a theme switch re-renders them.
+const sublaneHeightPx = (expanded: boolean): number =>
+  uiPixels(expanded ? KF.sublaneExpandedHeight : KF.sublaneHeight);
+
+/// Hands one rendered sub-lane row to the registry the Timeline measures the
+/// marquee against — the keyframe twin of `registerLaneEl`, keyed by
+/// `(trackId, paramKey)`. `expanded` rides along because the ROW is where that
+/// answer lives; `null` deregisters.
+export type RegisterSubLaneEl = (
+  trackId: string,
+  paramKey: string,
+  expanded: boolean,
+  el: HTMLElement | null,
+) => void;
+
+type OpenInterpMenu = (
+  clientX: number,
+  clientY: number,
+  layerId: string,
+  paramKey: string,
+  kfId: string,
+) => void;
+
+/// Header-column rows: each property's keyframe navigator (◄ ◆ ►) on the left,
+/// the property-name label right-aligned. Row-aligned with the body rows below
+/// by sharing trackKeyframeProperties + sublaneHeightPx.
+export function KeyframeLaneHeaders({
+  track,
+  compositionId,
+  fpsNum,
+  fpsDen,
+  visible,
+  onCommitParamTrack,
+}: {
+  track: TrackSummary;
+  /// The composition these lanes belong to — a keyframe sits on ITS clock, so
+  /// the navigator and the value readout need the moment projected onto it.
+  compositionId: string | null;
+  fpsNum: number;
+  fpsDen: number;
+  visible: boolean;
+  onCommitParamTrack: (layerId: string, paramKey: string, t: ParamTrack) => void;
+}) {
+  const { t } = useTranslation();
+  useUiScale(); // sub-lane row heights
+  // Panel-rate playhead subscription (tier 3, playheadStore.ts): navigator
+  // arrows + value readouts follow playback without per-frame re-renders.
+  // Projected onto this composition's clock, which is where its keys live.
+  const currentTimeUs = useLocalPlayheadUsThrottled(compositionId, 100, visible);
+  const props = trackKeyframeProperties(track);
+  const layerIds = useMemo(() => new Set(track.layers.map((l) => l.id)), [track.layers]);
+  const focusedParamKey = useFocusedParamKeyForTrackLayers(layerIds);
+  return (
+    <>
+      {props.map((d) => {
+        const expanded = d.paramKey === focusedParamKey;
+        const name = t(d.labelKey, { defaultValue: d.paramKey });
+        const label = d.owner
+          ? t(d.owner.labelKey, { defaultValue: d.owner.name }) + ' #' + d.owner.ordinal + ' · ' + name
+          : name;
+        return (
+          <div
+            key={d.paramKey}
+            className="border-b border-border-soft px-1.5 text-[length:var(--font-size-micro)] text-muted-foreground/80"
+            style={{ height: sublaneHeightPx(expanded) }}
+          >
+            <div className="flex items-center justify-between gap-1" style={{ height: sublaneHeightPx(false) }}>
+              <span className="min-w-0 truncate" title={d.owner ? d.owner.layerLabel + " · " + label : label}>{label}</span>
+              <KeyframeNavigator
+                track={track}
+                paramKey={d.paramKey}
+                fallback={d.fallback}
+                currentTimeUs={currentTimeUs}
+                fpsNum={fpsNum}
+                fpsDen={fpsDen}
+                onCommitParamTrack={onCommitParamTrack}
+              />
+            </div>
+            {expanded && (
+              <KeyframeValueField
+                track={track}
+                desc={d}
+                currentTimeUs={currentTimeUs}
+                fpsNum={fpsNum}
+                fpsDen={fpsDen}
+                onCommitParamTrack={onCommitParamTrack}
+              />
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+/// Body rows: one diamond lane per property, diamonds absolute-positioned.
+export function KeyframeLane({
+  track,
+  pxPerSec,
+  registerSubLaneEl,
+  onCommitParamTrack,
+}: {
+  track: TrackSummary;
+  pxPerSec: number;
+  registerSubLaneEl: RegisterSubLaneEl;
+  onCommitParamTrack: (layerId: string, paramKey: string, t: ParamTrack) => void;
+}) {
+  const props = trackKeyframeProperties(track);
+  const [interpMenu, setInterpMenu] = useState<{
+    x: number;
+    y: number;
+    layerId: string;
+    paramKey: string;
+    kfId: string;
+  } | null>(null);
+
+  // A right-click that lands OUTSIDE the selection replaces it with that one
+  // key first, so the menu acts on what the user aimed at — the rule
+  // `Timeline`'s clip `onContextMenu` states in full. The diamond path arrives
+  // already selected (`KeyframeCurveGraph` selects before it opens the menu);
+  // this is what covers the segment path, which selects nothing.
+  const openInterpMenu: OpenInterpMenu = (clientX, clientY, layerId, paramKey, kfId) => {
+    const key = { layerId, paramKey, kfId };
+    if (!useKeyframeSelectionStore.getState().selected.has(keyframeKey(key))) {
+      selectKeyframe(key);
+    }
+    setInterpMenu({ x: clientX, y: clientY, layerId, paramKey, kfId });
+  };
+
+  const layerIds = useMemo(
+    () => new Set(track.layers.map((l) => l.id)),
+    [track.layers],
+  );
+  const focusedParamKey = useFocusedParamKeyForTrackLayers(layerIds);
+  const focusedLayerId = useKeyframeFocusStore((s) =>
+    s.layerId && layerIds.has(s.layerId) ? s.layerId : null,
+  );
+
+  // A box started on a sub-lane row sweeps KEYFRAMES, not the clips it is drawn
+  // over — the surface decides, so one handler serves every row. Diamonds and
+  // segment hits stop their own pointerdown, leaving the row's background.
+  const { onPointerDown: onMarqueeDown } = useMarqueeAnchor({
+    kind: "keyframe",
+  });
+  const commitKeyframeBatch = useKeyframeBatchCommit();
+
+  return (
+    <>
+      {props.map((d) => (
+        <KeyframeSubLaneRow
+          key={d.paramKey}
+          track={track}
+          desc={d}
+          expanded={d.paramKey === focusedParamKey}
+          pxPerSec={pxPerSec}
+          focusedLayerId={focusedLayerId}
+          registerSubLaneEl={registerSubLaneEl}
+          onPointerDown={onMarqueeDown}
+          onCommitParamTrack={onCommitParamTrack}
+          onOpenInterpMenu={openInterpMenu}
+        />
+      ))}
+      {interpMenu && (() => {
+        const layer = track.layers.find((l) => l.id === interpMenu.layerId);
+        if (!layer) return null;
+        const trk = readLayerParamTrack(layer, interpMenu.paramKey);
+        if (!trk || trk.mode !== "Keyframed") return null;
+        return (
+          <EasingMenu
+            x={interpMenu.x}
+            y={interpMenu.y}
+            track={trk}
+            kfId={interpMenu.kfId}
+            onClose={() => setInterpMenu(null)}
+            onApply={commitKeyframeBatch}
+          />
+        );
+      })()}
+    </>
+  );
+}
+
+/// One property's row, drawing that property's curve for every layer on the
+/// track. A component rather than inline JSX so the registry ref can be a
+/// `useCallback` stable per (property, expanded), the way `TrackLane`'s
+/// `laneRef` is: an inline ref would churn the registry through null on every
+/// render of the timeline above it.
+function KeyframeSubLaneRow({
+  track,
+  desc,
+  expanded,
+  pxPerSec,
+  focusedLayerId,
+  registerSubLaneEl,
+  onPointerDown,
+  onCommitParamTrack,
+  onOpenInterpMenu,
+}: {
+  track: TrackSummary;
+  desc: ParamDescriptor;
+  expanded: boolean;
+  pxPerSec: number;
+  focusedLayerId: string | null;
+  registerSubLaneEl: RegisterSubLaneEl;
+  onPointerDown: (e: ReactPointerEvent) => void;
+  onCommitParamTrack: (layerId: string, paramKey: string, t: ParamTrack) => void;
+  onOpenInterpMenu: OpenInterpMenu;
+}) {
+  const paramKey = desc.paramKey;
+  useUiScale();
+  const height = sublaneHeightPx(expanded);
+  const rowRef = useCallback(
+    (el: HTMLDivElement | null) =>
+      registerSubLaneEl(track.id, paramKey, expanded, el),
+    [registerSubLaneEl, track.id, paramKey, expanded],
+  );
+  return (
+    <div
+      ref={rowRef}
+      data-testid="kf-sublane"
+      className="relative border-b border-border-soft"
+      style={{ height }}
+      onPointerDown={onPointerDown}
+    >
+      {track.layers.map((layer) => {
+        if (isHiddenTwinAxis(paramKey, layer.params)) return null;
+        if (desc.valueKind === "rgba") {
+          const rgba = readLayerParamTrack(layer, desc);
+          if (!rgba || rgba.mode !== "Keyframed") return null;
+          return (
+            <ColorKeyLane
+              key={layer.id}
+              layerId={layer.id}
+              desc={desc}
+              track={rgba}
+              layerTStartUs={layer.t_start_us}
+              clipDurationUs={layer.t_end_us - layer.t_start_us}
+              pxPerSec={pxPerSec}
+              height={height}
+              onOpenInterpMenu={onOpenInterpMenu}
+            />
+          );
+        }
+        const trk = readLayerParamTrack(layer, desc);
+        if (!trk || trk.mode !== "Keyframed") return null;
+        return (
+          <LayerCurveLane
+            key={layer.id}
+            layerId={layer.id}
+            paramKey={paramKey}
+            track={trk}
+            layerTStartUs={layer.t_start_us}
+            clipDurationUs={layer.t_end_us - layer.t_start_us}
+            pxPerSec={pxPerSec}
+            height={height}
+            editable={expanded && focusedLayerId === layer.id && !layer.locked && !track.locked}
+            onCommitParamTrack={onCommitParamTrack}
+            onOpenInterpMenu={onOpenInterpMenu}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function LayerCurveLane({
+  layerId, paramKey, track, layerTStartUs, clipDurationUs, pxPerSec, height,
+  editable, onCommitParamTrack, onOpenInterpMenu,
+}: {
+  layerId: string;
+  paramKey: string;
+  track: Extract<AnimTrack<number>, { mode: "Keyframed" }>;
+  layerTStartUs: number;
+  clipDurationUs: number;
+  pxPerSec: number;
+  height: number;
+  editable: boolean;
+  onCommitParamTrack: (layerId: string, paramKey: string, t: ParamTrack) => void;
+  onOpenInterpMenu: OpenInterpMenu;
+}) {
+  const isSelected = useIsKeyframeSelected(layerId, paramKey);
+  return (
+    <KeyframeCurveGraph
+      track={track}
+      layerId={layerId}
+      paramKey={paramKey}
+      layerTStartUs={layerTStartUs}
+      clipDurationUs={clipDurationUs}
+      pxPerSec={pxPerSec}
+      height={height}
+      editable={editable}
+      isSelected={isSelected}
+      onFocusSeek={(kfId) => {
+        const kf = track.value.find((k) => k.id === kfId);
+        if (!kf) return;
+        setKeyframeFocus(layerId, paramKey);
+        transportSeek(layerTStartUs + kf.t_us);
+      }}
+      onSetTangent={(kfId, side, xy) =>
+        onCommitParamTrack(layerId, paramKey, setTangent(track, kfId, side, xy))
+      }
+      onSetContinuity={(kfId, continuity) =>
+        onCommitParamTrack(layerId, paramKey, setContinuity(track, kfId, continuity))
+      }
+      onOpenMenu={(cx, cy, kfId) => onOpenInterpMenu(cx, cy, layerId, paramKey, kfId)}
+    />
+  );
+}
+
+type KeyframedRgba = Extract<AnimTrack<Rgba>, { mode: "Keyframed" }>;
+
+/// A colour row for one layer: the gradient strip (`ColorLane`) with the
+/// diamonds over it. A colour has no value axis, so there is no curve and no
+/// tangent handle, and the dots sit on the row's centre line — but every
+/// gesture a numeric row's dots carry is the same: the shared drag, the easing
+/// menu, the extrapolation marks. Both the strip and the dots draw an armed
+/// gesture's preview in place of the committed track, so a group retime moves
+/// the colour dots with the numeric ones.
+function ColorKeyLane({
+  layerId, desc, track, layerTStartUs, clipDurationUs, pxPerSec, height, onOpenInterpMenu,
+}: {
+  layerId: string;
+  desc: RgbaParamDescriptor;
+  track: KeyframedRgba;
+  layerTStartUs: number;
+  clipDurationUs: number;
+  pxPerSec: number;
+  height: number;
+  onOpenInterpMenu: OpenInterpMenu;
+}) {
+  useUiScale(); // extrapolation mark gap
+  const { t } = useTranslation();
+  const paramKey = desc.paramKey;
+  const isSelected = useIsKeyframeSelected(layerId, paramKey);
+  const beginKeyframeDrag = useKeyframeDrag();
+  const preview = useTrackPreview(layerId, paramKey);
+  const renderTrack: KeyframedRgba =
+    preview !== null && preview.mode === "Keyframed" && !isNumberTrack(preview)
+      ? (preview as KeyframedRgba)
+      : track;
+  const keys = renderTrack.value;
+  const xOf = (tUs: number) => keyframeAbsoluteX(layerTStartUs, tUs, pxPerSec);
+  const focusSeek = (kfId: string) => {
+    const kf = keys.find((k) => k.id === kfId);
+    if (!kf) return;
+    setKeyframeFocus(layerId, paramKey);
+    transportSeek(layerTStartUs + kf.t_us);
+  };
+  const first = keys[0];
+  const last = keys[keys.length - 1];
+  return (
+    <>
+      <ColorLane
+        track={track}
+        layerId={layerId}
+        paramKey={paramKey}
+        fallback={desc.fallback}
+        layerTStartUs={layerTStartUs}
+        clipDurationUs={clipDurationUs}
+        pxPerSec={pxPerSec}
+        height={height}
+      />
+      {keys.map((k) => {
+        const glyph = interpGlyphClass(k.segment.kind);
+        return (
+          <span
+            key={k.id}
+            className={`kf-diamond kf-sublane-diamond${glyph ? ` ${glyph}` : ""}${isSelected(k.id) ? " is-selected" : ""}`}
+            style={{ left: xOf(k.t_us) }}
+            data-kf-id={k.id}
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              e.stopPropagation();
+              beginKeyframeDrag({
+                layerId,
+                paramKey,
+                kfId: k.id,
+                clientX: e.clientX,
+                clientY: e.clientY,
+                pointerId: e.pointerId,
+                pxPerSec,
+                altKey: e.altKey,
+                onClick: () => focusSeek(k.id),
+              });
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              // A right-click on a key already in the selection leaves the
+              // selection alone — the same rule the value graph's dots apply.
+              if (!isSelected(k.id)) {
+                selectKeyframe({ layerId, paramKey, kfId: k.id });
+                focusSeek(k.id);
+              }
+              onOpenInterpMenu(e.clientX, e.clientY, layerId, paramKey, k.id);
+            }}
+          />
+        );
+      })}
+      {first && last && keys.length > 1 && (["before", "after"] as const).map((side) => {
+        const mode = renderTrack.extrapolate[side];
+        if (mode === "Hold") return null;
+        const k = side === "before" ? first : last;
+        const gap = uiPixels(KF.extrapGlyphGap);
+        const dx = side === "before" ? -gap : gap;
+        return (
+          <span
+            key={`extrap-${side}`}
+            className={extrapolateClass(mode)}
+            data-testid="kf-extrap"
+            data-side={side}
+            title={t(extrapolateLabelKey(mode))}
+            style={{ left: xOf(k.t_us) + dx, top: height / 2 }}
+          >
+            {extrapolateGlyph(mode)}
+          </span>
+        );
+      })}
+    </>
+  );
+}

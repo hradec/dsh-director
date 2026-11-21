@@ -1,0 +1,345 @@
+
+
+/* ============================================================
+   Agent mode shell — 3-pane layout:
+     preview top-left (expanding), mini timeline bottom-left
+     (as tall as its rows), record panel right (~360 px wide).
+   Replaces the editor body when agent view is selected. Work
+   sessions have an independent lifecycle.
+
+   Visual language mirrors the editor's dock workspace
+   (styles/workspace.css): a recessed pure-black well, one
+   uniform --card island per pane, and 6 px gaps (the
+   WEFT_DOCK_THEME gap) doing the region separation — no drawn
+   borders. The panes are fixed in place (no dragging, no
+   docking); the only adjustable seam is the record panel's
+   width, via the sash in the column gap.
+   ============================================================ */
+
+.agent-mode-shell {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  /* Record-panel width comes from the sash (AgentMode.tsx sets
+     --agent-record-width inline); the fallback is the default width. */
+  grid-template-columns: 1fr var(--agent-record-width, calc(360 * var(--ui-px)));
+  /* The titlebar row is the shared chrome band (--app-chrome-height in
+     app.css), so entering agent mode never changes the caption bar's height.
+     The token also keeps the row tall enough to contain the macOS traffic
+     lights the OS draws over it — a shorter row leaves them hanging past the
+     strip onto the black well.
+     The third row is the preview/mini gutter, spelled as a track instead of a
+     row-gap: the gap has to separate the PANES without also cutting a black
+     strip between the caption bar and the panes it sits on. The titlebar is
+     window chrome, not a pane — it belongs against them, the way .app-header
+     meets .dock-workspace in the editor.
+     The last row is the mini timeline's own height: its rows are all themed
+     (ui-px and text roles), so a fixed track here would either clip them or
+     squeeze the strip whenever a preset or a row changes. */
+  grid-template-rows: var(--app-chrome-height) 1fr calc(6 * var(--ui-px)) auto;
+  grid-template-areas:
+    "titlebar titlebar"
+    "preview  record"
+    ".        record"
+    "mini     record";
+  /* Same inter-pane gap as WEFT_DOCK_THEME: the black well shows through
+     and separates the panes as depth, like dock groups. Columns only —
+     the row gutter is the explicit track above. */
+  column-gap: calc(6 * var(--ui-px));
+  row-gap: 0;
+  /* The recessed well behind the panes — pure black, one step below
+     --surface-sunken, same as .dock-workspace. */
+  background: #000;
+  color: var(--foreground);
+}
+
+/* Frameless window: agent mode's slim drag strip + caption buttons. Kept on
+   --background so it reads as the app-chrome band above the dock well, like
+   .app-header over .dock-workspace in the editor. */
+.agent-titlebar {
+  grid-area: titlebar;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  /* The bar rhythm sits BETWEEN items, so on macOS — no caption buttons — the
+     exit pill ends at the shared right inset rather than a trailing gap. */
+  gap: var(--app-chrome-gap);
+  background: var(--background);
+  user-select: none;
+}
+
+/* Exit-to-editor button at the titlebar's top-right: vertically centered
+   against the stretch-aligned caption buttons it precedes. The height is
+   pinned to 22px rather than left to the button's intrinsic box (16px line +
+   2×4px padding + borders ≈ 25.8px) so the pill matches .locale-toggle, the
+   editor header's pill in the same corner of the same-height bar. The padding
+   goes with the height, or the 16px line box would overflow the shortened
+   content box.
+   NOT a pixel-exact centring: the window edge (base.css) paints over the
+   bar's first row, so the visible band is a row shorter than the box and
+   the pill lands up to half a device pixel high. Deliberately left there. */
+.agent-titlebar .agent-exit-button,
+.agent-titlebar .status-bar-slot {
+  align-self: center;
+  height: calc(22 * var(--ui-px));
+  padding-block: 0;
+}
+
+/* The bell's dot is ringed in the surface it sits on. */
+.agent-titlebar .status-bell-dot {
+  box-shadow: 0 0 0 calc(2 * var(--ui-px)) var(--background);
+}
+
+/* This row has no padding for the negative margins to cancel — but keep the
+   4px the shared rule puts before the buttons, so the exit pill clears them by
+   the same 16px as in the editor header. */
+.agent-titlebar .window-controls {
+  margin: 0 0 0 calc(4 * var(--ui-px));
+}
+
+.agent-preview {
+  grid-area: preview;
+  position: relative;
+  /* Same --card island as the dock workspace's Preview Panel (preview.css):
+     the canvas paints only the composition, the pane owns the surround. */
+  background: var(--card);
+  overflow: hidden;
+}
+
+.agent-preview .video-surface,
+.agent-preview #video-surface {
+  width: 100%;
+  height: 100%;
+}
+
+.agent-mini-timeline {
+  grid-area: mini;
+  /* Uniform --card island, like every dock Panel surface. */
+  background: var(--card);
+  padding: calc(8 * var(--ui-px)) calc(12 * var(--ui-px));
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: calc(6 * var(--ui-px));
+}
+
+.agent-record {
+  grid-area: record;
+  background: var(--card);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* The shared AgentPanel (connection status + activity stream) fills its host: this
+   grid cell in agent mode (flex column), the dock Panel's content region
+   in the editor (sized by .weft-dock-panel > .agent-panel). */
+.agent-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Record-panel width sash: overlays the 6px inter-column gap with a few px
+   of extra hit area each side. Matches the dockview sashes in the main
+   workspace: the black gap stays the visual separator and hover shows no
+   tint — the sash only carries the ew-resize cursor affordance.
+   Keyboard support (role=separator + arrow keys) lives in AgentMode.tsx. */
+.agent-width-sash {
+  position: absolute;
+  /* Starts where the panes do — directly below the titlebar row, so the sash
+     covers the full seam without ever reaching into the window drag strip.
+     Tracks the row's height by sharing its token. */
+  top: var(--app-chrome-height);
+  bottom: 0;
+  /* Centered on the column gap: the gap runs 6px left of the record
+     panel's edge, so its midpoint sits 3px left of that edge. */
+  right: calc(var(--agent-record-width, calc(360 * var(--ui-px))) - calc(2 * var(--ui-px)));
+  width: calc(10 * var(--ui-px));
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.agent-width-sash:focus-visible {
+  outline: none;
+}
+
+/* WebCodecs smoke harness. Dev-mode only; not user-facing. */
+.realtime-preview-smoke {
+  display: flex;
+  flex-direction: column;
+  gap: calc(12 * var(--ui-px));
+  width: 100%;
+  height: 100%;
+  padding: calc(12 * var(--ui-px));
+  overflow: auto;
+  color: var(--color-zinc-200);
+  font-size: var(--font-size-body);
+}
+
+.realtime-preview-header {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--ui-px));
+  border-bottom: 1px solid var(--border-on-dark);
+  padding-bottom: calc(8 * var(--ui-px));
+}
+
+.realtime-preview-header strong {
+  font-size: var(--font-size-label);
+  color: var(--color-amber-200);
+}
+
+.realtime-preview-hint {
+  color: var(--color-zinc-400);
+  font-size: var(--font-size-caption);
+}
+
+.realtime-preview-hint code {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0 calc(4 * var(--ui-px));
+  border-radius: var(--radius-control);
+  font-family: ui-monospace, Menlo, monospace;
+}
+
+.realtime-preview-capability,
+.realtime-preview-stats {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius-card);
+  padding: calc(8 * var(--ui-px)) calc(10 * var(--ui-px));
+}
+
+.realtime-preview-capability h3,
+.realtime-preview-stats h3 {
+  margin: 0 0 calc(6 * var(--ui-px));
+  font-size: var(--font-size-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-zinc-400);
+}
+
+.realtime-preview-capability ul,
+.realtime-preview-stats ul {
+  margin: 0;
+  padding-left: calc(16 * var(--ui-px));
+  list-style: disc;
+}
+
+.realtime-preview-capability li,
+.realtime-preview-stats li {
+  margin: calc(2 * var(--ui-px)) 0;
+}
+
+.realtime-preview-capability code,
+.realtime-preview-stats code {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0 calc(4 * var(--ui-px));
+  border-radius: var(--radius-control);
+  font-family: ui-monospace, Menlo, monospace;
+}
+
+.realtime-preview-controls {
+  display: flex;
+  gap: calc(8 * var(--ui-px));
+}
+
+.realtime-preview-controls button {
+  padding: calc(6 * var(--ui-px)) calc(12 * var(--ui-px));
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-on-dark);
+  background: rgba(63, 63, 70, 0.5);
+  color: var(--color-zinc-200);
+  cursor: pointer;
+}
+
+.realtime-preview-controls button:hover:not(:disabled) {
+  background: rgba(82, 82, 91, 0.7);
+}
+
+.realtime-preview-controls button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.realtime-preview-canvas-wrap {
+  background: #000;
+  border-radius: var(--radius-card);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(360 * var(--ui-px));
+}
+
+.realtime-preview-canvas {
+  max-width: 100%;
+  max-height: calc(360 * var(--ui-px));
+  background: #000;
+}
+
+.realtime-preview-error {
+  color: var(--color-red-300);
+}
+
+.realtime-preview-divider {
+  width: calc(1 * var(--ui-px));
+  background: var(--border-on-dark);
+  margin: 0 calc(4 * var(--ui-px));
+}
+
+.realtime-preview-overlay-ctrls {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius-card);
+  padding: calc(8 * var(--ui-px)) calc(10 * var(--ui-px));
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(180 * var(--ui-px)), 1fr));
+  gap: calc(6 * var(--ui-px)) calc(12 * var(--ui-px));
+}
+
+.realtime-preview-overlay-ctrls h3 {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: var(--font-size-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-zinc-400);
+}
+
+.realtime-preview-overlay-ctrls label {
+  display: flex;
+  flex-direction: column;
+  gap: calc(2 * var(--ui-px));
+  font-size: var(--font-size-caption);
+  color: var(--color-zinc-300);
+}
+
+.realtime-preview-overlay-ctrls input[type="range"] {
+  width: 100%;
+}
+
+.realtime-preview-overlay-ctrls select {
+  background: rgba(63, 63, 70, 0.5);
+  color: var(--color-zinc-200);
+  border: 1px solid var(--border-on-dark);
+  padding: calc(4 * var(--ui-px)) calc(6 * var(--ui-px));
+  border-radius: var(--radius-control);
+}
+
+/* Recipe playback section in the smoke harness. */
+.realtime-preview-playback {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius-card);
+  padding: calc(8 * var(--ui-px)) calc(10 * var(--ui-px));
+  display: flex;
+  flex-direction: column;
+  gap: calc(8 * var(--ui-px));
+}
+
+.realtime-preview-playback h3 {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-zinc-400);
+}

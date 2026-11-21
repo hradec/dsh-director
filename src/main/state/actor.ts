@@ -1,0 +1,2537 @@
+import { applyRetimeLayers, applyPreservePitch } from './mutations/retime'
+import type { RetimeTarget } from '../../shared/timeMapping'
+// apps/desktop/src/main/state/actor.ts
+import { isDeepStrictEqual } from 'node:util'
+import { produce, setAutoFreeze } from 'immer'
+import { assertLockedLayersUnchanged } from './layerLocks'
+import type { Animated, AudioRole, Composition, Continuity, Interpolation, LayerParams, MarkerAnchor, MotifRebindEntry, Project, Rational, Rgba, TransitionKind, Uuid , TextParams} from './model'
+import { blankProject, eachLayer, rootComposition } from './model'
+import type { IdGen } from './ids'
+import { History, type Actor, type EntityRef, type TrackFlagsPatch, type RoleFlagsPatch, type ReviewState, type OpDiff } from './history'
+import { mcpActor } from './mcp-actor'
+import { HISTORY_SUMMARY, addedLayersSummary, groupAddMembersSummary, groupCreateSummary, layersEnabledSummary, moveToCompositionSummary, pastedLayersSummary, projectMotifSummary, removedMediaSummary, removedProjectMotifSummary, roleGainSummary, updatedProjectMotifSummary, type HistorySummary } from './history-labels'
+import { motifUsers, parseMotifSource, parseRevision } from './mutations/projectMotifs'
+import { CommandFailure, ValidationFailure, type CommandError } from './errors'
+import { validate, reconcileMarkers, reconcileTransitions, type DroppedMarker, type DroppedTransition } from './validate'
+import { gridForLayerKind, snapFrameCeil, snapFrameRound, snapOnGrid } from './snap'
+import { applyRestyleToTaste, type RestyleGroup } from './mutations/restyleTaste'
+import { styleText } from '../taste/apply'
+import { motifTokenProps } from '../taste/motifProps'
+import { captionLimits } from '../../shared/craft'
+import { keyTimeUs } from '../../shared/keyframe'
+import { buildLimits } from './mutations/captionSegments'
+import type { Tokens } from '../taste/schema'
+import { checkComposition } from '../lint/checkComposition'
+import { DEFAULT_MARKER_COLOR, applyAddGroupLayer, applyAddLayer, applyAddMarker, applyAddTrack, colorParams, textParamsDefault } from './mutations/add'
+import { applyMoveLayer, applyMoveLayerSet, applyMoveLayers, applyMoveLayersToNewTrack, type MovePlacement, type MoveSetRequest, type MoveSetResult } from './mutations/move'
+import { applyShiftLayersFrom, type ShiftLayersResult } from './mutations/shift'
+import { formatSrt, formatVtt } from '../../shared/subtitleFormat'
+import { applyRestackLayer, applyRestackLayerAgainstTrack, type RestackPosition } from './mutations/restack'
+import { applyTrimLayer } from './mutations/trim'
+import { applyDeleteLayer } from './mutations/delete'
+import { withTrackCleanup } from './mutations/trackCleanup'
+import { applyRippleDeleteGap, applyRippleDeleteLayers, type RippleDeleteResult, type RippleGapResult } from './mutations/ripple'
+import { applyPasteLayer, applyPasteLayers, pasteLayerInterval } from './mutations/duplicate'
+import { applySplitLayer, applySplitLayerBatch, parseDiscardSegments } from './mutations/split'
+import { applyLinksCreate, applyLinksDissolve, applyLinksAddMembers, applyLinksRemoveMembers, linkSiblingsExcluding } from './mutations/links'
+import { serveProjectResource } from './resource-views'
+import { applyCompositionsDelete, applyGroupsAddMembers, applyGroupsCreate, applyGroupsRename, applyGroupsUngroup, type GroupCreateResult } from './mutations/groups'
+import { applyMoveLayersToComposition } from './mutations/moveToComposition'
+import { applySetLayerFlags, applySetLayersEnabled, applyUpdateLayer, type LayerPatch } from './mutations/update'
+import { applyFitComposition } from './mutations/composition'
+import { applyDurationAutofit, compositionOf, locateLayer, locateTrack, requireLayer, requireSameComposition, requireTrack, scopeComposition } from './mutations/helpers'
+import { applyAttachMarker, applyDetachMarker, applyUpdateMarker, applyRemoveMarker, type MarkerPatch } from './mutations/markers'
+import { applyDeleteTrack, applyMoveTrack, applyRenameTrack } from './mutations/tracks'
+import { applyAddEffect, applyUpdateEffect, applyMoveEffect, applyRemoveEffect, type EffectPatch } from './mutations/effects'
+import { applyAddTransition, applyRemoveTransition, applyUpdateTransition, type TransitionBounce } from './mutations/transitions'
+import { videoClipParams, audioParams, imageOverlayParams, mediaExtent, applySeparateAudio, mediaItemTemplate,
+  applySetMediaDerivatives, applySetMediaWorkspacePaths, applySetMediaHash, applyRebaseMedia, referencingLayers,
+  type MediaDerivativesPatch, type WorkspacePaths } from './mutations/media'
+import type { MediaItem } from './model'
+import { isProjectPath } from '../../shared/projectPath'
+import { applyParamsPatch, applyUpdateLayerParams, applyUpdateLayerParamTrack, type LayerParamsPatch } from './mutations/params'
+import { applySetScaleLinked, copyTrackFreshIds, enforceScaleLinkInvariant, transformOf } from './mutations/scaleLink'
+import type { Manifest, MotifManifests } from '../../shared/motifs/catalog'
+import { isProjectMotifKey, motifEntry, type MotifStatus, type ProjectMotifEntry, type ProjectMotifs } from '../../shared/motifs/projectMotifs'
+import { applyAddCaptionTrack, applyRestyleCaptions, captionTracks, type Cue, type CaptionStylePatch, applyMergeCaptions, type MergeCaptionsResult } from './mutations/captions'
+import { applyRebindMotif, motifLayerParams } from './mutations/motif'
+import { canonicalizeProps, resolveMotifMaxDurUs, resolveMotifTEndUs, MotifPropError } from '../../shared/motifs/catalog'
+import { mediaPropProblem } from '../../shared/motifs/mediaProp'
+import { parseMechanical, prodColorParams, prodTextParams, prodMediaLayer, resolveDurationUs, pickFreeOverlayTrack, demoColor } from './commands'
+import { mapCommandError, MCP_ARG_PARSERS, toolEmpty, toolText, checkEffectPatchAgainst, checkEffectParamValues, parseUuid, parseNum, parseNumOpt, parseStr, parseBool, parseTransitionKind, parseTransitionKindOpt, parseTransitionPlacement, McpArgError, shapeGetParamTrack, keyframePresent, mcpDef, easingSegment, TEXT_SCALE_RULE, type AddLayerSpec, type McpCallResult, type McpToolErrorJson, type TrackValue , SCOPED_PROJECT_VIEWS} from './mcp-commands'
+import { upsertKeyframe, removeKeyframe, retimeKeyframe, setSegmentEasing, setAuto, setTangent, setContinuity } from './keyframeEdits'
+import { MCP_RESULT_READERS, adjusted, committedTrackResult, keyframeByIdResult, linkRecord, markerRecord, newLayerIds, paramTrackResult, setKeyframeResult, splitSiblings, toolRecord, type ResultCtx } from './mcp-results'
+import { readLayerTrack, parseEffectParamKey } from './mutations/params'
+import { effectsCatalogView } from '../../shared/effects/catalogView'
+import { applySetPosition, applyTranslatePath, applyTranslatePosition } from './mutations/position'
+import { applyTextCorrection, applyTranscripts, sourceSignature, type CorrectionMode } from './mutations/textCorrection'
+import { CORRECTION_SCRIPT_MAX, type TextCorrectionExpectation } from '../../shared/textCorrectionRequest'
+import type { TranscriptPayload } from '../../shared/captionTiming'
+import type { PositionAnimation } from '../../shared/position'
+
+import { currentEditTrace, measureEditStage } from '../../shared/editTrace'
+import type { PathPlatform } from './projectPathNative'
+
+setAutoFreeze(true) // snapshots are frozen — accidental mutation throws.
+
+export type Clock = () => string
+export type DiffHint = { kind: 'Coarse' } | { kind: 'Layer'; id: Uuid } | { kind: 'Composition' }
+/** `from_history`: the state came back from the stack — undo, redo, a jump, a
+ *  checkpoint restore, Review's revert all — so files that follow the
+ *  project's records (`Motifs/`) are put back to match it. */
+export interface ChangeEvent { op_id: Uuid; history_op_id?: Uuid; actor: Actor; timestamp: string; summary: string; affected: EntityRef[]; new_snapshot: Project; diff_hint: DiffHint; replaced?: true; from_history?: true }
+
+/** The open project's Motif folders and the library they are placed from, as
+ *  the actor reads them; the host serves them from `main/motif/`. */
+export interface ProjectMotifAccess {
+  /** The manifest `Motifs/<id>/` declares; null when the folder makes no
+   *  package. */
+  manifest(id: string): Manifest | null
+  /** Whether `Motifs/<id>/` is there and makes a package. */
+  status(id: string): MotifStatus
+  /** Library Motif `id` (a built-in included) copied into `Motifs/` for a
+   *  project whose table is `table`, before the commit that records it: the
+   *  id it is placed under (a lineage the table holds keeps its id, another
+   *  lineage on the id takes `collisionId`), the entry to record and its
+   *  manifest. Null when the library has no `id`; throws when the copy
+   *  cannot be made. */
+  place(id: string, table: Readonly<ProjectMotifs>): { id: string; entry: ProjectMotifEntry; manifest: Manifest } | null
+}
+
+/** The lattice a layer's keys are written on, as a snap of a layer-local µs:
+ *  the frame grid of its composition, or 48 kHz samples for Audio — the snap
+ *  `applyUpdateLayerParamTrack` applies at write time. */
+/** MCP's linked Scale (CONTEXT "Linked scale"), the UI fan-out's rule: while
+ *  the layer is linked and stays linked, a patch naming one scale axis writes
+ *  that value to both. `linkTo === false` unlinks first, so the axis lands
+ *  alone; two axes sent are taken as sent (unequal ones clear the link). */
+function fanOutLinkedScale(p: Project, layer: Uuid, patch: LayerParamsPatch, linkTo: boolean | undefined): LayerParamsPatch {
+  const t = (() => { const l = locateLayer(p, layer)?.layer; return l ? transformOf(l) : null })()
+  if (!t || linkTo === false || (linkTo !== true && t.scale_linked !== true)) return patch
+  const o = patch as { scale_x?: number; scale_y?: number }
+  if ((o.scale_x === undefined) === (o.scale_y === undefined)) return patch
+  const v = (o.scale_x ?? o.scale_y) as number
+  return { ...patch, scale_x: v, scale_y: v } as LayerParamsPatch
+}
+
+function keyLatticeOf(p: Project, layer: Uuid): (localUs: number) => number {
+  const loc = locateLayer(p, layer)
+  if (!loc) return (t) => t
+  const grid = gridForLayerKind(loc.layer.params.kind, loc.comp.fps)
+  return (t) => snapOnGrid(t, grid)
+}
+
+/** `validate` names the EARLIER-starting layer of a colliding pair `a` and the
+ *  later one `b`, while the mapper reads `a` as the blocker and `b` as the
+ *  requested range. A request placed before an existing layer arrives inverted,
+ *  and its options then name the caller's own layer — which, on an add, the
+ *  discarded draft never committed. The request is the layer the pre-call
+ *  snapshot does not hold, else the layer the call named; swapping the pair
+ *  restores the mapper's reading. */
+function orientOverlap(e: CommandError, before: Project, subjects: readonly Uuid[]): CommandError {
+  if (e.error !== 'ValidationFailed' || e.detail.rule !== 'LayerOverlap') return e
+  const d = e.detail
+  const aExisted = locateLayer(before, d.a) != null
+  const bExisted = locateLayer(before, d.b) != null
+  const requestIsA = aExisted !== bExisted ? !aExisted : subjects.includes(d.a) && !subjects.includes(d.b)
+  if (!requestIsA) return e
+  return { error: 'ValidationFailed', detail: { ...d, a: d.b, a_start: d.b_start, a_end: d.b_end, b: d.a, b_start: d.a_start, b_end: d.a_end } }
+}
+
+/** The layer ids a table-exec call addresses, read from its parsed args. */
+function subjectsOf(args: Record<string, unknown>): Uuid[] {
+  const out: Uuid[] = []
+  if (typeof args.layer === 'string') out.push(args.layer)
+  if (Array.isArray(args.layers)) for (const l of args.layers) if (typeof l === 'string') out.push(l)
+  return out
+}
+
+/** `effects[<id>].params[<key>]` written as keyframes: the kind's catalogued
+ *  range holds here as it does on `update_effect`, or one path would refuse
+ *  what the other stores. */
+function checkEffectKeyframeValues(p: Project, layerId: Uuid, paramKey: string, values: readonly unknown[], field: string): void {
+  const eff = parseEffectParamKey(paramKey)
+  if (!eff) return
+  const kind = locateLayer(p, layerId)?.layer.effects.find((e) => e.id === eff[0])?.kind
+  if (kind) checkEffectParamValues(kind, eff[1], values, field)
+}
+
+/** Status-log row payload — structurally matches TsActorHostDeps.emitLog so the
+ *  host passes its LogBus seam (backend `log_emit`) straight through. Schema:
+ *  docs/status-log.md. */
+export interface ActorLogEntry {
+  level: 'trace' | 'debug' | 'info' | 'warn' | 'error'
+  category: { kind: string; name?: string }
+  source: { kind: 'User' } | { kind: 'Agent'; client: string } | { kind: 'System' }
+  message: string
+  details?: Record<string, unknown>
+}
+
+export interface ActorOptions {
+  assertWritable?: () => void
+  initial: Project; idGen: IdGen; clock?: Clock; actor?: Actor
+  /** Absent (tests, a bare actor): no Motif folder is readable and nothing
+   *  can be placed from a library. */
+  motifs?: ProjectMotifAccess
+  /** Live app preference, sampled for each edit; never part of history. */
+  autoDeleteEmptyTracks?: () => boolean
+  /** Live default for authored text, shared by UI and MCP. */
+  defaultTextFont?: () => string | undefined
+  /** The project's merged style tokens (`project://taste`), which new layers
+   *  are born in. Absent (tests, a bare actor): today's defaults. */
+  tasteTokens?: () => Tokens | null
+  /** Font families installed on this machine, lowercased, for a style's font
+   *  slots (`font_<slot>` Motif props). Absent or null: not known yet, so a
+   *  slot gets its whole preference list. */
+  installedFonts?: () => ReadonlySet<string> | null
+  /** Status-log seam (reconcile-dropped-transition rows). Optional → no-op when
+   *  omitted (tests that do not care about logging). Called AFTER a successful
+   *  commit is recorded; a throwing emit is caught and must never abort. */
+  emitLog?: (entry: ActorLogEntry) => void
+}
+export type DispatchResult = { ok: true; value: unknown } | { ok: false; error: CommandError }
+
+export interface ActorHandle {
+  snapshot(): Project
+  /** `by` attributes this one call's commits and checkpoints to someone other
+   *  than the instance actor — how an MCP hybrid's writes carry its client. */
+  dispatch(channel: string, args: Record<string, unknown>, by?: Actor): DispatchResult
+  command(channel: string, wireArgs: Record<string, unknown>): DispatchResult
+  replaceState(next: Project): void
+  subscribe(cb: (e: ChangeEvent) => void): () => void
+  historyView(limit: number): ReturnType<History['view']>
+  historyStatus(): ReturnType<History['status']>
+  historyEffects(ids: readonly string[]): ReturnType<History['effectStates']>
+  /** The stack cap — the `limit` a "give me the WHOLE stack" read should pass to
+   *  `historyView` (the history panel's read; MCP's `view(100)` is a different
+   *  consumer with a different need). Delegates to History so the number is never
+   *  restated at a call site. */
+  historyCapacity(): number
+  /** Block every revert path (undo, redo, jump_to, restore, Revert all) with
+   *  `HistoryLocked { reason }` — except for a call `holderMay` answers true
+   *  for: a work session's own reverts stay open under the lock it took. */
+  lockHistory(reason: string, holderMay?: () => boolean): void
+  unlockHistory(): void
+  /** Cursor-only random access; rejects under the revert lock. See jumpTo. */
+  jumpTo(index: number): void
+  checkpoint(label: string, cpActor?: Actor): Uuid
+  restoreCheckpoint(id: Uuid): void
+  deleteCheckpoint(id: Uuid): void
+  listCheckpoints(): Array<{ id: Uuid; label: string; actor: Actor; created_at: string }>
+  /** Review (ADR 0115). The baseline compared against the current state —
+   *  memoized, computed only when asked. */
+  reviewState(): ReviewState
+  /** The baseline revision, without computing the state. */
+  reviewRevision(): number
+  /** Work session begin: pin the Review baseline to the session's `Pre-agent`
+   *  checkpoint (current state when `checkpointId` is absent or gone).
+   *  Initializes when there is none; re-pins only when nothing is unreviewed.
+   *  Returns whether the baseline was (re)pinned. */
+  pinReviewBaseline(checkpointId?: Uuid): boolean
+  /** Approval records nothing, emits no project change and ignores the
+   *  history lock. */
+  approveReviewAll(): void
+  /** Restore the Review baseline as one recorded commit — a revert path, so
+   *  under the history lock like restore_checkpoint (`HistoryLocked`);
+   *  `InvalidArgument` without a baseline. Burns restore's two ids. */
+  revertReviewAll(): void
+  /** What the recorded ops `ids` did — `History.opDiff`; a read. */
+  reviewOpDiff(ids: readonly Uuid[]): OpDiff
+  /** Told the new baseline revision on every baseline change (initialize,
+   *  re-pin, approval, attribution, reset) — synchronously, possibly inside a
+   *  commit; a consumer should defer its own work. */
+  subscribeReview(cb: (revision: number) => void): () => void
+  /** Everything the call records is stamped with the agent `client` names
+   *  (normalized; the fallback when absent), never the instance actor. */
+  mcpCall(name: string, argsJson: string, client?: string): McpCallResult
+}
+
+export function createActor(opts: ActorOptions): ActorHandle {
+  const idGen = opts.idGen
+  const clock: Clock = opts.clock ?? (() => '<TS>')
+  const actor: Actor = opts.actor ?? { kind: 'User' }
+  /** Who the call in flight records as, when that is not the instance actor.
+   *  Set only across a SYNCHRONOUS dispatch/mcpCall and restored in a finally,
+   *  so two async hybrids interleaving can never read each other's: each one's
+   *  commits happen inside its own synchronous dispatch. */
+  let callActor: Actor | null = null
+  const who = (): Actor => callActor ?? actor
+  function recordingAs<T>(by: Actor, fn: () => T): T {
+    const prev = callActor
+    callActor = by
+    try { return fn() } finally { callActor = prev }
+  }
+  const history = new History(opts.initial, actor, idGen(), clock()) // consumes the Initial op_id
+  const subs = new Set<(e: ChangeEvent) => void>()
+  const reviewSubs = new Set<(revision: number) => void>()
+  history.onReviewChange((rev) => {
+    for (const cb of reviewSubs) {
+      try { cb(rev) } catch (err) { console.warn('[actor] review subscriber threw; continuing', err) }
+    }
+  })
+  /** The project's own Motifs: an id its table holds, read from its folder.
+   *  A layer names nothing else (validate). */
+  const motifCatalog: MotifManifests = {
+    get: (id) => Object.hasOwn(current().motifs, id) ? opts.motifs?.manifest(id) ?? undefined : undefined,
+  }
+
+  /** The Motif a placement (`add_motif`, `add_layers`, `add_layer`) lands:
+   *  the project's own when its table holds `requested` and `fromLibrary` is
+   *  not asked, else the library's, copied into `Motifs/` now and recorded
+   *  by the placing commit with its layer (`entry`), so one undo takes both
+   *  and leaves the folder behind, untracked, as one leaves Media/. Every
+   *  refusal names `field`. */
+  function motifToPlace(requested: string, fromLibrary: boolean, field: string): { id: string; manifest: Manifest; entry: ProjectMotifEntry | null } {
+    const table = current().motifs
+    if (!fromLibrary && Object.hasOwn(table, requested)) {
+      const manifest = opts.motifs?.manifest(requested) ?? null
+      // `from_library` copies only into a folder that is gone: one holding
+      // files is never written over.
+      if (!manifest) throw new McpArgError(opts.motifs?.status(requested) === 'invalid'
+        ? `${field}: Motif '${requested}' is in this project but the files in Motifs/${requested}/ make no package; fix them (read_motif lists them and says what is wrong), or have the user take the library's copy with Restore from library in the Motifs panel`
+        : `${field}: Motif '${requested}' is in this project but Motifs/${requested}/ is gone; restore its files, or place the library's copy with from_library: true`, field)
+      return { id: requested, manifest, entry: null }
+    }
+    let placed: ReturnType<ProjectMotifAccess['place']>
+    try { placed = opts.motifs?.place(requested, table) ?? null }
+    catch (error) { throw new McpArgError(`${field}: Motif '${requested}' could not be copied into the project: ${error instanceof Error ? error.message : String(error)}`, field) }
+    if (!placed) throw new McpArgError(`${field}: unknown motif_id '${requested}' — call list_motifs for the catalog`, field)
+    return { id: placed.id, manifest: placed.manifest, entry: placed.entry }
+  }
+
+  function current(): Project { return history.current() }
+
+  /** validate(next) → throw CommandFailure(ValidationFailed) on a rule failure.
+   *  Every path that must reject before minting an op_id calls this. */
+  function runValidate(next: Project): void {
+    try { validate(next) } catch (e) {
+      if (e instanceof ValidationFailure) throw new CommandFailure({ error: 'ValidationFailed', detail: e.err })
+      throw e
+    }
+  }
+
+  /** Run a draft mutation, then reconcile transitions and markers, then
+   *  validate, record, emit — validate FIRST, op_id AFTER validate.
+   *  Returns the recipe's value. Throws CommandFailure on a mutation error or a
+   *  validation failure.
+   *
+   *  Reconcile (Policy B, spec § Edit-interaction policy) runs on EVERY commit
+   *  — trim/move/split/delete/link ops stay transition-blind — inside the same
+   *  produce(), so the drop lands in the SAME snapshot as the edit (one undo
+   *  restores both). add/update/remove_transition need no exemption either:
+   *  their OWN transition holds by construction after apply, and when
+   *  update/remove move the incoming layer through a FOLLOWING transition's
+   *  geometry (B is also from_layer of some B→C), reconcile dropping that
+   *  chained transition — with its status row — is the designed outcome.
+   *
+   *  `reconcileMarkers` rides the same slot for the same three reasons, one
+   *  step later: ordinary edits stay marker-blind, an anchored marker's follow
+   *  (or its drop, when the clip it named was deleted) lands in the same
+   *  snapshot as the edit that caused it, and both reconciles hand back
+   *  primitives rather than draft references. The two are independent — a
+   *  transition drop moves no layer and a marker follow reads no transition —
+   *  so the order between them is free.
+   *
+   *  `summary` is a `HistorySummary` (history-labels.ts), not a bare string: the
+   *  entry records its `.text` verbatim AND its `.key`, so the panel can
+   *  translate the row without an English-prose lookup.
+   *
+   *  `affected` takes a FUNCTION form for the add-shaped ops, whose entity ids
+   *  are minted inside the recipe and so cannot be named from the args. It runs
+   *  once, after validate — a rejected commit never sees ids from a draft that
+   *  was discarded. Its parameter must be ANNOTATED (the named `layerRef` /
+   *  markerRefs` helpers already are): arguments are checked left to right, so
+   *  the annotation is what fixes `T` — and the recipe's return type is then
+   *  checked against it, which is what stops a callback naming an id the recipe
+   *  never returned. */
+  function commit<T>(summary: HistorySummary, affected: EntityRef[] | ((value: T) => EntityRef[]), diff: DiffHint, recipe: (draft: Project) => T): T {
+    opts.assertWritable?.()
+    const trace = currentEditTrace()
+    if (trace) {
+      const compositions = Object.values(current().compositions)
+      trace.fact('markers', compositions.reduce((n, c) => n + c.markers.length, 0))
+      trace.fact('layers', compositions.reduce((n, c) => n + c.tracks.reduce((m, t) => m + t.layers.length, 0), 0))
+    }
+    let value!: T
+    let droppedTransitions: DroppedTransition[] = []
+    let droppedMarkers: DroppedMarker[] = []
+    // produce: a throw inside the recipe aborts and discards the draft.
+    const next = measureEditStage('produce_including_finalize', () => produce(current(), (draft) => {
+      value = measureEditStage('recipe', () => withTrackCleanup(opts.autoDeleteEmptyTracks?.() ?? true, () => recipe(draft)))
+      droppedTransitions = measureEditStage('reconcile_transitions', () => reconcileTransitions(draft))
+      droppedMarkers = measureEditStage('reconcile_markers', () => reconcileMarkers(draft))
+    }))
+    // No-op guard: recording an identical snapshot would waste a history slot and
+    // an op_id, and would fool the undo-unwind property's state-change detector
+    // (two entries with the same state look like "bottom"). By VALUE, because a
+    // recipe that lifts a layer and reinserts it where it was (a move the grid
+    // rounds home) dirties the draft and changes nothing. Immer shares every
+    // untouched subtree, so this walks only what the recipe touched.
+    if (isDeepStrictEqual(next, current())) return value
+    measureEditStage('locked_layer_check', () => assertLockedLayersUnchanged(current(), next))
+    // Every recorded edit is a modification, so `metadata.modified_at` takes
+    // the commit's timestamp — the one cheap dirty signal a client has. After
+    // the no-op guard, so an unchanged draft stays the very same object; before
+    // validate, so what is validated is what is recorded. Unrecorded writes
+    // (settings, the envelope, flags) are setup and leave it alone.
+    const ts = clock()
+    const stamped = measureEditStage('stamp', () => produce(next, (d) => { d.metadata.modified_at = ts }))
+    measureEditStage('validate', () => runValidate(stamped))
+    const refs = typeof affected === 'function' ? affected(value) : affected
+    const opId = idGen() // AFTER validate — failed validate consumes no op_id
+    const by = who()
+    measureEditStage('history_record', () => history.record({ op_id: opId, actor: by, timestamp: ts, summary: summary.text, label_key: summary.key, label_args: summary.label_args, affected: refs, snapshot: stamped }))
+    measureEditStage('notify_subscribers', () => emit({ op_id: opId, actor: by, timestamp: ts, summary: summary.text, affected: refs, new_snapshot: stamped, diff_hint: diff }))
+    logDroppedTransitions(droppedTransitions) // after record — a failed validate logs nothing
+    logDroppedMarkers(droppedMarkers)
+    return value
+  }
+
+  /** One status-log row per reconcile-dropped transition. Best-effort: a
+   *  throwing emit must never abort the (already recorded) commit. */
+  function logDroppedTransitions(dropped: DroppedTransition[]): void {
+    if (dropped.length === 0 || !opts.emitLog) return
+    for (const d of dropped) {
+      try {
+        opts.emitLog({
+          level: 'info',
+          category: { kind: 'Project' },
+          source: logSource(),
+          message: `Transition removed: edit broke its overlap (transition ${d.id}, from ${d.from_layer}, to ${d.to_layer})`,
+          details: { kind: 'TransitionReconcileDrop', transition: d.id, from_layer: d.from_layer, to_layer: d.to_layer, reason: d.reason },
+        })
+      } catch (err) { console.warn('[actor] emitLog failed (transition reconcile)', err) }
+    }
+  }
+
+  /** One status-log row per reconcile-dropped marker — the anchored markers
+   *  whose clip the edit deleted. Same seam and same best-effort discipline as
+   *  logDroppedTransitions, and deliberately NO toast: this app's house pattern
+   *  for a side effect the user did not ask for is prevention plus the status
+   *  bar (issue #18), never an interruption. */
+  function logDroppedMarkers(dropped: DroppedMarker[]): void {
+    if (dropped.length === 0 || !opts.emitLog) return
+    for (const d of dropped) {
+      try {
+        opts.emitLog({
+          level: 'info',
+          category: { kind: 'Project' },
+          source: logSource(),
+          message: `Marker removed: the clip it followed is gone (marker ${d.id}${d.label ? ` "${d.label}"` : ''}, layer ${d.layer})`,
+          details: { kind: 'MarkerReconcileDrop', marker: d.id, composition: d.composition, layer: d.layer, label: d.label },
+        })
+      } catch (err) { console.warn('[actor] emitLog failed (marker reconcile)', err) }
+    }
+  }
+
+  /** One status-log row per overlap-add sibling bounce (same best-effort seam
+   *  as logDroppedTransitions: a throwing emit never aborts the already
+   *  recorded commit). */
+  function logTransitionBounces(bounces: TransitionBounce[]): void {
+    if (bounces.length === 0 || !opts.emitLog) return
+    for (const b of bounces) {
+      try {
+        opts.emitLog({
+          level: 'info',
+          category: { kind: 'Project' },
+          source: logSource(),
+          message: `Transition placement moved layer ${b.layer} to ${b.spawned ? `a new track ${b.to_track}` : `track ${b.to_track}`}: its lane was occupied after the shift`,
+          details: { kind: 'TransitionPlacementBounce', layer: b.layer, from_track: b.from_track, to_track: b.to_track, spawned: b.spawned },
+        })
+      } catch (err) { console.warn('[actor] emitLog failed (transition bounce)', err) }
+    }
+  }
+
+  function logSource(): { kind: 'User' } | { kind: 'Agent'; client: string } {
+    const by = who()
+    return by.kind === 'Agent' ? { kind: 'Agent', client: by.client } : { kind: 'User' }
+  }
+
+  function emit(e: ChangeEvent): void {
+    for (const cb of subs) {
+      try { cb(e) }
+      catch (err) {
+        // A throwing subscriber (e.g. the autosave serialize) must not starve
+        // later subscribers. Warn and continue — cf.
+        // feedback_ui_actor_bridge, feedback_async_block_on_in_async.
+        console.warn('[actor] change subscriber threw; continuing', err)
+      }
+    }
+  }
+
+  /** Snapshot notification with its own event ID. Restore additionally carries
+   *  the recorded history ID; undo/redo and preference changes have none.
+   *  `flag` marks a project swap or a state taken from the stack. */
+  function broadcastUnrecorded(summary: string, snapshot: Project, diff: DiffHint = { kind: 'Coarse' }, historyOpId?: Uuid, flag?: 'replaced' | 'from_history'): void {
+    const opId = idGen() // the unrecorded broadcast's own deterministic id
+    emit({ op_id: opId, ...(historyOpId ? { history_op_id: historyOpId } : {}), ...(flag ? { [flag]: true as const } : {}), actor: who(), timestamp: clock(), summary, affected: [], new_snapshot: snapshot, diff_hint: diff })
+  }
+
+  // ── affected-ref helpers. Every recorded commit names the entities it touched,
+  //    so the history panel can label the row and select on click; a ref set read
+  //    from an id-only arg comes off the PRE-mutation snapshot (same rule as
+  //    restyle_captions'). `EntityRef` has three variants and gains none: it is a
+  //    wire type the MCP resource exposes, and the renderer has no
+  //    selected-transition or selected-link model to receive one.
+  //
+  //    The SINGULAR three double as commit()'s function form — `commit(s, layerRef,
+  //    …)` names whatever layer id the recipe returned. ──
+  function layerRef(id: Uuid): EntityRef[] { return [{ kind: 'Layer', id }] }
+  function trackRef(id: Uuid): EntityRef[] { return [{ kind: 'Track', id }] }
+  function markerRef(id: Uuid): EntityRef[] { return [{ kind: 'Marker', id }] }
+  function layerRefs(ids: Uuid[]): EntityRef[] { return ids.map((id) => ({ kind: 'Layer', id })) }
+  function markerRefs(ids: Uuid[]): EntityRef[] { return ids.map((id) => ({ kind: 'Marker', id })) }
+  /** Both side layers of a transition — "this transition sits between these two".
+   *  Absent transition → `[]`; the apply then rejects and nothing records. */
+  function transitionSideRefs(id: Uuid): EntityRef[] {
+    for (const c of Object.values(current().compositions)) {
+      const t = c.transitions.find((x) => x.id === id)
+      if (t) return layerRefs([t.from_layer, t.to_layer])
+    }
+    return []
+  }
+  /** A link's member layers. Absent link → `[]` (the apply rejects). */
+  function linkMemberRefs(id: Uuid): EntityRef[] {
+    for (const c of Object.values(current().compositions)) {
+      const g = c.links.find((x) => x.id === id)
+      if (g) return layerRefs(g.members)
+    }
+    return []
+  }
+  /** Every Group layer referencing a composition — a composition has no
+   *  `EntityRef` of its own, so a rename row points at the clips it names. */
+  function compositionRefLayers(compositionId: Uuid): EntityRef[] {
+    const ids: Uuid[] = []
+    for (const { layer } of eachLayer(current()))
+      if (layer.params.kind === 'CompositionRef' && layer.params.composition === compositionId) ids.push(layer.id)
+    return layerRefs(ids)
+  }
+  /** Optional `composition_id` arg → the composition, CompositionNotFound for an
+   *  unknown id; absent/null → undefined (the callee defaults to the root). */
+  function compositionArg(a: Record<string, unknown>): Uuid | undefined {
+    const id = a.composition_id
+    if (id === undefined || id === null) return undefined
+    return compositionOf(current(), parseUuid(id, 'composition_id')).id
+  }
+  /** The renderer channel spelling of the same arg (`compositionId`). */
+  function wireCompositionId(wireArgs: Record<string, unknown>): Uuid | undefined {
+    const id = wireArgs.compositionId
+    if (id === undefined || id === null) return undefined
+    return compositionOf(current(), parseUuid(id, 'compositionId')).id
+  }
+  /** An MCP creation tool that names BOTH a track and a composition: the track
+   *  already fixes the composition, so the id is a cross-check — unknown id →
+   *  CompositionNotFound, a track that lives elsewhere → InvalidArgument (it is
+   *  not missing, it is in another composition, and the message says which).
+   *  An unknown track is left to the mutation's own TrackNotFound. */
+  function checkTrackInComposition(trackId: Uuid, compositionId: Uuid | null): void {
+    if (compositionId === null) return
+    const comp = compositionOf(current(), compositionId)
+    const t = locateTrack(current(), trackId)
+    if (t && t.comp !== comp)
+      throw new CommandFailure({ error: 'InvalidArgument', field: 'track_id', detail: `track ${trackId} belongs to composition ${t.comp.id}, not ${compositionId}` })
+  }
+
+  // ── set_composition — the WHOLE composition envelope is setup, never editing:
+  //    one atomic probe validate, then one unrecorded patch fanned out over every
+  //    snapshot + checkpoint. Undo walks past a canvas/rate/duration change without
+  //    reverting it (docs/features.md #undo-stack-scope); an fps change is LOCKED
+  //    once ANY stored snapshot holds a layer. `composition_id` names the
+  //    composition whose canvas / duration the patch sets (root by default); the
+  //    lattice fields cascade to every composition whichever is named. ──
+  function setComposition(patch: Record<string, unknown>): void {
+    const cur = current()
+    const curRoot = rootComposition(cur)
+    const targetId = compositionArg(patch) ?? cur.root_id
+    const CANVAS_KEYS = ['width', 'height', 'fps', 'sample_rate', 'channels', 'color_space', 'background']
+    const canvasChanges = CANVAS_KEYS.some((k) => patch[k] !== undefined)
+    const newFps = (patch.fps as Rational | undefined) ?? curRoot.fps
+    const fpsChanged = patch.fps !== undefined && (newFps.num !== curRoot.fps.num || newFps.den !== curRoot.fps.den)
+
+    // ── The rate lock (spec R2-D1/R2-D2) ─────────────────────────────────────
+    // Reject BEFORE any draft work, so a locked project mints no op_id, patches no
+    // snapshot and emits nothing.
+    //
+    // "Temporal content" is deliberately ONE LAYER ON ANY TRACK — not markers, not
+    // a pinned duration, not imported-but-unplaced media. `blankProject` mints two
+    // tracks and no layers, so a fresh project stays freely re-rateable; marker
+    // re-snapping is lossless, so a stray marker must not brick the rate.
+    //
+    // Judgement scope == write scope: the fps write is unrecorded, so it lands in
+    // every stored snapshot. `History.storedSnapshotsHoldLayer` owns why a
+    // current-state-only test is unsound; `errors.ts` FpsLockedByContent owns the
+    // caller-facing remedy. See docs/features.md #undo-stack-scope.
+    if (fpsChanged) {
+      const layerCount = [...eachLayer(cur)].length // every composition: the fps write lands in all of them
+      // `storedSnapshotsHoldLayer` subsumes the current state; test the live count
+      // first so `locked_by` names the scope the caller can actually act on.
+      const lockedByCurrent = layerCount > 0
+      if (lockedByCurrent || history.storedSnapshotsHoldLayer()) {
+        throw new CommandFailure({
+          error: 'FpsLockedByContent', current: curRoot.fps, requested: newFps,
+          layer_count: layerCount, locked_by: lockedByCurrent ? 'current' : 'history',
+        })
+      }
+    }
+
+    const durationChange = typeof patch.duration_us === 'number'
+      ? snapFrameRound(patch.duration_us, newFps.num, newFps.den) : undefined
+
+    // The whole patch as a recipe that is correct for ANY stored snapshot, not
+    // just the current one — this is what makes the unrecorded fan-out sound:
+    //   · canvas fields copy verbatim (they describe the output, not the content),
+    //   · the fps re-snap runs against THAT snapshot's own markers and layers,
+    //   · `applyDurationAutofit` floors a pinned duration at THAT snapshot's own
+    //     content high-water mark, so no snapshot ends up shorter than its own
+    //     content.
+    //   · fps / sample_rate / channels CASCADE to every composition (single lattice,
+    //     ADR 0052 §5) — the canvas and duration are the TARGET's alone. Without the
+    //     cascade a rate change on a project holding a Group fails validate with
+    //     CompositionLatticeMismatch. A snapshot that predates the target (a Group
+    //     created later) takes the cascade and nothing else.
+    const LATTICE_KEYS = ['fps', 'sample_rate', 'channels'] as const
+    const latticePatch: Record<string, unknown> = {}
+    for (const k of LATTICE_KEYS) if (patch[k] !== undefined) latticePatch[k] = patch[k]
+    const buildProbe = (d: Project): void => {
+      const dTarget = d.compositions[targetId]
+      if (dTarget) {
+        applyCanvasFields(dTarget, patch)
+        if (durationChange !== undefined) { dTarget.duration_us = durationChange; dTarget.duration_pinned = true }
+      }
+      for (const c of Object.values(d.compositions)) {
+        if (c !== dTarget) applyCanvasFields(c, latticePatch)
+        if (fpsChanged) resnapComposition(c)
+        // Canvas fields do not change a content high-water mark. Only a new
+        // frame grid or this composition's explicit duration needs refitting;
+        // avoid walking every layer of every stored snapshot for a width edit.
+        if (fpsChanged || (c === dTarget && durationChange !== undefined)) applyDurationAutofit(c)
+      }
+    }
+    /** Re-snap one composition's grid-bound fields onto its (new) frame grid. */
+    const resnapComposition = (c: Composition): void => {
+      {
+        const nf = c.fps
+        // The layer loop is unreachable BY CONSTRUCTION: the history-scoped rate
+        // lock means EVERY snapshot this recipe runs over is layer-less. It stays
+        // on purpose, as the correctness backstop for the two ways that can change:
+        // a future "match the sequence to the first clip" flow (which sets the rate
+        // while still layer-less, then adds), and any relaxation of the lock. The
+        // marker + duration re-snap below is NOT dead: a layer-less project can hold
+        // both, and validate's grid backstop rejects the whole fps change without it.
+        for (const t of c.tracks) for (const l of t.layers) {
+          // Per-KIND grid: an audio layer lives on the fixed 48 kHz lattice, which
+          // does not move when fps does, so re-snapping it here would be wrong twice
+          // over — it would drop a sample-precise edit AND put the endpoint off the
+          // audio grid the backstop now checks it against (spec R2-D6).
+          const g = gridForLayerKind(l.params.kind, nf)
+          l.t_start_us = snapOnGrid(l.t_start_us, g)
+          l.t_end_us = snapOnGrid(l.t_end_us, g)
+          // Motif src_in_us lives on the COMPOSITION grid (re-snap); VideoClip/
+          // Audio src_in_us is normalized source content time (left untouched).
+          if (l.params.kind === 'Motif') l.params.src_in_us = snapFrameRound(l.params.src_in_us, nf.num, nf.den)
+        }
+        c.duration_us = snapFrameRound(c.duration_us, nf.num, nf.den)
+        // Markers ride the SAME composition grid as layer endpoints, so they
+        // re-snap with them — miss them and validate's grid backstop rejects the
+        // whole fps change (OffGridTime) on any project that has a marker.
+        // `snapMarkerTimes`' collapsed-region REJECTION is deliberately not reused:
+        // an fps change must not fail because a region quantizes to zero frames at
+        // the new rate, so such a region widens to one frame. Order is preserved —
+        // the snap is monotonic.
+        for (const m of c.markers) {
+          m.t_us = snapFrameRound(m.t_us, nf.num, nf.den)
+          if (m.end_t_us !== null && m.end_t_us !== undefined) {
+            const end = snapFrameRound(m.end_t_us, nf.num, nf.den)
+            m.end_t_us = end > m.t_us ? end : snapFrameCeil(m.t_us + 1, nf.num, nf.den)
+          }
+        }
+      }
+    }
+
+    // Validate the CURRENT probe first, then fan out — atomicity: a rejected patch
+    // must not leave half the envelope applied across the stack. Only the current
+    // probe is validated: older snapshots are correct by construction (the recipe
+    // re-snaps and floors per snapshot), and they were already valid at the rate
+    // and content they hold.
+    if (!canvasChanges && durationChange === undefined) return // empty patch → no event
+    const probe = produce(cur, buildProbe)
+    runValidate(probe)
+    if (probe === cur) return // nothing actually moved → no op_id, no broadcast
+
+    opts.assertWritable?.()
+    history.replaceCompositionEverywhere((p) => produce(p, buildProbe))
+    broadcastUnrecorded(compositionSummary(fpsChanged, canvasChanges, durationChange !== undefined),
+      current(), { kind: 'Composition' })
+  }
+
+  function fitCompositionToLayers(compositionId: Uuid | undefined): null {
+    opts.assertWritable?.()
+    const probe = produce(current(), (d) => applyFitComposition(d, compositionId))
+    runValidate(probe)
+    if (probe === current()) return null // already unpinned and fitted → no event
+    // A snapshot that predates the named Group has nothing to refit.
+    history.replaceCompositionEverywhere((p) => compositionId !== undefined && !(compositionId in p.compositions) ? p : produce(p, (d) => applyFitComposition(d, compositionId)))
+    broadcastUnrecorded('Fit composition duration to layers', current(), { kind: 'Composition' })
+    return null
+  }
+
+  /** Event summary for an unrecorded composition patch. Unrecorded events never
+   *  reach the history panel, so this is log/e2e-facing only — but the four
+   *  strings are load-bearing in logs/e2e, so they stay verbatim. */
+  function compositionSummary(fps: boolean, canvas: boolean, duration: boolean): string {
+    if (fps) return 'Updated composition fps'
+    if (canvas && duration) return 'Updated composition canvas and duration'
+    if (canvas) return 'Updated composition canvas'
+    return 'Updated composition duration'
+  }
+  /** Copy the present canvas fields of `patch` into a composition draft. */
+  function applyCanvasFields(c: Composition, patch: Record<string, unknown>): void {
+    if (typeof patch.width === 'number') c.width = patch.width
+    if (typeof patch.height === 'number') c.height = patch.height
+    if (patch.fps) c.fps = patch.fps as Rational
+    if (typeof patch.sample_rate === 'number') c.sample_rate = patch.sample_rate
+    if (typeof patch.channels === 'number') c.channels = patch.channels
+    if (patch.color_space) c.color_space = patch.color_space as Composition['color_space']
+    if (patch.background) c.background = patch.background as Composition['background']
+  }
+
+  // ── meta ──
+  /** Who may still revert under the history lock (`lockHistory`). */
+  let lockHolderMay: (() => boolean) | null = null
+  /** The lock's reason when it blocks the call in flight, else null: the
+   *  holder's own reverts pass. */
+  function revertBlockedBy(): string | null {
+    const reason = history.lockReason()
+    return reason !== null && lockHolderMay?.() !== true ? reason : null
+  }
+  function undo(): void {
+    opts.assertWritable?.()
+    const reason = revertBlockedBy()
+    if (reason !== null) throw new CommandFailure({ error: 'HistoryLocked', reason })
+    const snap = history.undo()
+    if (snap === null) throw new CommandFailure({ error: 'NothingToUndo' })
+    broadcastUnrecorded('Undo', snap, undefined, undefined, 'from_history')
+  }
+  function redo(): void {
+    opts.assertWritable?.()
+    const reason = revertBlockedBy()
+    if (reason !== null) throw new CommandFailure({ error: 'HistoryLocked', reason })
+    const snap = history.redo()
+    if (snap === null) throw new CommandFailure({ error: 'NothingToRedo' })
+    broadcastUnrecorded('Redo', snap, undefined, undefined, 'from_history')
+  }
+  /** Random-access cursor move — the history panel's click-a-row action.
+   *
+   *  Takes the lock check FIRST, exactly like undo/redo/restore_checkpoint:
+   *  jump_to is a revert path (it is undo/redo generalized), so without the check
+   *  it would be a back door around the agent's revert lock. Records no entry.
+   *
+   *  Id burn mirrors undo/redo: a rejected jump (locked or out of range) consumes
+   *  ZERO op_ids, a successful one burns exactly the broadcast's. An in-range jump
+   *  to the CURRENT index is not a rejection — it succeeds and broadcasts, which
+   *  costs one no-op refetch and keeps the arm free of a second no-op branch. */
+  function jumpTo(index: number): void {
+    opts.assertWritable?.()
+    const reason = revertBlockedBy()
+    if (reason !== null) throw new CommandFailure({ error: 'HistoryLocked', reason }) // 0 ids
+    const snap = history.jumpTo(index)
+    if (snap === null) // 0 ids
+      throw new CommandFailure({ error: 'InvalidArgument', field: 'index', detail: `history index ${index} outside [0, ${history.len()})` })
+    broadcastUnrecorded('Jump to history entry', snap, undefined, undefined, 'from_history')
+  }
+  /** `jumpTo` by the op's id, which no later commit shifts: MCP's `jump_to`.
+   *  An id the stack no longer holds (evicted, truncated, never there) is
+   *  refused before anything moves. */
+  function jumpToOp(opId: Uuid): void {
+    const index = history.indexOf(opId)
+    if (index === null) throw new CommandFailure({ error: 'InvalidArgument', field: 'op_id', detail: `no history op ${opId}: project://history lists the ops it holds (the oldest are evicted past the cap; a redo tail is dropped by the next edit)` })
+    jumpTo(index)
+  }
+
+  // ── checkpoints — used by the MCP checkpoint + begin_agent_session tools.
+  //    checkpoint mints 1 id, no op/broadcast; restore success = 2 ids
+  //    (entry op_id then broadcast op_id); CheckpointNotFound/HistoryLocked = 0. ──
+  function checkpoint(label: string, cpActor: Actor = who()): Uuid {
+    opts.assertWritable?.()
+    const id = idGen() // the checkpoint's own id — no commit, no broadcast
+    return history.checkpoint(label, cpActor, id, clock())
+  }
+  function restoreCheckpoint(id: Uuid): void {
+    opts.assertWritable?.()
+    const reason = revertBlockedBy()
+    if (reason !== null) throw new CommandFailure({ error: 'HistoryLocked', reason }) // 0 ids
+    if (!history.hasCheckpoint(id)) throw new CommandFailure({ error: 'CheckpointNotFound', checkpoint: id }) // 0 ids — peek BEFORE mint
+    const opId = idGen() // entry op_id — minted FIRST
+    const snap = history.restoreCheckpoint(id, opId, clock(), who())!
+    broadcastUnrecorded(`Restored checkpoint ${id}`, snap, { kind: 'Coarse' }, opId, 'from_history') // +1 broadcast id (the SECOND id)
+  }
+  function revertReviewAll(): void {
+    opts.assertWritable?.()
+    const reason = revertBlockedBy()
+    if (reason !== null) throw new CommandFailure({ error: 'HistoryLocked', reason }) // 0 ids
+    if (history.reviewBaseline() === null) throw new CommandFailure({ error: 'InvalidArgument', field: 'review', detail: 'no review baseline' }) // 0 ids
+    const opId = idGen()
+    const snap = history.revertToReviewBaseline(opId, clock(), who())!
+    broadcastUnrecorded('Reverted unreviewed changes', snap, { kind: 'Coarse' }, opId, 'from_history')
+  }
+  /** Drop a checkpoint. Absent id → CheckpointNotFound, burning ZERO ids (same
+   *  peek-before-mint convention restoreCheckpoint follows) — and here nothing is
+   *  minted on the success path either: deleting a checkpoint changes no project
+   *  state, so there is no snapshot to broadcast and autosave must not be woken.
+   *  The panel that issued the delete refetches the view for itself.
+   *
+   *  NOT gated on lockReason(): the lock rejects REVERT paths (undo / redo /
+   *  jump_to / restore_checkpoint — docs/features.md #undo-stack-scope) and this
+   *  reverts nothing. */
+  function deleteCheckpoint(id: Uuid): void {
+    opts.assertWritable?.()
+    if (!history.deleteCheckpoint(id)) throw new CommandFailure({ error: 'CheckpointNotFound', checkpoint: id }) // 0 ids
+  }
+  function listCheckpoints(): Array<{ id: Uuid; label: string; actor: Actor; created_at: string }> {
+    // The rows of history_view().checkpoints, actor INCLUDED — only the
+    // snapshot is dropped. The MCP path stores the agent actor.
+    return history.listCheckpoints().map((c) => ({ id: c.id, label: c.label, actor: c.actor, created_at: c.created_at }))
+  }
+
+  // ── move_track — the cur===new no-op must skip
+  //    commit; recording it would burn an op_id and drift every later id. ──
+  function moveTrack(id: Uuid, newPosition: number): void {
+    const curIdx = locateTrack(current(), id)?.trackIndex ?? -1
+    if (curIdx >= 0 && curIdx === newPosition) return // no-op: no record, no broadcast
+    commit(HISTORY_SUMMARY.trackMove, [{ kind: 'Track', id }], { kind: 'Coarse' }, (d) => applyMoveTrack(d, id, newPosition))
+  }
+
+  // ── update_track_flags — UNRECORDED.
+  //    TrackNotFound first; then replace-everywhere + broadcast (burns one id,
+  //    matching broadcast_unrecorded so the det counter stays aligned). ──
+  function updateTrackFlags(id: Uuid, patch: TrackFlagsPatch): void {
+    opts.assertWritable?.()
+    // Any composition: the history patch below searches them all too.
+    if (!Object.values(current().compositions).some((c) => c.tracks.some((t) => t.id === id))) throw new CommandFailure({ error: 'TrackNotFound', track: id })
+    history.replaceTrackFlagsEverywhere(id, patch)
+    broadcastUnrecorded('Updated track flags', current())
+  }
+
+  /** A `path_rel` handed in by a caller (a Rust job, an import) enters the
+   *  pool only as a ProjectPath. */
+  function requirePathRel(v: unknown): void {
+    if (v === null || (typeof v === 'string' && isProjectPath(v))) return
+    throw new CommandFailure({ error: 'InvalidArgument', field: 'path_rel', detail: `not a project path: ${JSON.stringify(v)}` })
+  }
+
+  // ── add_media_item — UNRECORDED. Insert into the
+  //    pool (media id is the caller's, NOT counter-minted), validate the probe,
+  //    then replace the pool EVERYWHERE (durable across undo) + broadcast (burns
+  //    one id). No HistoryEntry. ──
+  function addMediaItem(item: MediaItem): Uuid {
+    opts.assertWritable?.()
+    requirePathRel(item.path_rel)
+    const cur = current()
+    const nextPool = { ...cur.media_pool, [item.id]: item }
+    runValidate({ ...cur, media_pool: nextPool })
+    history.replaceMediaPoolEverywhere(nextPool)
+    broadcastUnrecorded('Imported media', current())
+    return item.id
+  }
+
+  // ── set_media_derivatives — UNRECORDED, NO
+  //    validate. MediaNotFound first (no id); else patch the pool item, replace
+  //    EVERYWHERE (durable across undo) + broadcast (1 id). ──
+  function setMediaDerivatives(id: Uuid, patch: MediaDerivativesPatch): void {
+    const nextPool = applySetMediaDerivatives(current().media_pool, id, patch) // throws MediaNotFound
+    history.replaceMediaPoolEverywhere(nextPool)
+    broadcastUnrecorded('Updated media derivatives', current())
+  }
+  // ── set_media_workspace_paths — UNRECORDED. ──
+  function setMediaWorkspacePaths(id: Uuid, paths: WorkspacePaths): void {
+    requirePathRel(paths.path_rel)
+    const nextPool = applySetMediaWorkspacePaths(current().media_pool, id, paths) // throws MediaNotFound
+    history.replaceMediaPoolEverywhere(nextPool)
+    broadcastUnrecorded('Updated media workspace paths', current())
+  }
+  // ── set_media_hash — UNRECORDED. Hash-first import:
+  //    the standalone BLAKE3 pass sets the real source hash on the pool item
+  //    before derivatives enqueue. Durable across undo (a content fact, not an
+  //    edit). MediaNotFound first (no id); else patch + replace EVERYWHERE. ──
+  function setMediaHash(id: Uuid, hash: string): void {
+    const nextPool = applySetMediaHash(current().media_pool, id, hash) // throws MediaNotFound
+    history.replaceMediaPoolEverywhere(nextPool)
+    broadcastUnrecorded('Updated media hash', current())
+  }
+  // ── rebase_media — UNRECORDED. Save As moved the project to another
+  //    folder: every snapshot's pool is placed there, so an undo after the
+  //    save names the copied files, never the old folder's. Each snapshot
+  //    keeps its own pool (History.mapMediaPoolEverywhere). Broadcast as a
+  //    replacement: the workspace is another one, and nothing the save wrote
+  //    is owed again (autosave). Internal: in no router or MCP list,
+  //    dispatched by the Save As path alone. ──
+  function rebaseMedia(projectDir: string, derivatives: Record<Uuid, MediaDerivativesPatch>, platform?: PathPlatform): void {
+    history.mapMediaPoolEverywhere((pool) => applyRebaseMedia(pool, projectDir, derivatives, platform))
+    broadcastUnrecorded('Moved media to the saved project', current(), { kind: 'Coarse' }, undefined, 'replaced')
+  }
+  // ── remove_media — HYBRID. MediaNotFound → MediaInUse
+  //    (when referenced && !force) → unused path (validate probe BEFORE broadcast,
+  //    durable, 1 broadcast id) | force-cascade (applyDeleteLayer per referencing
+  //    layer + commit, 1 op_id, undoable). The cascade IS delete_layers' delete:
+  //    drop from links (dissolve below two), prune the lane it empties, autofit.
+  //    It has to be that delete: a bare splice leaves a link with dangling
+  //    members, and a forced removal of an auto-paired video+audio pair — the
+  //    one thing the MediaInUse refusal tells the agent to do — dies in
+  //    validate. A locked lane refuses as TrackLocked, as delete_layers would. ──
+  function removeMedia(id: Uuid, force: boolean): void {
+    opts.assertWritable?.()
+    const cur = current()
+    if (!(id in cur.media_pool)) throw new CommandFailure({ error: 'MediaNotFound', media: id })
+    const referencing = referencingLayers(cur, id)
+    if (referencing.length > 0 && !force) throw new CommandFailure({ error: 'MediaInUse', media: id, referenced_by: referencing })
+    if (referencing.length === 0) {
+      const nextPool = { ...cur.media_pool }
+      delete nextPool[id]
+      runValidate({ ...cur, media_pool: nextPool }) // validate-before-broadcast
+      history.replaceMediaPoolEverywhere(nextPool)
+      broadcastUnrecorded(`Removed media ${id}`, current())
+      return
+    }
+    const affected: EntityRef[] = referencing.map((l) => ({ kind: 'Layer', id: l }))
+    commit(removedMediaSummary(id, referencing.length), affected, { kind: 'Coarse' }, (d) => {
+      for (const layerId of referencing) applyDeleteLayer(d, layerId)
+      delete d.media_pool[id]
+    })
+  }
+
+  // ── set_role_gain — RECORDED (undoable). Read the
+  //    role's mix bus (default-filled when absent), override ONLY gain_db
+  //    (muted/solo preserved), reinsert. No affected entities, Coarse hint. ──
+  function setRoleGain(role: string, gainDb: number): void {
+    commit(roleGainSummary(role), [], { kind: 'Coarse' }, (d) => {
+      const cur = d.audio_roles[role]
+      d.audio_roles[role] = { gain_db: gainDb, muted: cur?.muted ?? false, solo: cur?.solo ?? false }
+    })
+  }
+
+  // ── update_role_flags — UNRECORDED (mirrors
+  //    updateTrackFlags). Patch mute/solo into EVERY snapshot + broadcast (burns
+  //    one id). Roles always exist (default-filled), so no not-found branch. ──
+  function updateRoleFlags(role: string, patch: RoleFlagsPatch): void {
+    opts.assertWritable?.()
+    history.replaceRoleFlagsEverywhere(role, patch)
+    broadcastUnrecorded('Updated role flags', current())
+  }
+
+  // ── update_project_settings — UNRECORDED.
+  //    Clone settings, apply the present fields, replace-everywhere + broadcast. ──
+  function updateProjectSettings(patch: {
+    correction_script?: string
+    auto_pair_audio_on_import?: boolean | null
+    prefer_proxies?: boolean | null
+    proxy_override?: { media_id: string; value: boolean | null } | null
+    shot_review?: { sensitivity: number; min_shot_us: number } | null
+    pause_review?: { threshold_amp: number; min_pause_us: number; pad_us: number } | null
+  }): void {
+    opts.assertWritable?.()
+    // Validated whole or refused whole, against the SAME bounds
+    // `reduce_shot_report` enforces at the napi boundary — so a pair that
+    // persists is a pair next session's reduce will accept, and a bad one is
+    // named here rather than surfacing as a failed reduce much later.
+    function reviewedShotParams(v: unknown): { sensitivity: number; min_shot_us: number } | null {
+      if (v === null) return null
+      const o = v as { sensitivity?: unknown; min_shot_us?: unknown }
+      if (typeof o !== 'object' || typeof o.sensitivity !== 'number' || !Number.isFinite(o.sensitivity) || o.sensitivity < 0 || o.sensitivity > 1)
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'shot_review.sensitivity', detail: `sensitivity ${String(o?.sensitivity)} must be a finite number in [0, 1]` })
+      if (typeof o.min_shot_us !== 'number' || !Number.isSafeInteger(o.min_shot_us) || o.min_shot_us <= 0)
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'shot_review.min_shot_us', detail: `min_shot_us ${String(o.min_shot_us)} must be a positive whole number of microseconds` })
+      return { sensitivity: o.sensitivity, min_shot_us: o.min_shot_us }
+    }
+    // Same whole-or-refused discipline, against the bounds the pause pipeline
+    // itself enforces: `threshold_amp` is the wire unit `detect_pauses` takes,
+    // and `2 · pad_us < min_pause_us` is what leaves every detected pause a
+    // core to cut (`hybrids.ts` `pauseCores`). Refusing a triple here rather
+    // than at the cut is what keeps a stored preference one a later removal
+    // will accept.
+    function reviewedPauseParams(v: unknown): { threshold_amp: number; min_pause_us: number; pad_us: number } | null {
+      if (v === null) return null
+      const o = v as { threshold_amp?: unknown; min_pause_us?: unknown; pad_us?: unknown }
+      if (typeof o !== 'object' || typeof o.threshold_amp !== 'number' || !Number.isFinite(o.threshold_amp) || o.threshold_amp < 0 || o.threshold_amp > 1)
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'pause_review.threshold_amp', detail: `threshold_amp ${String(o?.threshold_amp)} must be a finite number in [0, 1]` })
+      if (typeof o.min_pause_us !== 'number' || !Number.isSafeInteger(o.min_pause_us) || o.min_pause_us <= 0)
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'pause_review.min_pause_us', detail: `min_pause_us ${String(o.min_pause_us)} must be a positive whole number of microseconds` })
+      if (typeof o.pad_us !== 'number' || !Number.isSafeInteger(o.pad_us) || o.pad_us < 0)
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'pause_review.pad_us', detail: `pad_us ${String(o.pad_us)} must be a whole number of microseconds >= 0` })
+      if (2 * o.pad_us >= o.min_pause_us)
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'pause_review.pad_us', detail: `pad_us ${o.pad_us} keeps ${2 * o.pad_us}us of every pause, which is not less than min_pause_us ${o.min_pause_us} — nothing would be cut` })
+      return { threshold_amp: o.threshold_amp, min_pause_us: o.min_pause_us, pad_us: o.pad_us }
+    }
+    const next = { ...current().settings, proxy_overrides: { ...current().settings.proxy_overrides } }
+    if (patch.correction_script !== undefined) {
+      if (typeof patch.correction_script !== 'string' || patch.correction_script.length > CORRECTION_SCRIPT_MAX)
+        throw new CommandFailure({ error: 'InvalidArgument', field: 'correction_script', detail: `Reference text must be at most ${CORRECTION_SCRIPT_MAX} characters` })
+      next.correction_script = patch.correction_script
+    }
+    if (typeof patch.prefer_proxies === 'boolean') next.prefer_proxies = patch.prefer_proxies
+    if (typeof patch.auto_pair_audio_on_import === 'boolean') next.auto_pair_audio_on_import = patch.auto_pair_audio_on_import
+    if (patch.proxy_override) {
+      const { media_id, value } = patch.proxy_override
+      // Read back as `settings.proxy_overrides[media_id]`, so an id that names
+      // no pool item would be a key nothing ever resolves — refused as the
+      // media tools refuse it.
+      if (!(media_id in current().media_pool)) throw new CommandFailure({ error: 'MediaNotFound', media: media_id })
+      if (value === null) delete next.proxy_overrides[media_id]
+      else next.proxy_overrides[media_id] = value
+    }
+    // Absent = not in this patch; `null` = clear the tuning and fall back to
+    // the detector's defaults. The refusal above happens BEFORE the replace,
+    // so a rejected patch leaves every snapshot untouched.
+    if (patch.shot_review !== undefined) next.shot_review = reviewedShotParams(patch.shot_review)
+    if (patch.pause_review !== undefined) next.pause_review = reviewedPauseParams(patch.pause_review)
+    history.replaceSettingsEverywhere(next)
+    broadcastUnrecorded('Updated project settings', current())
+  }
+
+  // ── replace_state — wholesale project swap. validate
+  //    FIRST (a failure mints NO id and leaves history intact); on success reset
+  //    history to a single 'Initial' entry (drops the old project's snapshots +
+  //    checkpoints + lock — they reference a different project_id) then broadcast
+  //    unrecorded. modified_at is NOT touched. Mints exactly 2 ids on success
+  //    (reset op_id + broadcast event id); a caller that built `next` via
+  //    blankProject already spent its 4 ids → 6 total. ──
+  function replaceState(next: Project): void {
+    opts.assertWritable?.()
+    runValidate(next)                              // throws CommandFailure(ValidationFailed); no id spent
+    history.reset(next, actor, idGen(), clock())   // +1 id (the 'Initial' op_id)
+    lockHolderMay = null
+    broadcastUnrecorded('Replaced project state', current(), { kind: 'Coarse' }, undefined, 'replaced')  // +1 id (the event op_id)
+  }
+
+  // ── string dispatch — the op-name core that command(), mcpCall() and the unit
+  //    tests all route through. ──
+  function dispatch(channel: string, a: Record<string, unknown>, by?: Actor): DispatchResult {
+    return by ? recordingAs(by, () => dispatchOp(channel, a)) : dispatchOp(channel, a)
+  }
+  function dispatchOp(channel: string, a: Record<string, unknown>): DispatchResult {
+    try {
+      switch (channel) {
+        case 'add_layer': {
+          const kind = a.kind as string
+          let params: LayerParams
+          let motif: ReturnType<typeof motifToPlace> | null = null
+          // Size-dependent defaults read the composition the TRACK lives in,
+          // never the root: a Group carries its own canvas, so centring a text
+          // layer on the root frame would place it outside a smaller one.
+          const into = () => requireTrack(current(), a.track as Uuid).comp
+          switch (kind) {
+            case 'text': params = textParamsDefault('hello', into()); break
+            case 'color': { const c = into(); params = colorParams({ r: 255, g: 0, b: 0, a: 255 }, c.width, c.height); break }
+            case 'video': params = videoClipParams(a.media as Uuid, parseNum(a.src_in_us, 'src_in_us'), parseNum(a.src_out_us, 'src_out_us'), mediaExtent(current().media_pool[a.media as Uuid])); break
+            // Optional `role` override (default 'music'): mirrors the add-layer-site
+            // role stamp at actor.ts add_media_layer auto-pair (role:'dialogue') and the
+            // synthesize_speech hybrid (role:'voiceover').
+            case 'audio': params = a.role
+              ? { ...audioParams(a.media as Uuid, parseNum(a.src_in_us, 'src_in_us'), parseNum(a.src_out_us, 'src_out_us')), role: a.role as AudioRole }
+              : audioParams(a.media as Uuid, parseNum(a.src_in_us, 'src_in_us'), parseNum(a.src_out_us, 'src_out_us')); break
+            case 'image': params = imageOverlayParams(a.media as Uuid, mediaExtent(current().media_pool[a.media as Uuid])); break
+            case 'Motif': {
+              motif = motifToPlace(parseStr(a.motif_id, 'motif_id'), a.from_library === true, 'motif_id')
+              params = motifLayerParams(motif.id, (a.props ?? {}) as Record<string, unknown>, motif.manifest.size, motif.manifest.graphic_role ?? null)
+              break
+            }
+            default: return { ok: false, error: { error: 'InvalidArgument', field: 'kind', detail: `unknown kind ${kind}` } }
+          }
+          const id = commit(HISTORY_SUMMARY.layerAdd, layerRef, { kind: 'Coarse' }, (d) => {
+            if (motif?.entry) d.motifs[motif.id] = motif.entry
+            return applyAddLayer(d, idGen, a.track as Uuid, params, parseNum(a.t_start_us, 't_start_us'), parseNum(a.t_end_us, 't_end_us'))
+          })
+          return { ok: true, value: id }
+        }
+        // Creation ops take `composition_id?` (root by default) — the ONLY ops
+        // that carry a scope; everything layer-addressed derives it (ADR 0052).
+        case 'add_track': { const comp = compositionArg(a); return { ok: true, value: commit(HISTORY_SUMMARY.trackAdd, trackRef, { kind: 'Coarse' }, (d) => applyAddTrack(d, idGen, (a.label as string) ?? null, undefined, comp)) } }
+        // `anchor` rides the ADD for the same reason `add_markers` takes one per
+        // row: the mark and its tie are one gesture, and splitting them into an
+        // add plus an attach would put an undo step between a marker and the clip
+        // it was born on. Taken on trust exactly as `add_markers` takes its rows —
+        // the caller derives `t_us` from the anchor it supplies, and this commit's
+        // reconcile re-derives it right back.
+        case 'add_marker': { const comp = compositionArg(a); return { ok: true, value: commit(HISTORY_SUMMARY.markerAdd, markerRef, { kind: 'Coarse' }, (d) => applyAddMarker(d, idGen, parseNum(a.t_us, 't_us'), parseNumOpt(a.end_t_us, 'end_t_us') ?? null, (a.label as string) ?? 'm', DEFAULT_MARKER_COLOR, comp, typeof a.note === 'string' ? a.note : undefined, (a.anchor as MarkerAnchor | null | undefined) ?? null)) } }
+        // shift_layers — the sweep: everything starting at/after a time, by one
+        // delta (a negative one closes through the ripple planner). One commit,
+        // one undo; the value names what moved so the refs can too.
+        case 'shift_layers': {
+          const delta = parseNum(a.delta_us, 'delta_us')
+          const value = commit(HISTORY_SUMMARY.layersShift, (res: ShiftLayersResult) => layerRefs(res.moved), { kind: 'Coarse' }, (d) =>
+            applyShiftLayersFrom(d, (a.composition_id as Uuid | null) ?? null, (a.tracks as Uuid[] | null) ?? null, parseNum(a.from_t_us, 'from_t_us'), delta, a.strict === true))
+          return { ok: true, value }
+        }
+        // move_layer_set — the agent's set move (`move_layers`): one commit for
+        // the shift, the seed's lane change, a spawned lane and an insert's
+        // close-and-open, so one undo restores all of it. `affected` takes the
+        // function form because a spawn mints its lane inside the recipe.
+        case 'move_layer_set': {
+          const req = a.request as MoveSetRequest
+          const value = commit(req.layers.length > 1 || req.insert ? HISTORY_SUMMARY.layersShift : HISTORY_SUMMARY.layerMove,
+            (r: MoveSetResult) => [...layerRefs([...r.moved, ...r.rippled]), ...(r.spawned_track ? trackRef(r.spawned_track) : [])], { kind: 'Coarse' },
+            (d) => applyMoveLayerSet(d, idGen, req))
+          return { ok: true, value }
+        }
+        case 'move_layers': {
+          const placements = a.placements as MovePlacement[]
+          commit(HISTORY_SUMMARY.layersShift, layerRefs(placements.map((p) => p.layerId)), { kind: 'Coarse' },
+            (d) => applyMoveLayers(d, placements, a.anchor_layer_id as Uuid, parseNum(a.t_start_us, 't_start_us')))
+          return { ok: true, value: null }
+        }
+        case 'move_layer': commit(HISTORY_SUMMARY.layerMove, layerRef(a.layer as Uuid), { kind: 'Coarse' }, (d) => applyMoveLayer(d, a.layer as Uuid, a.to_track as Uuid, parseNum(a.t_start_us, 't_start_us'), (a.escape_link as boolean) ?? false)); return { ok: true, value: null }
+        // move_layers_to_new_track — the whole of z-order rearrangement
+        // (docs/features.md#track-placement). ONE commit: the lane is minted,
+        // the layers move onto it, and every lane the raise emptied goes with
+        // them, so one undo restores all of it. `affected` takes commit's
+        // function form because the lane's id is minted inside the recipe.
+        //
+        // `anchor_layer_id` + `t_start_us` are the drop strip's landing and travel
+        // TOGETHER: the pair is one value on the wire's flat shape, so half of it
+        // is a malformed request rather than a defaultable field. Both absent is
+        // the raise that names no time (the *Move to a new track* command's).
+        case 'move_layers_to_new_track': {
+          const layers = a.layers as Uuid[]
+          const anchorLayerId = (a.anchor_layer_id as Uuid | null | undefined) ?? null
+          const anchorTStartUs = parseNumOpt(a.t_start_us, 't_start_us') ?? null
+          if ((anchorLayerId === null) !== (anchorTStartUs === null)) {
+            return { ok: false, error: { error: 'InvalidArgument', field: anchorLayerId === null ? 'anchor_layer_id' : 't_start_us',
+              detail: 'a landing needs both anchor_layer_id and t_start_us; omit both to keep every time verbatim' } }
+          }
+          const anchor = anchorLayerId === null || anchorTStartUs === null
+            ? null
+            : { layerId: anchorLayerId, tStartUs: anchorTStartUs }
+          return { ok: true, value: commit(HISTORY_SUMMARY.layerMoveToNewTrack,
+            (newTrackId: Uuid) => [...layerRefs(layers), { kind: 'Track', id: newTrackId }],
+            { kind: 'Coarse' }, (d) => applyMoveLayersToNewTrack(d, idGen, layers, anchor)) }
+        }
+        // restack_layer — anchored z-reorder
+        // (docs/features.md#track-placement): ONE commit. Degradation and the
+        // destination-or-null return contract are applyRestackLayer's story
+        // (mutations/restack.ts). Here, `affected` takes the function form
+        // because the split path mints its track inside the recipe; null trips
+        // commit's no-op guard (nothing recorded, no op_id — the move_track
+        // contract), so the null arm is unreachable but keeps the annotation
+        // honest.
+        case 'restack_layer': {
+          const layer = a.layer as Uuid
+          const hasLayer = a.anchor !== undefined && a.anchor !== null
+          const hasTrack = a.anchor_track !== undefined && a.anchor_track !== null
+          if (hasLayer === hasTrack)
+            throw new CommandFailure({ error: 'InvalidArgument', field: 'anchor', detail: 'provide exactly one layer or track anchor' })
+          commit(HISTORY_SUMMARY.layerRestack,
+            (destTrack: Uuid | null) => destTrack === null ? layerRef(layer) : [...layerRef(layer), ...trackRef(destTrack)],
+            { kind: 'Coarse' },
+            (d) => hasTrack
+              ? applyRestackLayerAgainstTrack(d, idGen, layer, a.anchor_track as Uuid, a.position as RestackPosition)
+              : applyRestackLayer(d, idGen, layer, a.anchor as Uuid, a.position as RestackPosition))
+          return { ok: true, value: null }
+        }
+        case 'retime_layers': {
+          const value = commit(HISTORY_SUMMARY.layerUpdateParams, (a.layers as Uuid[]).flatMap(layerRef), { kind: 'Coarse' },
+            (d) => applyRetimeLayers(d, a.layers as Uuid[], a.target as RetimeTarget));
+          return { ok: true, value }
+        }
+        case 'set_preserve_pitch':
+          commit(HISTORY_SUMMARY.layerUpdateParams, (a.layers as Uuid[]).flatMap(layerRef), { kind: 'Coarse' },
+            (d) => applyPreservePitch(d, a.layers as Uuid[], a.preserve_pitch as boolean));
+          return { ok: true, value: null }
+        // retime_layers_mcp — the agent's retime: the rate and the pitch policy
+        // of the Audio / Group clips among the targets, one commit. The policy
+        // is written first, so the retime's validate sees the final state.
+        case 'retime_layers_mcp': {
+          const layers = [...new Set(a.layers as Uuid[])]
+          const target = (a.target as RetimeTarget | null) ?? null
+          const pitch = (a.preserve_pitch as boolean | null) ?? null
+          const value = commit(HISTORY_SUMMARY.layerUpdateParams, layers.flatMap(layerRef), { kind: 'Coarse' }, (d) => {
+            const pitched = pitch === null ? [] : layers.filter((id) => { const k = requireLayer(d, id).layer.params.kind; return k === 'Audio' || k === 'CompositionRef' })
+            if (pitch !== null && pitched.length === 0)
+              throw new CommandFailure({ error: 'InvalidArgument', field: 'preserve_pitch', detail: 'none of layer_ids is an Audio or Group clip, and the pitch policy is theirs alone — name the Audio layer linked to a video' })
+            if (pitch !== null) applyPreservePitch(d, pitched, pitch)
+            const retimed = target === null ? { layers: [] } : applyRetimeLayers(d, layers, target)
+            return { ...retimed, pitched }
+          })
+          return { ok: true, value }
+        }
+        case 'trim_layer': commit(HISTORY_SUMMARY.layerTrim, layerRef(a.layer as Uuid), { kind: 'Coarse' }, (d) => applyTrimLayer(d, a.layer as Uuid, ((a.edge as string) === 'out' ? 'Out' : 'In'), parseNum(a.new_t_us, 'new_t_us'), (a.escape_link as boolean) ?? false, a.strict === true)); return { ok: true, value: null }
+        // The SELECTION's delete, and the marquee's headline gesture: N swept
+        // clips must cost ONE undo entry, which is why there is no singular
+        // form beside it. `Coarse` for the same reason update_param_tracks_multi
+        // is — the `Layer` hint carries a single id and cannot name a change
+        // spanning several.
+        //
+        // The recipe is the loop and nothing else. applyDeleteLayer already drops
+        // the layer from its link (auto-dissolving below 2 members), prunes the
+        // track it emptied and re-runs the duration autofit on EVERY call, so a
+        // batch that empties three lanes prunes three lanes with no extra
+        // bookkeeping here.
+        //
+        // Ids are DE-DUPLICATED first: the second applyDeleteLayer for one id
+        // finds nothing and throws LayerNotFound, which would turn a harmless
+        // duplicate in the caller's set into a failed gesture.
+        //
+        // A throw aborts the WHOLE batch — produce discards the draft, so nothing
+        // is deleted and nothing records. That atomicity is the right behaviour
+        // rather than a partial delete: checkTrackLock is the realistic thrower,
+        // and no selection a user can build holds a locked layer (a locked clip
+        // cannot be clicked, the marquee skips it, and Select All excludes rather
+        // than refuses it — docs/features.md § Timeline selection). A
+        // TrackLocked here therefore means the caller sent a set the UI cannot
+        // produce.
+        //
+        // Empty `layers` leaves the draft untouched, so commit's no-op guard
+        // records nothing. The set is ONE composition's (CrossCompositionSet
+        // otherwise) — a selection never spans two, and the check runs before
+        // the first delete so a refusal leaves everything in place.
+        case 'delete_layers': {
+          const layers = [...new Set((a.layers as Uuid[]) ?? [])]
+          commit(HISTORY_SUMMARY.layerDeleteMulti, layerRefs(layers), { kind: 'Coarse' }, (d) => {
+            if (layers.length > 0) requireSameComposition(d, layers)
+            for (const layer of layers) applyDeleteLayer(d, layer)
+          })
+          return { ok: true, value: null }
+        }
+        // ripple_delete_layers — the selection's delete AND the closing of what
+        // it vacated, on every track of the one composition it lives in
+        // (docs/features.md#ripple-delete). The same verbatim set delete_layers
+        // takes; what the ripple adds is the sweep, and the sweep is why the
+        // two cannot share an entry: one commit, one undo, so the layers, the
+        // landings, the transitions reconcile dropped and the markers it
+        // re-derived come back together.
+        //
+        // Every refusal is PRE-WRITE — the planner runs off untouched state
+        // inside the recipe and throws before the first splice, so a refused
+        // ripple burns no op_id and leaves the draft byte-identical. The empty
+        // set is refused here instead, above the commit: unlike delete_layers
+        // there is nothing to record and no hole to close, so `InvalidArgument`
+        // says what a silent no-op would hide.
+        case 'ripple_delete_layers': {
+          const layers = [...new Set((a.layers as Uuid[]) ?? [])]
+          if (layers.length === 0) return { ok: false, error: { error: 'InvalidArgument', field: 'layers', detail: 'at least one layer is required' } }
+          commit(HISTORY_SUMMARY.layerRippleDelete, (r: RippleDeleteResult) => layerRefs([...r.deleted, ...r.moved]), { kind: 'Coarse' },
+            (d) => applyRippleDeleteLayers(d, layers))
+          return { ok: true, value: null }
+        }
+        // ripple_delete_gap — a selected gap closes: nothing is deleted, and every
+        // layer of the composition starting at or after the gap's end moves left
+        // by its length (docs/features.md#ripple-delete). The span travels as
+        // BOTH edges so the actor closes exactly what the renderer highlighted;
+        // the planner refuses a span that is no longer a gap (`GapNotFound`)
+        // instead of re-measuring. Refusals are pre-write for
+        // `ripple_delete_layers`' reason; the degenerate span is refused here,
+        // above the commit, as the empty set is.
+        case 'ripple_delete_gap': {
+          const track = a.track as Uuid
+          const s = parseNum(a.s, 's')
+          const e = parseNum(a.e, 'e')
+          if (!(s >= 0 && e > s)) return { ok: false, error: { error: 'InvalidArgument', field: 'e', detail: 'the gap must be a non-empty span [s, e) with s >= 0' } }
+          commit(HISTORY_SUMMARY.gapClose, (r: RippleGapResult) => [...trackRef(r.track), ...layerRefs(r.moved)], { kind: 'Coarse' },
+            (d) => applyRippleDeleteGap(d, track, s, e))
+          return { ok: true, value: null }
+        }
+        // paste_layers — the whole-link duplicate. The landing is named either
+        // absolutely (`t_start_us`, where the SEED's clone starts, measured
+        // against the seed on the pre-mutation snapshot so a drop position and an
+        // agent's request mean the same thing) or as the shared shift itself
+        // (`t_offset_us`, which needs no read of the seed — the same-place copy).
+        // One commit: one undo removes every clone and their link. Empty `layers`
+        // is a caller bug, not a no-op — there is no seed to measure from.
+        case 'paste_layers': {
+          const layers = [...new Set((a.layers as Uuid[]) ?? [])]
+          if (layers.length === 0) return { ok: false, error: { error: 'InvalidArgument', field: 'layers', detail: 'at least one layer is required' } }
+          const seedLoc = locateLayer(current(), layers[0])
+          if (!seedLoc) return { ok: false, error: { error: 'LayerNotFound', layer: layers[0] } }
+          const deltaUs = a.t_offset_us !== undefined && a.t_offset_us !== null
+            ? parseNum(a.t_offset_us, 't_offset_us')
+            : parseNum(a.t_start_us, 't_start_us') - seedLoc.layer.t_start_us
+          const targetTrackId = (a.target_track_id as Uuid | null | undefined) ?? null
+          const clones = commit(pastedLayersSummary(layers.length), (m: Map<Uuid, Uuid>) => layerRefs([...m.values()]), { kind: 'Coarse' },
+            (d) => applyPasteLayers(d, idGen, layers, deltaUs, targetTrackId, a.unique === true))
+          return { ok: true, value: { clones: layers.map((source) => ({ source, clone: clones.get(source)! })) } }
+        }
+        // set_layers_enabled — the caller's set, verbatim (the renderer hands it a
+        // link's members when the toggle fans out). One entry; a set already in
+        // the requested state leaves the draft untouched and records nothing.
+        case 'set_layers_enabled': {
+          const layers = [...new Set((a.layers as Uuid[]) ?? [])]
+          const enabled = parseBool(a.enabled, 'enabled')
+          commit(layersEnabledSummary(enabled, layers.length), layerRefs(layers), { kind: 'Coarse' }, (d) => applySetLayersEnabled(d, layers, enabled))
+          return { ok: true, value: null }
+        }
+        // set_layer_flags — the agent's flag write (`set_layer_flags`): exactly
+        // the named layers, `enabled` and/or `locked`, one entry. A set already
+        // in the requested state records nothing.
+        case 'set_layer_flags': {
+          const layers = [...new Set((a.layers as Uuid[]) ?? [])]
+          const enabled = (a.enabled as boolean | null | undefined) ?? null
+          const locked = (a.locked as boolean | null | undefined) ?? null
+          const summary = locked === null && enabled !== null ? layersEnabledSummary(enabled, layers.length) : HISTORY_SUMMARY.layerUpdate
+          commit(summary, layerRefs(layers), { kind: 'Coarse' }, (d) => applySetLayerFlags(d, layers, { enabled, locked }))
+          return { ok: true, value: null }
+        }
+        case 'set_composition': setComposition(a); return { ok: true, value: null }
+        case 'undo': undo(); return { ok: true, value: null }
+        case 'redo': redo(); return { ok: true, value: null }
+        case 'jump_to': jumpTo(parseNum(a.index, 'index')); return { ok: true, value: null }
+        case 'jump_to_op': jumpToOp(parseUuid(a.op_id, 'op_id')); return { ok: true, value: null }
+        case 'restore_checkpoint': restoreCheckpoint(parseUuid(a.checkpoint_id, 'checkpoint_id')); return { ok: true, value: null }
+        // The renderer's User-actor path: `checkpoint()` defaults cpActor to the
+        // recording actor, `{kind:'User'}` on the production instance. The
+        // agent's `create_checkpoint` is a same-named DEDICATED tool with its own
+        // arm in mcpCall's switch, which records as the calling agent.
+        // `delete_checkpoint` is the History panel's alone.
+        case 'create_checkpoint': {
+          const label = parseStr(a.label, 'label')
+          if (label.trim() === '') throw new CommandFailure({ error: 'InvalidArgument', field: 'label', detail: 'label must be non-empty' }) // 0 ids
+          return { ok: true, value: checkpoint(label) }
+        }
+        case 'delete_checkpoint': deleteCheckpoint(parseUuid(a.checkpoint_id, 'checkpoint_id')); return { ok: true, value: null }
+        case 'split_layer': return { ok: true, value: commit(HISTORY_SUMMARY.layerSplit, (s: { left: Uuid; right: Uuid }) => layerRefs([s.left, s.right]), { kind: 'Coarse' }, (d) => applySplitLayer(d, idGen, a.layer as Uuid, parseNum(a.at_t_us, 'at_t_us'), (a.escape_link as boolean) ?? false)) }
+        // split_layer_multi — coalesced multi-split for the shot-apply hybrids:
+        // split `layer` at every ascending, strictly-interior timeline time in
+        // `at_t_us_list` inside ONE commit, so a whole shot-split is a single
+        // undo (mirrors update_layer_param_tracks' one-commit batch).
+        // Each split's RIGHT half carries forward to the next cut; link-aware
+        // (escape_link=false) so an auto-paired audio partner splits in lockstep
+        // with the video. Cuts arrive pre-snapped from resolveShotCuts, but each
+        // is re-checked against the CURRENT segment bounds and a non-interior one
+        // is SKIPPED (not thrown), so a redundant/collapsed cut can never abort
+        // the whole batch.
+        // Two deletes ride the SAME commit, so a split and whatever it throws
+        // away are one undo entry: `drop_short_us` deletes any resulting VIDEO
+        // segment shorter than it, and `discard_segments` deletes the ones the
+        // caller named (parseDiscardSegments owns the numbering and the
+        // refusals). A segment that is both short and named is deleted once.
+        // applyDeleteLayer honors empty-track cleanup for both.
+        // Either delete FANS OUT across the target's link: every other member
+        // OVERLAPPING the rejected segment's half-open span goes with it, so a
+        // dropped or discarded take takes its paired audio along. Those pieces
+        // exist only because the split in this very commit cut them; keeping
+        // the audio a rejected take cut off is a half-result nobody asked for.
+        // Overlap and not exact co-span, so a slipped-sync partner still
+        // travels; overlap and not "every member", so a manual bundle member
+        // sitting wholly inside a KEPT segment stays. Overlap by MORE than half
+        // a frame (or by most of the piece), not any overlap at all: members on
+        // different grids are cut up to half a frame apart, and a kept
+        // neighbour's piece lapping into a hole by that drift is not part of it
+        // (`remove_pauses` cuts an Audio target whose picture rides the frame
+        // grid). `delete_layers` itself is still local — this is the
+        // shot-apply's own reach, not a link rule
+        // (docs/features.md § Links). A partner on a locked track fails the
+        // whole op through applyDeleteLayer's own checkTrackLock and the commit
+        // rolls back atomically, which IS § Links' "locks reject the whole op":
+        // no special casing here.
+        // `ripple` (default false) changes only how the rejects leave: the doomed
+        // pieces go to applyRippleDeleteLayers as ONE set instead of through the
+        // per-layer delete loop, so the split and the closing of the gaps it threw
+        // away are one undo (docs/features.md#ripple-delete). The set is every
+        // named segment, every segment `drop_short_us` prunes, AND the fan-out
+        // partners of each — collected before a single delete runs, for the
+        // same reason the loop reads its link early: a two-member link
+        // dissolves under the first delete and the second read would find no
+        // siblings. One set and not one ripple per segment, because a ripple
+        // measures its holes against what remains and merges the touching ones;
+        // run segment by segment, the second call would measure against a
+        // timeline the first had already re-timed and two adjacent rejects
+        // would close as two holes instead of the one they are. The refusals
+        // here are the planner's, raised pre-write inside the ripple — but the
+        // ripple can only be planned once the splits exist, so they land AFTER
+        // them: produce discards the draft, leaving the clip unsplit and
+        // recording nothing, while the ids the split halves drew from idGen
+        // stay spent (one per new layer half and new right-side link).
+        // Unavoidable without simulating the whole split, and harmless — ids
+        // are opaque and only ever compared for equality. Returns the ordered
+        // target segment layer ids that survived.
+        case 'split_layer_multi': {
+          const layer = a.layer as Uuid
+          const ats = (a.at_t_us_list as number[]) ?? []
+          const dropShortUs = parseNumOpt(a.drop_short_us, 'drop_short_us') ?? null
+          const ripple = (a.ripple as boolean | undefined) ?? false
+          // Refused BEFORE the commit opens: a split whose deletes turned out to
+          // be unaskable is not a state any undo entry could describe.
+          let discardIdx: number[] = []
+          if (a.discard_segments !== undefined && a.discard_segments !== null) {
+            const parsed = parseDiscardSegments(a.discard_segments, ats.length + 1)
+            if (!parsed.ok) return { ok: false, error: { error: 'InvalidArgument', field: 'discard_segments', detail: parsed.detail } }
+            discardIdx = parsed.value
+          }
+          return { ok: true, value: commit(ripple ? HISTORY_SUMMARY.layerSplitAndRipple : HISTORY_SUMMARY.layerSplitByShots, layerRefs, { kind: 'Coarse' }, (d) => {
+            let currentId = layer
+            const ids: Uuid[] = []
+            // Which segment actually carries each NOMINAL index — the numbering
+            // the caller counted off the cut list. A skipped cut merges two
+            // nominal segments into one real one, and without this map every
+            // index past the skip would name a neighbour of what was unchecked.
+            const carrier: Uuid[] = []
+            for (let i = 0; i < ats.length; i++) {
+              const at = ats[i]
+              // Re-snap on the CURRENT SEGMENT's own grid and skip a cut that no
+              // longer falls strictly inside it — defensive against a redundant cut so
+              // applySplitLayer never rejects mid-batch. The segment must be located
+              // first because the grid depends on its kind (spec R2-D6); shot splits
+              // target video, but this op is reachable for any kind.
+              const loc = locateLayer(d, currentId)
+              const seg = loc ? loc.layer : null
+              if (!seg) continue
+              const atSnapped = snapOnGrid(parseNum(at, 'at_t_us'), gridForLayerKind(seg.params.kind, loc!.comp.fps))
+              if (atSnapped <= seg.t_start_us || atSnapped >= seg.t_end_us) continue
+              const { left, right } = applySplitLayer(d, idGen, currentId, atSnapped, false)
+              while (carrier.length <= i) carrier.push(left)
+              ids.push(left)
+              currentId = right
+            }
+            while (carrier.length <= ats.length) carrier.push(currentId)
+            ids.push(currentId)
+            const discarded = new Set(discardIdx.map((i) => carrier[i]))
+            if (dropShortUs === null && discarded.size === 0) return ids
+            const kept: Uuid[] = []
+            const targets = new Set(ids)
+            const doomed = new Set<Uuid>()
+            for (const id of ids) {
+              const loc = locateLayer(d, id)
+              const seg = loc?.layer ?? null
+              const short = seg !== null && dropShortUs !== null && seg.t_end_us - seg.t_start_us < dropShortUs
+              if (!seg || !(short || discarded.has(id))) { kept.push(id); continue }
+              // Read the link BEFORE this segment's own delete: a link
+              // auto-dissolves below two members, so a two-member pair would
+              // have no siblings left to read afterwards.
+              // Half a frame of slack on the overlap: members on different
+              // grids are cut up to half a frame apart (a sample-lattice cut
+              // rounds onto the frame grid), so the piece of a KEPT neighbour
+              // can lap into this segment by that much without belonging to
+              // it. A piece that is mostly inside still travels however short
+              // it is, and a piece longer than the slack overlap is a partner
+              // that genuinely shares the span (a slipped or longer partner).
+              const halfFrameUs = (500_000 * loc!.comp.fps.den) / loc!.comp.fps.num
+              const partners = linkSiblingsExcluding(loc!.comp, id).filter((sid) => {
+                if (targets.has(sid)) return false // never another segment of the target
+                const s = locateLayer(d, sid)?.layer
+                if (s === undefined) return false
+                const overlapUs = Math.min(s.t_end_us, seg.t_end_us) - Math.max(s.t_start_us, seg.t_start_us)
+                if (overlapUs <= 0) return false
+                return overlapUs * 2 > s.t_end_us - s.t_start_us || overlapUs > halfFrameUs
+              })
+              if (ripple) { doomed.add(id); for (const sid of partners) doomed.add(sid); continue }
+              applyDeleteLayer(d, id)
+              // Defensive re-locate: no partner should overlap two rejected
+              // segments, since a member spanning a cut was split at it — but a
+              // stale id here would throw LayerNotFound and abort the whole
+              // apply, so the list is checked rather than trusted.
+              for (const sid of partners) if (locateLayer(d, sid)) applyDeleteLayer(d, sid)
+            }
+            // Nothing but the ripple branch above fills `doomed`, and it can
+            // still come out empty — `drop_short_us` with no segment under the
+            // floor. The ripple refuses an empty set (nothing to close), so the
+            // splits alone are the whole edit.
+            if (doomed.size > 0) applyRippleDeleteLayers(d, [...doomed])
+            return kept
+          }) }
+        }
+        // add_markers — coalesced multi-marker drop for shot-boundary
+        // materialization (the human/agent shot-marker surface): add every row in
+        // `markers` inside ONE commit so a whole boundary set is a single undo.
+        // Each row reuses applyAddMarker (same as the add_marker arm); color/label
+        // default to the shot-marker style. Returns the new marker ids in order.
+        //
+        // Scope and tie sit at DIFFERENT levels, and neither placement is
+        // arbitrary. `composition_id` is per BATCH because a marker's composition
+        // is the composition being marked — one dispatch marks one timeline, the
+        // same way add_marker does. `anchor` is per ROW because an anchor is a
+        // layer AND a source instant inside it: a shot set shares the layer but
+        // every row carries its own `src_us`, and hoisting the layer alone would
+        // split one indivisible tie across two levels. The caller owns deriving
+        // `t_us` from its own anchor (nothing here does); validate owns whether
+        // the layer named is in this composition and can carry an anchor at all.
+        case 'add_markers': {
+          const rows = (a.markers as Array<{ t_us: number; end_t_us?: number | null; label?: string; color?: Rgba; anchor?: MarkerAnchor | null }>) ?? []
+          const comp = compositionArg(a)
+          return { ok: true, value: commit(HISTORY_SUMMARY.markerAddShots, markerRefs, { kind: 'Coarse' }, (d) =>
+            rows.map((m) => applyAddMarker(d, idGen, parseNum(m.t_us, 't_us'), m.end_t_us ?? null, m.label ?? 'Shot', m.color ?? DEFAULT_MARKER_COLOR, comp, undefined, m.anchor ?? null))) }
+        }
+        case 'links_create': return { ok: true, value: commit(HISTORY_SUMMARY.linkCreate, layerRefs(a.layers as Uuid[]), { kind: 'Coarse' }, (d) => applyLinksCreate(d, idGen, a.layers as Uuid[], (a.reassign as boolean) ?? false)) }
+        case 'links_dissolve': commit(HISTORY_SUMMARY.linkDissolve, linkMemberRefs(a.link as Uuid), { kind: 'Coarse' }, (d) => applyLinksDissolve(d, a.link as Uuid)); return { ok: true, value: null }
+        case 'links_add_members': commit(HISTORY_SUMMARY.linkAddMembers, layerRefs(a.layers as Uuid[]), { kind: 'Coarse' }, (d) => applyLinksAddMembers(d, a.link as Uuid, a.layers as Uuid[], (a.reassign as boolean) ?? false)); return { ok: true, value: null }
+        case 'links_remove_members': commit(HISTORY_SUMMARY.linkRemoveMembers, layerRefs(a.layers as Uuid[]), { kind: 'Coarse' }, (d) => applyLinksRemoveMembers(d, a.link as Uuid, a.layers as Uuid[])); return { ok: true, value: null }
+        // Groups (ADR 0052) — one commit each; the row points at the Group layer,
+        // and at the members too where the op has a set of them. The result is
+        // ONE shape always, so a caller never sniffs it.
+        case 'groups_create': {
+          const layers = [...new Set((a.layers as Uuid[]) ?? [])]
+          const r = commit(groupCreateSummary(layers.length), (g: GroupCreateResult) => layerRef(g.layerId), { kind: 'Coarse' },
+            (d) => applyGroupsCreate(d, idGen, layers, (a.label as string | null) ?? null))
+          return { ok: true, value: { composition_id: r.compositionId, layer_id: r.layerId } }
+        }
+        case 'groups_add_members': {
+          const layers = [...new Set((a.layers as Uuid[]) ?? [])]
+          const groupLayer = a.group_layer as Uuid
+          commit(groupAddMembersSummary(layers.length), layerRefs([...layers, groupLayer]), { kind: 'Coarse' },
+            (d) => applyGroupsAddMembers(d, idGen, layers, groupLayer))
+          return { ok: true, value: null }
+        }
+        // The same crossing named absolutely rather than measured off a Group
+        // clip (mutations/moveToComposition.ts). The row names the members
+        // ALONE — a composition has no `EntityRef`, and the destination need
+        // hold no clip to point at — so the destination's NAME rides in the
+        // summary instead, resolved out here where an unknown id still refuses
+        // before the draft is opened.
+        case 'move_layers_to_composition': {
+          const layers = [...new Set((a.layers as Uuid[]) ?? [])]
+          const anchor = parseUuid(a.anchor_layer, 'anchor_layer')
+          const anchorTStartUs = parseNum(a.anchor_t_start_us, 'anchor_t_start_us')
+          // `'spawn'` is a literal, so only the third shape is a uuid.
+          const toTrack: Uuid | 'spawn' | null = a.to_track === undefined || a.to_track === null
+            ? null
+            : a.to_track === 'spawn' ? 'spawn' : parseUuid(a.to_track, 'to_track')
+          const dest = compositionOf(current(), parseUuid(a.to_composition, 'to_composition'))
+          commit(moveToCompositionSummary(layers.length, dest.label), layerRefs(layers), { kind: 'Coarse' },
+            (d) => applyMoveLayersToComposition(d, idGen, layers, dest.id, anchor, anchorTStartUs, toTrack))
+          return { ok: true, value: null }
+        }
+        // Placing an existing composition (the media pool's drop): a creation op,
+        // so it carries a scope — but `track` already fixes the composition, which
+        // makes `composition_id` a cross-check. The row is a plain layer add,
+        // because that is what this does: pre-compose is the op that makes a Group.
+        case 'add_group_layer': {
+          const track = parseUuid(a.track, 'track')
+          checkTrackInComposition(track, compositionArg(a) ?? null)
+          const source = parseUuid(a.source_composition, 'source_composition')
+          const t0 = parseNum(a.t_start_us, 't_start_us')
+          return { ok: true, value: commit(HISTORY_SUMMARY.layerAdd, layerRef, { kind: 'Coarse' }, (d) => applyAddGroupLayer(d, idGen, source, track, t0)) }
+        }
+        case 'groups_ungroup': commit(HISTORY_SUMMARY.groupUngroup, layerRef(a.layer as Uuid), { kind: 'Coarse' }, (d) => applyGroupsUngroup(d, idGen, a.layer as Uuid)); return { ok: true, value: null }
+        case 'groups_rename': commit(HISTORY_SUMMARY.groupRename, compositionRefLayers(a.composition as Uuid), { kind: 'Coarse' }, (d) => applyGroupsRename(d, a.composition as Uuid, (a.label as string | null) ?? null)); return { ok: true, value: null }
+        // Nothing references a deletable composition, so there is no layer to name.
+        case 'compositions_delete': commit(HISTORY_SUMMARY.compositionDelete, [], { kind: 'Coarse' }, (d) => applyCompositionsDelete(d, a.composition as Uuid)); return { ok: true, value: null }
+        case 'update_layer': commit(HISTORY_SUMMARY.layerUpdate, [{ kind: 'Layer', id: a.layer as Uuid }], { kind: 'Layer', id: a.layer as Uuid }, (d) => applyUpdateLayer(d, a.layer as Uuid, a.patch as LayerPatch)); return { ok: true, value: null }
+        // The four commands below end with the scale-link invariant check
+        // (mutations/scaleLink.ts): result-based, so it runs once per COMMIT —
+        // the plural batch is legitimately mid-divergence between its scale_x
+        // and scale_y entries, and a per-entry check would unlink every linked
+        // fan-out write.
+        // `link_fan_out` and `scale_linked` arrive from MCP only (the UI fans
+        // its linked Scale out itself and toggles the link through
+        // `set_scale_linked`): while the layer stays linked, one axis sent
+        // writes both, and `scale_linked` lands after the scale fields.
+        case 'update_layer_params': commit(HISTORY_SUMMARY.layerUpdateParams, [{ kind: 'Layer', id: a.layer as Uuid }], { kind: 'Layer', id: a.layer as Uuid }, (d) => {
+          const layer = a.layer as Uuid
+          const linkTo = a.scale_linked as boolean | undefined
+          const patch = a.link_fan_out === true ? fanOutLinkedScale(d, layer, a.patch as LayerParamsPatch, linkTo) : a.patch as LayerParamsPatch
+          applyUpdateLayerParams(d, layer, patch, motifCatalog)
+          if (linkTo !== undefined) applySetScaleLinked(d, idGen, layer, linkTo)
+          enforceScaleLinkInvariant(d, layer)
+        }); return { ok: true, value: null }
+        case 'set_position': commit(HISTORY_SUMMARY.layerKeyframeParams, [{kind:'Layer',id:a.layer as Uuid}], {kind:'Layer',id:a.layer as Uuid},d=>applySetPosition(d,a.layer as Uuid,a.position as PositionAnimation,a.geometry_only===true)); return {ok:true,value:null}
+        case 'translate_position': commit(HISTORY_SUMMARY.layerKeyframeParams, [{ kind: 'Layer', id: a.layer as Uuid }], { kind: 'Layer', id: a.layer as Uuid }, (d) => applyTranslatePosition(d, a.layer as Uuid, a.dx as number, a.dy as number)); return { ok: true, value: null }
+        case 'translate_path': commit(HISTORY_SUMMARY.layerKeyframeParams, [{kind:'Layer',id:a.layer as Uuid}], {kind:'Layer',id:a.layer as Uuid},d=>applyTranslatePath(d,a.layer as Uuid,a.dx as number,a.dy as number)); return {ok:true,value:null}
+        case 'update_path_transform': commit(HISTORY_SUMMARY.layerKeyframeParams,[{kind:'Layer',id:a.layer as Uuid}],{kind:'Layer',id:a.layer as Uuid},d=>{
+          applyTranslatePath(d,a.layer as Uuid,a.dx as number,a.dy as number)
+          for(const [key,track] of a.entries as [string,Animated<number>][]) {
+            if(!['scale_x','scale_y','rotation_deg','anchor_x','anchor_y'].includes(key)) throw new CommandFailure({error:'InvalidArgument',field:'entries',detail:'Only scale, rotation and anchor tracks may accompany path translation'})
+            applyUpdateLayerParamTrack(d,a.layer as Uuid,key,track)
+          }
+          enforceScaleLinkInvariant(d,a.layer as Uuid)
+        }); return {ok:true,value:null}
+        case 'update_layer_param_track': commit(HISTORY_SUMMARY.layerKeyframeParam, [{ kind: 'Layer', id: a.layer as Uuid }], { kind: 'Layer', id: a.layer as Uuid }, (d) => { applyUpdateLayerParamTrack(d, a.layer as Uuid, a.param_key as string, a.track as Animated<TrackValue>); enforceScaleLinkInvariant(d, a.layer as Uuid) }); return { ok: true, value: null }
+        case 'update_layer_param_tracks': commit(HISTORY_SUMMARY.layerKeyframeParams, [{ kind: 'Layer', id: a.layer as Uuid }], { kind: 'Layer', id: a.layer as Uuid }, (d) => { for (const [k, t] of a.entries as [string, Animated<TrackValue>][]) applyUpdateLayerParamTrack(d, a.layer as Uuid, k, t); enforceScaleLinkInvariant(d, a.layer as Uuid) }); return { ok: true, value: null }
+        // The cross-LAYER form of the batch above, and the keyframe marquee's op:
+        // one sub-lane row draws the diamonds of every layer on its track, so a
+        // swept selection spans layers and the per-layer form would spend an undo
+        // entry each. `Coarse` because the `Layer` hint carries a single id and
+        // cannot name a multi-layer change. Empty `entries` leaves the draft
+        // untouched, so commit's no-op guard records nothing.
+        case 'update_param_tracks_multi': {
+          const entries = (a.entries as [Uuid, string, Animated<TrackValue>][]) ?? []
+          const layers = [...new Set(entries.map(([layer]) => layer))]
+          commit(HISTORY_SUMMARY.layerKeyframeParamsMulti, layerRefs(layers), { kind: 'Coarse' }, (d) => {
+            for (const [layer, key, track] of entries) applyUpdateLayerParamTrack(d, layer, key, track)
+            // Once per DISTINCT layer, after every entry has landed. The check is
+            // per layer, so hoisting it into the loop above would re-run it for
+            // each of that layer's entries and would read exactly the half-applied
+            // twin pair the note above forbids — now reachable across layers.
+            for (const layer of layers) enforceScaleLinkInvariant(d, layer)
+          })
+          return { ok: true, value: null }
+        }
+        case 'set_scale_linked': commit((a.linked as boolean) ? HISTORY_SUMMARY.layerScaleLink : HISTORY_SUMMARY.layerScaleUnlink, [{ kind: 'Layer', id: a.layer as Uuid }], { kind: 'Layer', id: a.layer as Uuid }, (d) => applySetScaleLinked(d, idGen, a.layer as Uuid, a.linked as boolean)); return { ok: true, value: null }
+        // Clearing the pin is the inverse of set_composition{duration_us} and rides
+        // the same unrecorded fan-out. Per snapshot it means "unpin, then refit to
+        // MY OWN layer high-water mark" — the snapshot with the long layer keeps its
+        // long duration, the one with none collapses to zero. A single fitted value
+        // copied everywhere would be wrong for every snapshot but the current.
+        case 'fit_composition_to_layers': return { ok: true, value: fitCompositionToLayers(compositionArg(a)) }
+        case 'update_marker': commit(HISTORY_SUMMARY.markerUpdate, [{ kind: 'Marker', id: a.marker as Uuid }], { kind: 'Coarse' }, (d) => applyUpdateMarker(d, a.marker as Uuid, a.patch as MarkerPatch)); return { ok: true, value: null }
+        case 'remove_marker': commit(HISTORY_SUMMARY.markerRemove, [{ kind: 'Marker', id: a.marker as Uuid }], { kind: 'Coarse' }, (d) => applyRemoveMarker(d, a.marker as Uuid)); return { ok: true, value: null }
+        // The anchor is set and cleared HERE and nowhere else — `update_marker`'s
+        // patch refuses the field (`parseMarkerPatch`), so an anchor can never be
+        // established as a side effect of editing something else. Both rows point
+        // at the Marker: what changed is the marker's tie, not the layer.
+        case 'attach_marker': commit(HISTORY_SUMMARY.markerAttach, [{ kind: 'Marker', id: a.marker as Uuid }], { kind: 'Coarse' }, (d) => applyAttachMarker(d, a.marker as Uuid, a.layer as Uuid)); return { ok: true, value: null }
+        case 'detach_marker': commit(HISTORY_SUMMARY.markerDetach, [{ kind: 'Marker', id: a.marker as Uuid }], { kind: 'Coarse' }, (d) => applyDetachMarker(d, a.marker as Uuid)); return { ok: true, value: null }
+        case 'delete_track': commit(HISTORY_SUMMARY.trackDelete, [{ kind: 'Track', id: a.track as Uuid }], { kind: 'Coarse' }, (d) => applyDeleteTrack(d, a.track as Uuid, (a.force as boolean) ?? false)); return { ok: true, value: null }
+        case 'move_track': moveTrack(a.track as Uuid, parseNum(a.new_position, 'new_position')); return { ok: true, value: null }
+        // RECORDED, unlike the flags patch below: a name is content, and the
+        // layer label is already recorded — two rename surfaces with opposite
+        // undo behaviour would be indefensible (docs/data-model.md#track). The
+        // Track ref is what makes the row name the lane it renamed.
+        case 'rename_track': commit(HISTORY_SUMMARY.trackRename, [{ kind: 'Track', id: a.track as Uuid }], { kind: 'Coarse' }, (d) => applyRenameTrack(d, a.track as Uuid, (a.label as string) ?? null)); return { ok: true, value: null }
+        case 'update_track_flags': updateTrackFlags(a.track as Uuid, a.patch as TrackFlagsPatch); return { ok: true, value: null }
+        // `params` (MCP): the initial values, checked against the kind by the
+        // parser, land in the same commit as the effect.
+        case 'add_effect': return { ok: true, value: commit(HISTORY_SUMMARY.effectAdd, [{ kind: 'Layer', id: a.layer as Uuid }], { kind: 'Coarse' }, (d) => {
+          const id = applyAddEffect(d, idGen, a.layer as Uuid, a.kind as string)
+          if (a.params) applyUpdateEffect(d, a.layer as Uuid, id, { params: a.params as Record<string, Animated<number>> })
+          return id
+        }) }
+        case 'update_effect': commit(HISTORY_SUMMARY.effectUpdate, [{ kind: 'Layer', id: a.layer as Uuid }], { kind: 'Coarse' }, (d) => applyUpdateEffect(d, a.layer as Uuid, a.effect as Uuid, a.patch as EffectPatch)); return { ok: true, value: null }
+        case 'move_effect': commit(HISTORY_SUMMARY.effectReorder, [{ kind: 'Layer', id: a.layer as Uuid }], { kind: 'Coarse' }, (d) => applyMoveEffect(d, a.layer as Uuid, a.effect as Uuid, parseNum(a.new_index, 'new_index'))); return { ok: true, value: null }
+        case 'remove_effect': commit(HISTORY_SUMMARY.effectRemove, [{ kind: 'Layer', id: a.layer as Uuid }], { kind: 'Coarse' }, (d) => applyRemoveEffect(d, a.layer as Uuid, a.effect as Uuid)); return { ok: true, value: null }
+        case 'add_transition': {
+          // kind/direction/placement parsed BEFORE commit — a bad enum combo
+          // burns no op_id. Absent kind defaults to Crossfade; absent placement
+          // to 'overlap' (spec D1).
+          const kind = parseTransitionKind(a.kind ?? 'Crossfade', a.direction)
+          const placement = parseTransitionPlacement(a.placement)
+          // Bounce info rides out via closure, NOT commit's return value: the
+          // wire/MCP shape stays "the new transition id". Primitives only —
+          // the recipe's draft is revoked once produce returns.
+          let bounces: TransitionBounce[] = []
+          const id = commit(HISTORY_SUMMARY.transitionAdd, layerRefs([a.from as Uuid, a.to as Uuid]), { kind: 'Coarse' }, (d) => {
+            const r = applyAddTransition(d, idGen, a.from as Uuid, a.to as Uuid, parseNum(a.duration_us, 'duration_us'), kind, placement)
+            bounces = r.bounces
+            return r.id
+          })
+          logTransitionBounces(bounces) // after commit — a rejected add logs nothing
+          return { ok: true, value: id }
+        }
+        case 'update_transition': {
+          const kind = parseTransitionKindOpt(a.kind, a.direction)
+          const patch: { duration_us?: number; kind?: TransitionKind; extended_us?: number } = {}
+          const dur = parseNumOpt(a.duration_us, 'duration_us')
+          if (dur !== undefined) patch.duration_us = dur
+          const ext = parseNumOpt(a.extended_us, 'extended_us')
+          if (ext !== undefined) patch.extended_us = ext
+          if (kind !== undefined) patch.kind = kind
+          commit(HISTORY_SUMMARY.transitionUpdate, transitionSideRefs(a.transition as Uuid), { kind: 'Coarse' }, (d) => applyUpdateTransition(d, a.transition as Uuid, patch))
+          return { ok: true, value: null }
+        }
+        case 'remove_transition': commit(HISTORY_SUMMARY.transitionRemove, transitionSideRefs(a.transition as Uuid), { kind: 'Coarse' }, (d) => applyRemoveTransition(d, a.transition as Uuid)); return { ok: true, value: null }
+        case 'add_media': return { ok: true, value: addMediaItem(mediaItemTemplate(a.id as Uuid, a.kind as MediaItem['kind'], (a.duration_us as number | null) ?? null, (a.with_audio as boolean | undefined) ?? false)) }
+        // add_media_item — insert a FULL probed MediaItem (the import_media
+        // hybrid: Rust probes/hashes, the TS host applies the write). Distinct from
+        // `add_media` (template-only); the caller passes the serialized MediaItem.
+        case 'add_media_item': return { ok: true, value: addMediaItem(a.media as MediaItem) }
+        case 'separate_audio': return { ok: true, value: commit(HISTORY_SUMMARY.layerSeparateAudio, (audioId: Uuid) => layerRefs([a.layer as Uuid, audioId]), { kind: 'Coarse' }, (d) => applySeparateAudio(d, idGen, a.layer as Uuid)) }
+        case 'set_media_derivatives': setMediaDerivatives(a.media as Uuid, a.patch as MediaDerivativesPatch); return { ok: true, value: null }
+        case 'set_media_workspace_paths': setMediaWorkspacePaths(a.media as Uuid, a.paths as WorkspacePaths); return { ok: true, value: null }
+        case 'set_media_hash': setMediaHash(a.media as Uuid, a.file_hash_blake3 as string); return { ok: true, value: null }
+        case 'rebase_media': rebaseMedia(a.project_dir as string, a.derivatives as Record<Uuid, MediaDerivativesPatch>, a.platform as PathPlatform | undefined); return { ok: true, value: null }
+        case 'remove_media': removeMedia(a.media as Uuid, (a.force as boolean) ?? false); return { ok: true, value: null }
+        case 'set_role_gain': setRoleGain(a.role as string, parseNum(a.gain_db, 'gain_db')); return { ok: true, value: null }
+        case 'update_role_flags': updateRoleFlags(a.role as string, a.patch as RoleFlagsPatch); return { ok: true, value: null }
+        case 'update_project_settings': updateProjectSettings(a.patch as { correction_script?: string; auto_pair_audio_on_import?: boolean | null; prefer_proxies?: boolean | null; proxy_override?: { media_id: string; value: boolean | null } | null; shot_review?: { sensitivity: number; min_shot_us: number } | null; pause_review?: { threshold_amp: number; min_pause_us: number; pad_us: number } | null }); return { ok: true, value: null }
+        case 'add_caption_track': { const comp = compositionArg(a); return { ok: true, value: commit(HISTORY_SUMMARY.trackAddCaption, trackRef, { kind: 'Coarse' }, (d) => applyAddCaptionTrack(d, idGen, a.cues as Cue[], a.comp_w as number, a.comp_h as number, (a.label as string) ?? null, comp)) } }
+        case 'set_correction_script': {
+          if (a.project_id !== current().project_id) throw new CommandFailure({ error: 'InvalidArgument', field: 'project_id', detail: 'The project has changed' })
+          updateProjectSettings({ correction_script: a.text as string })
+          return { ok: true, value: null }
+        }
+        case 'correct_caption_text': {
+          if (a.project_id !== current().project_id) throw new CommandFailure({ error: 'InvalidArgument', field: 'project_id', detail: 'The project has changed' })
+          const comp = scopeComposition(current(), a.composition_id as string)
+          const refs: EntityRef[] = comp.tracks.filter(t => t.role === 'Caption').map(t => ({ kind: 'Track', id: t.id }))
+          // An agent's run passes its script and corrects text only; the
+          // dialog's corrects against the project manuscript and may re-segment.
+          const mode: CorrectionMode = typeof a.script === 'string' ? { kind: 'text_only', script: a.script } : { kind: 'manuscript' }
+          // A changed cue is re-wrapped at the style's line length, the one
+          // `apply_transcripts` builds to.
+          const tokens = opts.tasteTokens?.()
+          const maxChars = tokens ? captionLimits(tokens).max_chars : undefined
+          return { ok: true, value: commit(HISTORY_SUMMARY.captionCorrect, refs, { kind: 'Coarse' }, d => applyTextCorrection(d, idGen, comp.id, a.layer_ids as string[] | null, a.expected as TextCorrectionExpectation | undefined, mode, maxChars)) }
+        }
+        case 'apply_transcripts': {
+          if (a.project_id !== current().project_id) throw new CommandFailure({ error: 'InvalidArgument', field: 'project_id', detail: 'The project has changed' })
+          const comp = scopeComposition(current(), a.composition_id as string)
+          // Transcript cues are born in the project's caption tokens (Q9) and
+          // built to its caption limits; an imported subtitle file keeps the
+          // styles and cues it carries.
+          const tokens = opts.tasteTokens?.()
+          const style = tokens?.caption ? (t: TextParams) => styleText(t, tokens.caption, tokens, comp) : undefined
+          const build = tokens ? buildLimits(captionLimits(tokens)) : undefined
+          return { ok: true, value: commit(HISTORY_SUMMARY.trackAddCaption, trackRef, { kind: 'Coarse' }, d => applyTranscripts(d, idGen, a.transcripts as TranscriptPayload[], comp.id, a.source_ids as string[], style, build)) }
+        }
+        case 'restyle_captions': {
+          // Project-wide: one commit over EVERY caption-role track in every
+          // composition, so overlapping caption lanes restyle as a single undo
+          // entry. Affected refs are read from the pre-mutation snapshot (same
+          // tracks the recipe patches).
+          // Narrowed to `layer_ids`, the refs are those captions instead.
+          const only = (a.layer_ids as Uuid[] | null | undefined) ?? null
+          const captionRefs: EntityRef[] = only ? layerRefs(only) : captionTracks(current()).map((t) => ({ kind: 'Track', id: t.id }))
+          const restyled = commit(HISTORY_SUMMARY.captionRestyle, captionRefs, { kind: 'Coarse' }, (d) => applyRestyleCaptions(d, a.patch as CaptionStylePatch, only))
+          return { ok: true, value: restyled }
+        }
+        // merge_captions — two or more cues of one lane fold into the earliest;
+        // the refs name the survivor and the absorbed.
+        case 'merge_captions': {
+          const value = commit(HISTORY_SUMMARY.captionMerge, (res: MergeCaptionsResult) => layerRefs([res.layer, ...res.removed]), { kind: 'Coarse' }, (d) => applyMergeCaptions(d, a.layers as Uuid[]))
+          return { ok: true, value }
+        }
+        // The project's Motif table (spec § Project Motifs). Each entry is a
+        // folder the host has already written: these record what it holds.
+        case 'set_project_motif': {
+          const id = parseStr(a.motif_id, 'motif_id')
+          // Before the draft is written: `__proto__` would set its prototype,
+          // a change validation cannot see.
+          if (!isProjectMotifKey(id)) throw new CommandFailure({ error: 'ValidationFailed', detail: { rule: 'InvalidMotifKey', motif_id: id } })
+          const held = motifEntry(current().motifs, id)
+          const entry: ProjectMotifEntry = {
+            uid: held && a.uid === undefined ? held.uid : parseStr(a.uid, 'uid'),
+            revision: parseRevision(a.revision, 'revision'),
+            from: a.from === undefined ? held?.from ?? null : parseMotifSource(a.from, 'from'),
+          }
+          commit(projectMotifSummary(id, !held), [], { kind: 'Coarse' }, (d) => { d.motifs[id] = entry })
+          return { ok: true, value: null }
+        }
+        case 'remove_project_motif': {
+          const id = parseStr(a.motif_id, 'motif_id')
+          if (!Object.hasOwn(current().motifs, id)) throw new CommandFailure({ error: 'MotifNotFound', motif_id: id })
+          const users = motifUsers(current(), id)
+          if (users.length > 0) throw new CommandFailure({ error: 'MotifInUse', motif_id: id, referenced_by: users })
+          commit(removedProjectMotifSummary(id), [], { kind: 'Coarse' }, (d) => { delete d.motifs[id] })
+          return { ok: true, value: null }
+        }
+        // The project copy replaced by the library's version of its lineage:
+        // the entry's revision and source, and every layer of it rebound to the
+        // new props schema (`buildRebindUpdates`), in one commit.
+        case 'update_project_motif': {
+          const id = parseStr(a.motif_id, 'motif_id')
+          const held = motifEntry(current().motifs, id)
+          if (!held) throw new CommandFailure({ error: 'MotifNotFound', motif_id: id })
+          const entry: ProjectMotifEntry = { uid: held.uid, revision: parseRevision(a.revision, 'revision'), from: parseMotifSource(a.from, 'from') }
+          const updates = (a.updates ?? []) as MotifRebindEntry[]
+          if (updates.some((u) => u.motif_id !== id)) throw new McpArgError(`updates: every layer stays on Motif '${id}'`, 'updates')
+          commit(updatedProjectMotifSummary(id), updates.map((u): EntityRef => ({ kind: 'Layer', id: u.layer_id })), { kind: 'Coarse' }, (d) => {
+            d.motifs[id] = entry
+            applyRebindMotif(d, updates)
+          })
+          return { ok: true, value: null }
+        }
+        case 'replace_state': {
+          // Test vehicle — builds a blank from the args; production callers
+          // (project_open) call replaceState(loadedProject) directly.
+          const next = blankProject(idGen, (a.name as string) ?? 'untitled')
+          const nextRoot = rootComposition(next)
+          if (typeof a.width === 'number') nextRoot.width = a.width
+          if (typeof a.height === 'number') nextRoot.height = a.height
+          if (typeof a.fps_num === 'number' && typeof a.fps_den === 'number') nextRoot.fps = { num: a.fps_num, den: a.fps_den }
+          replaceState(next)
+          return { ok: true, value: null }
+        }
+        default: return { ok: false, error: { error: 'InvalidArgument', field: 'op', detail: `unsupported op ${channel}` } }
+      }
+    } catch (e) {
+      if (e instanceof CommandFailure) return { ok: false, error: e.err }
+      if (e instanceof McpArgError) return { ok: false, error: { error: 'InvalidArgument', field: e.field ?? 'arguments', detail: e.mcpMessage } }
+      throw e
+    }
+  }
+
+  // ── production command adapter (actor.command) ──
+  // Routes the renderer's real category-A channels (camelCase wire args) into
+  // the gated mutation core. Mechanical channels delegate to dispatch() after
+  // arg parsing; rich channels are handled inline below.
+  function command(channel: string, wireArgs: Record<string, unknown>): DispatchResult {
+    const mech = parseMechanical(channel, wireArgs)
+    if (mech) return dispatch(mech.op, mech.args)
+    try {
+      switch (channel) {
+        case 'add_color_layer': {
+          // Resolve the overlay track when trackId is absent (reverse-scan
+          // non-reserved; spawn one if none free) — inside `compositionId`'s
+          // composition, the root by default. The placement scope and the
+          // canvas-sized default params come from the same composition.
+          const scope = scopeComposition(current(), wireCompositionId(wireArgs))
+          const t0 = parseNum(wireArgs.tStartUs, 'tStartUs')
+          const dur = resolveDurationUs(parseNumOpt(wireArgs.durationUs, 'durationUs'))
+          const t1 = t0 + dur
+          const trackId = wireArgs.trackId !== undefined ? parseUuid(wireArgs.trackId, 'trackId') : pickFreeOverlayTrack(scope, t0, t1)
+          const params = prodColorParams(wireArgs, scope)
+          if (trackId !== null) {
+            const id = commit(HISTORY_SUMMARY.layerAdd, layerRef, { kind: 'Coarse' }, (d) =>
+              applyAddLayer(d, idGen, trackId, params, t0, t1))
+            return { ok: true, value: id }
+          }
+          // No free track — spawn one in its OWN commit (the track add is a
+          // separate commit, so it gets its own op_id), THEN add the layer in a
+          // second commit. Two op_ids. `label: null` leaves the new lane's name
+          // to be derived from its position (docs/data-model.md#track).
+          const newTrackId = commit(HISTORY_SUMMARY.trackAdd, trackRef, { kind: 'Coarse' }, (d) =>
+            applyAddTrack(d, idGen, null, undefined, scope.id))
+          const id = commit(HISTORY_SUMMARY.layerAdd, layerRef, { kind: 'Coarse' }, (d) =>
+            applyAddLayer(d, idGen, newTrackId, params, t0, t1))
+          return { ok: true, value: id }
+        }
+        case 'add_text_layer': {
+          // Same overlay-track logic as add_color_layer.
+          const scope = scopeComposition(current(), wireCompositionId(wireArgs))
+          const t0 = parseNum(wireArgs.tStartUs, 'tStartUs')
+          const dur = resolveDurationUs(parseNumOpt(wireArgs.durationUs, 'durationUs'))
+          const t1 = t0 + dur
+          const trackId = wireArgs.trackId !== undefined ? parseUuid(wireArgs.trackId, 'trackId') : pickFreeOverlayTrack(scope, t0, t1)
+          const params = prodTextParams(wireArgs, scope, opts.defaultTextFont?.(), opts.tasteTokens?.())
+          if (trackId !== null) {
+            const id = commit(HISTORY_SUMMARY.layerAdd, layerRef, { kind: 'Coarse' }, (d) =>
+              applyAddLayer(d, idGen, trackId, params, t0, t1))
+            return { ok: true, value: id }
+          }
+          // No free track — same two-commit pattern as add_color_layer above.
+          const newTrackId = commit(HISTORY_SUMMARY.trackAdd, trackRef, { kind: 'Coarse' }, (d) =>
+            applyAddTrack(d, idGen, null, undefined, scope.id))
+          const id = commit(HISTORY_SUMMARY.layerAdd, layerRef, { kind: 'Coarse' }, (d) =>
+            applyAddLayer(d, idGen, newTrackId, params, t0, t1))
+          return { ok: true, value: id }
+        }
+        case 'paste_layer': {
+          // Paste uses the same automatic placement policy as add_text_layer:
+          // reverse-scan non-reserved tracks for a free interval, otherwise
+          // spawn a track before adding the cloned layer.
+          const sourceId = parseUuid(wireArgs.layerId, 'layerId')
+          const requestedStart = parseNum(wireArgs.tStartUs, 'tStartUs')
+          // Timeline Alt+drag resolves an exact destination lane in the UI.
+          // Keep that copy as one atomic commit instead of duplicating on the
+          // source track and following it with a second move commit.
+          if (wireArgs.targetTrackId !== undefined && wireArgs.targetTrackId !== null) {
+            const targetTrackId = parseUuid(wireArgs.targetTrackId, 'targetTrackId')
+            const id = commit(HISTORY_SUMMARY.layerDuplicate, layerRef, { kind: 'Coarse' }, (d) =>
+              applyPasteLayer(d, idGen, sourceId, targetTrackId, requestedStart))
+            return { ok: true, value: id }
+          }
+          // The free lane is sought in the SOURCE's composition: a paste never
+          // crosses compositions (applyPasteLayer refuses a lane elsewhere).
+          const sourceComp = requireLayer(current(), sourceId).comp
+          const interval = pasteLayerInterval(current(), sourceId, requestedStart)
+          const trackId = pickFreeOverlayTrack(sourceComp, interval.tStartUs, interval.tEndUs)
+          if (trackId !== null) {
+            const id = commit(HISTORY_SUMMARY.layerPaste, layerRef, { kind: 'Coarse' }, (d) =>
+              applyPasteLayer(d, idGen, sourceId, trackId, requestedStart))
+            return { ok: true, value: id }
+          }
+          const newTrackId = commit(HISTORY_SUMMARY.trackAdd, trackRef, { kind: 'Coarse' }, (d) =>
+            applyAddTrack(d, idGen, null, undefined, sourceComp.id))
+          const id = commit(HISTORY_SUMMARY.layerPaste, layerRef, { kind: 'Coarse' }, (d) =>
+            applyPasteLayer(d, idGen, sourceId, newTrackId, requestedStart))
+          return { ok: true, value: id }
+        }
+        case 'add_media_layer': {
+          // add_media_layer: track_id required, kind-matched
+          // params. When auto-pair fires (Video + audio.is_some() + setting on):
+          // THREE separate commits (three op_ids) — add video layer, add audio
+          // layer (role=dialogue) on the SAME track and span, then links_create.
+          const trackId = parseUuid(wireArgs.trackId, 'trackId')
+          const t0 = parseNum(wireArgs.tStartUs, 'tStartUs')
+          const { params, durationUs, autoPairAudio } = prodMediaLayer(wireArgs, current())
+          const t1 = t0 + durationUs
+          const videoId = commit(HISTORY_SUMMARY.layerAdd, layerRef, { kind: 'Coarse' }, (d) =>
+            applyAddLayer(d, idGen, trackId, params, t0, t1))
+          if (autoPairAudio !== null) {
+            const audioId = commit(HISTORY_SUMMARY.layerAdd, layerRef, { kind: 'Coarse' }, (d) =>
+              applyAddLayer(d, idGen, trackId, autoPairAudio, t0, t1))
+            commit(HISTORY_SUMMARY.linkCreate, layerRefs([videoId, audioId]), { kind: 'Coarse' }, (d) =>
+              applyLinksCreate(d, idGen, [videoId, audioId], false))
+          }
+          return { ok: true, value: videoId }
+        }
+        case 'add_demo_color_layer': {
+          // add_demo_color_layer:
+          //   track=tracks.front() (spawn one if empty),
+          //   t_start=track.last_layer.t_end ?? 0, duration=2s,
+          //   color=demo_color(track.layers.len()), w/h=composition size.
+          const snap = scopeComposition(current(), wireCompositionId(wireArgs))
+          const firstTrack = snap.tracks[0]
+          if (firstTrack) {
+            const t0 = firstTrack.layers.at(-1)?.t_end_us ?? 0
+            const t1 = t0 + 2_000_000
+            const params = prodColorParams(
+              { color: demoColor(firstTrack.layers.length) },
+              snap,
+            )
+            const id = commit(HISTORY_SUMMARY.layerAdd, layerRef, { kind: 'Coarse' }, (d) =>
+              applyAddLayer(d, idGen, firstTrack.id, params, t0, t1))
+            return { ok: true, value: id }
+          }
+          // No tracks at all — spawn one then add the layer inside one commit.
+          // Unreachable in prod (reserved A/B-roll tracks are non-removable, so tracks is never empty); single-commit is fine. Do NOT mirror this onto the reachable no-trackId overlay path — that one resolves the track in its own commit, so the track add gets its own op_id.
+          const id = commit(HISTORY_SUMMARY.layerAdd, layerRef, { kind: 'Coarse' }, (d) => {
+            const newTrackId = applyAddTrack(d, idGen, null, undefined, snap.id)
+            const t0 = 0
+            const t1 = 2_000_000
+            const params = prodColorParams({ color: demoColor(0) }, compositionOf(d, snap.id))
+            return applyAddLayer(d, idGen, newTrackId, params, t0, t1)
+          })
+          return { ok: true, value: id }
+        }
+        case 'add_demo_text_layer': {
+          // add_demo_text_layer:
+          //   track=tracks.last() (spawn one if empty),
+          //   t_start=track.last_layer.t_end ?? 0, duration=3s.
+          // Params are textParamsDefault's, overriding only content and size —
+          // a demo op that minted its own family would be a fourth default.
+          const demoText = (comp: { width: number; height: number }): LayerParams => {
+            const p = textParamsDefault('TEXT', comp)
+            return { ...p, font: { ...p.font, size_px: 96 } }
+          }
+          const snap = scopeComposition(current(), wireCompositionId(wireArgs))
+          const lastTrack = snap.tracks.at(-1)
+          if (lastTrack) {
+            const t0 = lastTrack.layers.at(-1)?.t_end_us ?? 0
+            const t1 = t0 + 3_000_000
+            const params = demoText(snap)
+            const id = commit(HISTORY_SUMMARY.layerAdd, layerRef, { kind: 'Coarse' }, (d) =>
+              applyAddLayer(d, idGen, lastTrack.id, params, t0, t1))
+            return { ok: true, value: id }
+          }
+          // No tracks at all — same unreachable single-commit case as add_demo_color_layer.
+          const id = commit(HISTORY_SUMMARY.layerAdd, layerRef, { kind: 'Coarse' }, (d) => {
+            const newTrackId = applyAddTrack(d, idGen, null, undefined, snap.id)
+            return applyAddLayer(d, idGen, newTrackId, demoText(compositionOf(d, snap.id)), 0, 3_000_000)
+          })
+          return { ok: true, value: id }
+        }
+        case 'add_motif': {
+          // add_motif — pure TS recorded mutation.
+          // Renderer camelCase: motifId, fromLibrary?, trackId?, tStartUs, tEndUs?, props?
+          const motifId = wireArgs.motifId as string | undefined
+          if (typeof motifId !== 'string') return { ok: false, error: { error: 'InvalidArgument', field: 'motifId', detail: 'motifId must be a string' } }
+          // A library Motif is copied in here, before any refusal below: a
+          // refused placement leaves its folder untracked, as an undone one does.
+          const motif = motifToPlace(motifId, wireArgs.fromLibrary === true, 'motifId')
+          const manifest = motif.manifest
+          // Canonicalize props BEFORE any commit (reject-before-commit gate).
+          let canonicalProps: Record<string, unknown>
+          try {
+            canonicalProps = canonicalizeProps(manifest, styledMotifProps(manifest, wireArgs.props))
+            const media = mediaPropProblem(manifest.props_schema, canonicalProps, current().media_pool)
+            if (media) throw new MotifPropError(media)
+          } catch (err) {
+            if (err instanceof MotifPropError) return { ok: false, error: { error: 'InvalidArgument', field: 'props', detail: `invalid props: ${err.detail}` } }
+            throw err
+          }
+          const tStartUs = parseNum(wireArgs.tStartUs, 'tStartUs')
+          const tEndUsRaw = parseNumOpt(wireArgs.tEndUs, 'tEndUs') ?? null
+          const resolvedEnd = resolveMotifTEndUs(tStartUs, tEndUsRaw, manifest.default_duration_s, resolveMotifMaxDurUs(manifest, canonicalProps))
+          if (resolvedEnd <= tStartUs) return { ok: false, error: { error: 'InvalidArgument', field: 't_end_us', detail: `t_end_us ${resolvedEnd} must be greater than t_start_us ${tStartUs}` } }
+          const params = motifLayerParams(motif.id, canonicalProps, manifest.size, manifest.graphic_role ?? null)
+          // Two-commit: if no track_id → spawn the track FIRST (in the named
+          // composition, root by default), THEN the Motif layer with the table
+          // entry it renders, so one undo takes both.
+          const scope = scopeComposition(current(), wireCompositionId(wireArgs))
+          const trackId = wireArgs.trackId !== undefined ? parseUuid(wireArgs.trackId, 'trackId') : null
+          const track = trackId ?? commit(HISTORY_SUMMARY.trackAdd, trackRef, { kind: 'Coarse' }, (d) => applyAddTrack(d, idGen, null, undefined, scope.id))
+          const layerId = commit(HISTORY_SUMMARY.layerAdd, layerRef, { kind: 'Coarse' }, (d) => {
+            if (motif.entry) d.motifs[motif.id] = motif.entry
+            return applyAddLayer(d, idGen, track, params, tStartUs, resolvedEnd)
+          })
+          return { ok: true, value: layerId }
+        }
+        default:
+          // (meta channels)
+          return { ok: false, error: { error: 'InvalidArgument', field: 'op', detail: `unsupported production op ${channel}` } }
+      }
+    } catch (e) {
+      if (e instanceof CommandFailure) return { ok: false, error: e.err }
+      if (e instanceof McpArgError) return { ok: false, error: { error: 'InvalidArgument', field: e.field ?? 'arguments', detail: e.mcpMessage } }
+      throw e
+    }
+  }
+
+  /** A Motif's props as placed: the style's tokens for the props the caller
+   *  left out (spec H2-D2), the caller's own on top. */
+  function styledMotifProps(manifest: Manifest, given: unknown): unknown {
+    const styled = motifTokenProps(manifest, opts.tasteTokens?.() ?? null, opts.installedFonts?.() ?? null)
+    if (Object.keys(styled).length === 0) return given ?? null
+    return given && typeof given === 'object' && !Array.isArray(given) ? { ...styled, ...(given as Record<string, unknown>) } : given ?? styled
+  }
+
+  /** One `add_layers` entry, resolved before the recipe: its params built
+   *  against the composition it lands in, every pool / catalog refusal raised.
+   *  `group` places a composition (`applyAddGroupLayer` owns those refusals);
+   *  `audio` is the auto-paired dialogue layer, null for none. */
+  interface AddLayerPlan {
+    spec: AddLayerSpec; track: Uuid | null; t0: number; t1: number | null
+    params: LayerParams | null; group: Uuid | null; audio: LayerParams | null
+    transform: LayerParamsPatch | null; label: string | null
+    /** A Motif's content shortened the requested end (`adjusted` reason `content`). */
+    clamped: boolean
+    /** The table entry a Motif copied in from the library records. */
+    motif: { id: string; entry: ProjectMotifEntry } | null
+  }
+  function planAddLayer(l: AddLayerSpec, snap: Project, scope: Composition, compositionId: Uuid | null): AddLayerPlan {
+    let comp = scope
+    if (l.track !== null) {
+      const t = locateTrack(snap, l.track)
+      if (!t) throw new CommandFailure({ error: 'TrackNotFound', track: l.track })
+      checkTrackInComposition(l.track, compositionId)
+      comp = t.comp
+    }
+    const c = l.content
+    const at = l.at
+    const t0 = l.t_start_us
+    let t1 = l.t_end_us
+    // A source window is the in point plus the span AS STORED: each layer's
+    // edges snap to its own lattice, so the window is derived after the snap
+    // and plays at rate 1 (T25).
+    const span = (kind: LayerParams['kind']): number => {
+      const g = gridForLayerKind(kind, comp.fps)
+      return snapOnGrid(t1!, g) - snapOnGrid(t0, g)
+    }
+    const media = (id: Uuid): MediaItem => {
+      const item = snap.media_pool[id]
+      if (item === undefined) throw new CommandFailure({ error: 'MediaNotFound', media: id })
+      return item
+    }
+    let params: LayerParams | null = null
+    let group: Uuid | null = null
+    let audio: LayerParams | null = null
+    let clamped = false
+    let motif: ReturnType<typeof motifToPlace> | null = null
+    switch (c.kind) {
+      case 'video': {
+        const item = media(c.media)
+        // An audio-only VideoClip draws nothing and the mixer reads Audio
+        // layers only (native/src/audio/mix.rs): a success for a clip that
+        // neither shows nor plays. Each wrong kind names the right one.
+        if (item.kind === 'Audio') throw new McpArgError(`${at}: media ${c.media} is audio-only: a visual layer over it would draw nothing, and the mixer reads Audio layers only, so it would be silent as well. Use kind audio with the same span and src_in_us.`, `${at}.content.media_id`)
+        if (item.kind === 'Subtitle') throw new McpArgError(`${at}: media ${c.media} is a subtitle document, not a picture. Use apply_subtitles to lay its cues onto the caption tracks, or kind text for a single title.`, `${at}.content.media_id`)
+        if (item.kind === 'Image') throw new McpArgError(`${at}: media ${c.media} is an Image: a still has no source window. Use kind image.`, `${at}.content.media_id`)
+        const hasAudio = item.metadata.audio != null
+        if (c.audio === 'linked' && !hasAudio) throw new McpArgError(`${at}.content.audio: media ${c.media} has no audio stream to link; omit audio or send "none"`, `${at}.content.audio`)
+        const pair = c.audio === 'linked' || (c.audio === null && hasAudio && snap.settings.auto_pair_audio_on_import === true)
+        params = videoClipParams(c.media, c.src_in_us, c.src_in_us + span('VideoClip'), mediaExtent(item))
+        if (pair) audio = { ...audioParams(c.media, c.src_in_us, c.src_in_us + span('Audio')), role: 'dialogue' }
+        break
+      }
+      case 'image': {
+        const item = media(c.media)
+        if (item.kind !== 'Image') throw new McpArgError(`${at}: media ${c.media} is a ${item.kind} item, not an Image. A Video is kind video, an Audio item kind audio, a subtitle document apply_subtitles.`, `${at}.content.media_id`)
+        params = imageOverlayParams(c.media, mediaExtent(item), c.graphic_role)
+        break
+      }
+      case 'audio': {
+        const item = media(c.media)
+        // Refused HERE with the kind named: downstream, the validator only
+        // knows a source range does not fit, which reads as arithmetic.
+        if (item.kind !== 'Audio' && !(item.kind === 'Video' && item.metadata.audio != null))
+          throw new McpArgError(`${at}: media ${c.media} carries no audio (kind ${item.kind}${item.kind === 'Video' ? ', no audio stream' : ''}), so there is nothing for an Audio layer to play. A picture is kind video or image; a subtitle document goes through apply_subtitles.`, `${at}.content.media_id`)
+        const base = audioParams(c.media, c.src_in_us, c.src_in_us + span('Audio'))
+        params = c.role === null ? base : { ...base, role: c.role as AudioRole }
+        break
+      }
+      // prodTextParams is the production channel's: a title placed by an
+      // agent and one placed in the UI are the same layer, in the style's
+      // tokens for its role (T4).
+      case 'text': params = prodTextParams({ content: c.content, graphic_role: c.graphic_role }, comp, opts.defaultTextFont?.(), opts.tasteTokens?.()); break
+      // The composition's canvas, as the UI path sizes it (T13).
+      case 'color': params = colorParams(c.color, comp.width, comp.height); break
+      case 'motif': {
+        motif = motifToPlace(c.motif_id, c.from_library, `${at}.content.motif_id`)
+        const manifest = motif.manifest
+        let props: Record<string, unknown>
+        try {
+          props = canonicalizeProps(manifest, styledMotifProps(manifest, c.props))
+          const problem = mediaPropProblem(manifest.props_schema, props, snap.media_pool)
+          if (problem) throw new MotifPropError(problem)
+        } catch (err) {
+          if (err instanceof MotifPropError) throw new McpArgError(`${at}.content.props: invalid props: ${err.detail}`, `${at}.content.props`)
+          throw err
+        }
+        const end = resolveMotifTEndUs(t0, t1, manifest.default_duration_s, resolveMotifMaxDurUs(manifest, props))
+        clamped = end !== t1
+        t1 = end
+        params = motifLayerParams(motif.id, props, manifest.size, c.graphic_role ?? manifest.graphic_role ?? null)
+        break
+      }
+      case 'group': group = c.composition; break
+    }
+    let transform: LayerParamsPatch | null = null
+    if (l.transform !== null) {
+      const { scale, ...rest } = l.transform
+      const kind = params?.kind ?? 'CompositionRef'
+      transform = { kind, ...rest, ...(scale !== undefined ? { scale_x: scale, scale_y: scale } : {}) } as LayerParamsPatch
+    }
+    return { spec: l, track: l.track, t0, t1, params, group, audio, transform, label: l.label, clamped, motif: motif?.entry ? { id: motif.id, entry: motif.entry } : null }
+  }
+  type PlacedLayer = { layer_id: Uuid; track_id: Uuid; linked: { audio_layer_id: Uuid; link_id: Uuid } | null }
+  /** The auto-paired audio of an `add_layers` video collided with an Audio
+   *  layer already on the lane: the case agents misdiagnosed for three
+   *  sessions running, so the cause and the ways out go IN THE MESSAGE
+   *  (clients drop error.data). Null for any other refusal. */
+  function pairedAudioOverlap(err: unknown, snap: Project, paired: ReadonlySet<Uuid>): McpToolErrorJson | null {
+    if (!(err instanceof CommandFailure) || err.err.error !== 'ValidationFailed' || err.err.detail.rule !== 'LayerOverlap') return null
+    const d = err.err.detail
+    const ours = paired.has(d.a) ? 'a' : paired.has(d.b) ? 'b' : null
+    if (ours === null) return null
+    const existing = locateLayer(snap, ours === 'a' ? d.b : d.a)?.layer
+    if (!existing || existing.params.kind !== 'Audio') return null
+    const [t0, t1] = ours === 'a' ? [d.a_start, d.a_end] : [d.b_start, d.b_end]
+    const tail = existing.t_start_us < t0
+    return { code: 'invalid_params',
+      message: `paired-audio overlap: the video fits, but its linked dialogue Audio at [${t0}, ${t1}) µs on track ${d.track}'s audio lane meets Audio layer ${existing.id}${existing.label ? ` '${existing.label}'` : ''} at [${existing.t_start_us}, ${existing.t_end_us}) µs. Nothing was committed (the batch is atomic). Options: create_new_track — omit track_id and the pair lands together on a fresh track; ${tail ? 'trim_layer / split_layer / ' : ''}move_layer the blocking audio layer; or send audio: "none".`,
+      data: {
+        error: 'LayerOverlap', collided: 'paired_audio', track: d.track,
+        blocking_layer: existing.id, blocking_label: existing.label,
+        blocking_range_us: [existing.t_start_us, existing.t_end_us], requested_range_us: [t0, t1],
+        options: [
+          { action: 'create_new_track', note: 'omit track_id: the pair lands together on a fresh track' },
+          ...(tail ? [{ action: 'trim_existing', layer_id: existing.id, edge: 'out', new_t_us: t0 }, { action: 'split_at_t', layer_id: existing.id, at_t_us: t0 }] : []),
+        ],
+      } }
+  }
+
+  function mcpCall(name: string, argsJson: string, client?: string): McpCallResult {
+    return recordingAs(mcpActor(client), () => mcpCallAsAgent(name, argsJson))
+  }
+  /** A keyframe tool's track write. On a linked layer a scale track is the
+   *  linked Scale (CONTEXT): the other axis takes a fresh-id copy in the same
+   *  commit, the UI fan-out's rule (`renderer/keyframe/fanOut.ts`), so the link
+   *  holds whichever surface wrote it. */
+  function writeTrack(layer: string, paramKey: string, track: Animated<TrackValue>): DispatchResult {
+    const l = locateLayer(current(), layer as Uuid)?.layer
+    if ((paramKey === 'scale_x' || paramKey === 'scale_y') && l && transformOf(l)?.scale_linked === true) {
+      const other = paramKey === 'scale_x' ? 'scale_y' : 'scale_x'
+      return dispatch('update_layer_param_tracks', { layer, entries: [[paramKey, track], [other, copyTrackFreshIds(track as Animated<number>, idGen)]] })
+    }
+    return dispatch('update_layer_param_track', { layer, param_key: paramKey, track })
+  }
+  /** `easing` on key `j`: the segment it leaves, or on the last key the one
+   *  arriving at it (`easingSegment`, the rule `set_param_track` keys share). */
+  function easeKey<T extends TrackValue>(track: Animated<T> & { mode: 'Keyframed' }, j: number, easing: Interpolation, paramKey: string): Animated<T> {
+    const left = easingSegment(j, track.value.length)
+    if (left === null) throw new McpArgError(`easing: '${paramKey}' holds one key, which has no segment to ease — add the key it moves to or from (on the last key, easing eases the segment arriving at it)`, 'easing')
+    return setSegmentEasing(track, track.value[left]!.id, easing)
+  }
+  function mcpCallAsAgent(name: string, argsJson: string): McpCallResult {
+    let a: Record<string, unknown>
+    try { a = JSON.parse(argsJson) as Record<string, unknown> }
+    catch (e) { return { ok: false, error: { code: 'invalid_params', message: `invalid args for ${name}: ${String(e)}` } } }
+    // The snapshot the call started from: every answer below is the committed
+    // record read back from the snapshot the commit produced, and the diff
+    // against this one is what names the siblings a move dragged, the layers a
+    // ripple shifted, the cues an import added (mcp-results.ts).
+    const before = current()
+    const cursorBefore = history.status().cursor
+    const ctx = (value: unknown): ResultCtx => ({ args: a, value, before, after: current(), history: history.status(), cursorBefore, entryAt: (i) => history.entryAt(i) })
+    try {
+      // Dedicated arms for explicit-param tools. Fall through to the
+      // table path for mechanical tools.
+      switch (name) {
+        // One batch of new layers in ONE commit (spec D5): every layer, every
+        // track a layer spawns, every auto-paired audio and its link land in a
+        // single recipe, so a refusal anywhere discards the whole draft and a
+        // success is one undo step. What reads the pool or the Motif catalog and
+        // can refuse is planned first, against the composition each layer lands
+        // in (`planAddLayer`).
+        case 'add_layers': {
+          const p = mcpDef('add_layers').parseDedicated!(a) as { composition_id: Uuid | null; layers: AddLayerSpec[] }
+          const snap = current()
+          const scope = scopeComposition(snap, p.composition_id)
+          const plans = p.layers.map((l) => planAddLayer(l, snap, scope, p.composition_id))
+          const minted = plans.reduce((n, pl) => n + (pl.audio ? 2 : 1), 0)
+          const summary = plans.length > 1 ? addedLayersSummary(minted) : plans[0]!.audio ? HISTORY_SUMMARY.layerAddAvPair : HISTORY_SUMMARY.layerAdd
+          const pairedAudio = new Set<Uuid>()
+          let placed: PlacedLayer[]
+          try {
+            placed = commit(summary, (r: PlacedLayer[]) => layerRefs(r.flatMap((x) => x.linked ? [x.layer_id, x.linked.audio_layer_id] : [x.layer_id])), { kind: 'Coarse' }, (d) => plans.map((pl): PlacedLayer => {
+              if (pl.motif) d.motifs[pl.motif.id] = pl.motif.entry
+              // `label: null` leaves a spawned lane's name to its position (docs/data-model.md#track).
+              const track = pl.track ?? applyAddTrack(d, idGen, null, undefined, scope.id)
+              const id = pl.group !== null
+                ? applyAddGroupLayer(d, idGen, pl.group, track, pl.t0, pl.t1 ?? undefined)
+                : applyAddLayer(d, idGen, track, pl.params!, pl.t0, pl.t1!)
+              const layer = requireLayer(d, id).layer
+              if (pl.label !== null) layer.label = pl.label
+              if (pl.transform !== null) applyParamsPatch(layer, pl.transform)
+              if (pl.audio === null) return { layer_id: id, track_id: track, linked: null }
+              // The pair shares the track: one visual and one audio lane per track.
+              const audioId = applyAddLayer(d, idGen, track, pl.audio, pl.t0, pl.t1!)
+              pairedAudio.add(audioId)
+              return { layer_id: id, track_id: track, linked: { audio_layer_id: audioId, link_id: applyLinksCreate(d, idGen, [id, audioId], false) } }
+            }))
+          } catch (err) {
+            const refusal = pairedAudioOverlap(err, snap, pairedAudio)
+            if (refusal) return { ok: false, error: refusal }
+            throw err // any other refusal → outer catch → mapCommandError
+          }
+          const after = current()
+          return { ok: true, result: toolRecord({ layers: placed.map((x, i) => {
+            const l = requireLayer(after, x.layer_id).layer
+            const pl = plans[i]!
+            return {
+              layer_id: x.layer_id, track_id: x.track_id, t_start_us: l.t_start_us, t_end_us: l.t_end_us,
+              adjusted: [...adjusted([['t_start_us', pl.spec.t_start_us, l.t_start_us]]), ...adjusted([['t_end_us', pl.spec.t_end_us, l.t_end_us]], pl.clamped ? 'content' : 'grid')],
+              linked: x.linked,
+              // The project id a Motif landed under: a library copy may take
+              // another than the one asked for.
+              ...(l.params.kind === 'Motif' ? { motif_id: l.params.motif_id } : {}),
+            }
+          }) }) }
+        }
+        // Both caption arms hand the dispatch its `project_id` from the state
+        // they just read. The production channels carry one because the UI
+        // captures it before awaiting a queued manuscript save and the project
+        // can change underneath; an MCP call has no such gap, and a caller free
+        // to send the id could only ever send the right one or a wrong one.
+        case 'apply_transcripts': {
+          const p = mcpDef('apply_transcripts').parseDedicated!(a)
+          // The envelope names its clip as `source { layer_id, signature }`;
+          // the staleness check reads it in the actor's own terms. A source
+          // with no signature (a transcript of your own) is tagged with the
+          // clip as it is now.
+          const snap = current()
+          const transcripts = (p.transcripts as Array<Record<string, unknown>>).map((t) => {
+            const { source, ...rest } = t as { source?: { layer_id: string; signature?: string } }
+            if (!source) return rest
+            const found = locateLayer(snap, source.layer_id)
+            return { ...rest, source: { id: source.layer_id, signature: source.signature ?? (found ? sourceSignature(found.layer) : ''), project_id: snap.project_id, composition_id: found?.comp.id ?? '' } }
+          })
+          const r = dispatch('apply_transcripts', {
+            project_id: snap.project_id, transcripts,
+            source_ids: [], composition_id: p.composition_id,
+          })
+          if (!r.ok) return { ok: false, error: mapCommandError(r.error, name) }
+          const cues = newLayerIds(before, current()).map((id) => locateLayer(current(), id)!.layer).sort((x, y) => x.t_start_us - y.t_start_us).map((l) => l.id)
+          return { ok: true, result: toolRecord({ caption_track_id: r.value as string, cue_layer_ids: cues }) }
+        }
+        case 'correct_caption_text': {
+          const p = mcpDef('correct_caption_text').parseDedicated!(a)
+          const r = dispatch('correct_caption_text', {
+            project_id: current().project_id, layer_ids: p.layer_ids,
+            composition_id: p.composition_id, script: p.script,
+          })
+          if (!r.ok) return { ok: false, error: mapCommandError(r.error, name) }
+          return { ok: true, result: toolRecord(r.value as Record<string, unknown>) }
+        }
+        // An anchor reaches this arm as the LAYER alone, unlike the prod arm's
+        // `{layer, src_us}` taken on trust: `src_us` is derivable from `t_us`
+        // and the clip, so a caller free to name both could name a pair that
+        // disagrees, and the reconcile would settle it by moving the mark
+        // somewhere nobody asked for. Deriving it here is exactly
+        // `applyAttachMarker`, which is why the tie inherits that function's
+        // three refusals and this arm needs none of its own.
+        //
+        // Add and attach share ONE commit for the prod arm's reason: the mark
+        // and its tie are one gesture, so one undo takes both. A refused attach
+        // throws out of the recipe (→ the outer catch → mapCommandError) and no
+        // marker is created — it never survives as a free one the caller would
+        // then have to notice and clean up.
+        case 'add_marker': {
+          const p = mcpDef('add_marker').parseDedicated!(a)
+          const color = (p.color as Rgba | null) ?? DEFAULT_MARKER_COLOR
+          const tUs = p.t_us as number
+          const endT = (p.end_t_us as number | undefined) ?? null
+          const label = p.label as string
+          const note = (p.note as string | null) ?? undefined
+          const anchorLayer = (p.anchor_layer_id as Uuid | null) ?? null
+          const comp = compositionArg(p)
+          const id = commit(HISTORY_SUMMARY.markerAdd, markerRef, { kind: 'Coarse' }, (d) => {
+            const marker = applyAddMarker(d, idGen, tUs, endT, label, color, comp, note)
+            if (anchorLayer !== null) applyAttachMarker(d, marker, anchorLayer)
+            return marker
+          })
+          const rec = markerRecord(current(), id) ?? { marker_id: id }
+          return { ok: true, result: toolRecord({ ...rec, adjusted: adjusted([['t_us', tUs, (rec as { t_us?: number }).t_us], ['t_end_us', endT, (rec as { t_end_us?: number | null }).t_end_us]]) }) }
+        }
+        case 'split_layer': {
+          const p = mcpDef('split_layer').parseDedicated!(a)
+          const layer = p.layer as string
+          // One recipe: validation, reconciliation, history and publication
+          // happen once for the batch, never once per cut.
+          const result = commit(HISTORY_SUMMARY.layerSplit,
+            (r: { layer_ids: Uuid[] }) => layerRefs(r.layer_ids), { kind: 'Coarse' },
+            (d) => applySplitLayerBatch(d, idGen, layer, p.at_t_us as number[], p.escape_link as boolean))
+          return { ok: true, result: toolRecord({ layer_ids: result.layer_ids, t_cut_us: result.at_t_us, siblings: splitSiblings(before, current(), layer, result.layer_ids) }) }
+        }
+        case 'create_checkpoint': {
+          const p = mcpDef('create_checkpoint').parseDedicated!(a)
+          const label = p.label as string
+          if (label.trim() === '') return { ok: false, error: { code: 'invalid_params', message: 'label must be non-empty' } }
+          return { ok: true, result: toolRecord({ checkpoint_id: checkpoint(label), label }) }
+        }
+        // export_captions — the caption corpus of one composition (or one of its
+        // caption lanes) as an SRT or WebVTT body: a read, nothing recorded.
+        case 'export_captions': {
+          const p = mcpDef('export_captions').parseDedicated!(a)
+          const comp = scopeComposition(current(), p.composition_id as string | null) // CompositionNotFound
+          const trackId = p.track_id as string | null
+          const lanes = comp.tracks.filter((t) => t.role === 'Caption' && (trackId === null || t.id === trackId))
+          if (trackId !== null && lanes.length === 0) return { ok: false, error: { code: 'invalid_params', message: `track ${trackId} is not a caption track of this composition — project://tracks lists them (role "Caption")` } }
+          const all = lanes.flatMap((t) => t.layers).filter((l) => l.params.kind === 'Text')
+            .map((l) => ({ start_us: l.t_start_us, end_us: l.t_end_us, text: (l.params as TextParams).content }))
+            .sort((x, y) => x.start_us - y.start_us)
+          // A range snaps as start_export's does, so the cues line up with
+          // the file it wrote: inside cues kept, edge cues clipped, all
+          // shifted so the range starts at 0.
+          const asked = p.range as { t_start_us: number; t_end_us: number } | null
+          const range = asked && { t_start_us: snapFrameRound(asked.t_start_us, comp.fps.num, comp.fps.den), t_end_us: snapFrameRound(asked.t_end_us, comp.fps.num, comp.fps.den) }
+          if (range && range.t_end_us <= range.t_start_us) throw new McpArgError(`range ${asked!.t_start_us}–${asked!.t_end_us} µs is empty after frame snapping`, 'range')
+          const cues = range ? all.filter((c) => c.end_us > range.t_start_us && c.start_us < range.t_end_us)
+            .map((c) => ({ ...c, start_us: Math.max(c.start_us, range.t_start_us) - range.t_start_us, end_us: Math.min(c.end_us, range.t_end_us) - range.t_start_us })) : all
+          const format = p.format as 'srt' | 'vtt'
+          return { ok: true, result: toolRecord({ format, cues: cues.length, body: format === 'vtt' ? formatVtt(cues) : formatSrt(cues), ...(range ? { range } : {}) }) }
+        }
+        case 'restore_checkpoint': {
+          const p = mcpDef('restore_checkpoint').parseDedicated!(a)
+          const id = p.checkpoint_id as string
+          const label = listCheckpoints().find((c) => c.id === id)?.label ?? null
+          restoreCheckpoint(id) // throws CommandFailure(HistoryLocked|CheckpointNotFound) → outer catch → mapCommandError → invalid_params (no data)
+          const h = history.status()
+          return { ok: true, result: toolRecord({ checkpoint_id: id, label, cursor: h.cursor, len: h.len, can_undo: h.can_undo, can_redo: h.can_redo }) }
+        }
+        // Work-session lifecycle is owned by the host; a bare actor has no session.
+        case 'end_agent_session': return { ok: true, result: toolRecord({ ended: null }) }
+        // Tacks live in the host's TackStore beside agent activity (ADR 0115),
+        // not in project state: a bare actor checks the arguments and refuses.
+        case 'restyle_to_taste': {
+          const p = mcpDef(name).parseDedicated!(a)
+          const tokens = opts.tasteTokens?.()
+          if (!tokens) return { ok: false, error: { code: 'invalid_request', message: 'No project style is available here; restyle_to_taste needs the app host (project://taste)' } }
+          const snap = current()
+          let ids = p.layer_ids as Uuid[] | null
+          if (!ids) {
+            const comp = scopeComposition(snap, p.composition_id as string | null)
+            ids = comp.tracks.flatMap((t) => t.layers.filter((l) => p.captions
+              ? l.params.kind === 'Text' && t.role === 'Caption'
+              : t.role !== 'Caption' && (l.params.kind === 'Text' || l.params.kind === 'Motif') && l.params.graphic_role === p.graphic_role).map((l) => l.id))
+          }
+          if (ids.length === 0) return { ok: true, result: toolRecord({ restyled: [], unchanged: 0 }) }
+          const groups = new Set(p.groups as RestyleGroup[])
+          const restyled = commit(HISTORY_SUMMARY.styleRestyle, layerRefs(ids), { kind: 'Coarse' }, (d) => applyRestyleToTaste(d, ids!, tokens, groups, opts.defaultTextFont?.()?.trim() || undefined, (id) => {
+            const m = motifCatalog.get(id)
+            return m ? { manifest: m, props: motifTokenProps(m, tokens, opts.installedFonts?.() ?? null) } : null
+          }))
+          return { ok: true, result: toolRecord({ restyled, unchanged: ids.length - restyled.length }) }
+        }
+        // The host serves this with the project's taste and remembers the
+        // result; a bare actor checks against the craft table alone.
+        case 'check_composition': {
+          const p = mcpDef(name).parseDedicated!(a)
+          const snap = current()
+          const compositionId = (p.composition_id as string | null) ?? snap.root_id
+          if (!snap.compositions[compositionId]) return { ok: false, error: { code: 'invalid_params', message: `no composition ${compositionId}` } }
+          return { ok: true, result: toolRecord(checkComposition(snap, compositionId, null, (p.range as [number, number] | null) ?? undefined, { motif: (id) => motifCatalog.get(id) ?? null }) as unknown as Record<string, unknown>) }
+        }
+        case 'create_tacks': case 'update_tack': case 'delete_tacks': {
+          mcpDef(name).parseDedicated!(a)
+          return { ok: false, error: { code: 'invalid_params', message: `${name} is served by the MCP host, not by the state actor — tacks are not project state` } }
+        }
+        case 'begin_agent_session': {
+          const p = mcpDef('begin_agent_session').parseDedicated!(a)
+          const reason = p.reason as string
+          if (reason.trim() === '') return { ok: false, error: { code: 'invalid_params', message: 'reason must be non-empty' } }
+          const checkpointId = checkpoint(`Pre-agent: ${reason}`) // 1 det id; slot-flip + log are non-state side effects
+          return { ok: true, result: toolRecord({ checkpoint_id: checkpointId, started_at: clock() }) }
+        }
+        case 'set_keyframe': {
+          const p = mcpDef('set_keyframe').parseDedicated!(a)
+          const layer = p.layer as string
+          const paramKey = p.param_key as string
+          // `value` and the track it lands in are both typed by param_key — a
+          // colour for `color`, a number everywhere else — so the pair arrives
+          // consistent and the write-time check in the mutation half is what
+          // refuses a caller that mixed them.
+          const { tStartUs, track } = readLayerTrack(current(), layer, paramKey)
+          checkEffectKeyframeValues(current(), layer, paramKey, [p.value], 'value')
+          // Snapped to the layer's lattice FIRST, so "a key at the same frame"
+          // is the key the write-time snap would land on: a time a few µs off
+          // an existing key updates that key (its id stays), never a second key
+          // the snap then dedupes away.
+          const rel = keyLatticeOf(current(), layer)((p.t_us as number) - tStartUs)
+          let next = upsertKeyframe(track, rel, p.value as TrackValue, undefined, idGen)
+          const easing = p.easing as Interpolation | null
+          if (easing && next.mode === 'Keyframed') next = easeKey(next, next.value.findIndex((k) => keyTimeUs(k) === rel), easing, paramKey)
+          const r = writeTrack(layer, paramKey, next)
+          if (!r.ok) return { ok: false, error: mapCommandError(r.error, name) }
+          return { ok: true, result: toolRecord(setKeyframeResult(layer, paramKey, track, readLayerTrack(current(), layer, paramKey), p.t_us)) }
+        }
+        case 'get_param_track': {
+          const p = mcpDef('get_param_track').parseDedicated!(a)
+          const { tStartUs, track } = readLayerTrack(current(), p.layer as string, p.param_key as string)
+          return { ok: true, result: toolRecord(shapeGetParamTrack(track, tStartUs)) }
+        }
+        case 'delete_keyframe': {
+          const p = mcpDef('delete_keyframe').parseDedicated!(a)
+          const layer = p.layer as string
+          const keyframeId = p.keyframe_id as string
+          const paramKey = p.param_key as string
+          const { track } = readLayerTrack(current(), layer, paramKey)
+          if (!keyframePresent(track, keyframeId)) throw new McpArgError(`keyframe ${keyframeId} not found on layer ${layer} param '${paramKey}' — get_param_track lists its keyframe_ids`)
+          const fallback = track.mode === 'Static' ? track.value : (track.value[0]?.value ?? 0)
+          const r = writeTrack(layer, paramKey, removeKeyframe(track, keyframeId, fallback))
+          if (!r.ok) return { ok: false, error: mapCommandError(r.error, name) }
+          return { ok: true, result: toolRecord(paramTrackResult(layer, paramKey, readLayerTrack(current(), layer, paramKey))) }
+        }
+        case 'update_keyframe': {
+          const p = mcpDef('update_keyframe').parseDedicated!(a)
+          const layer = p.layer as string
+          const keyframeId = p.keyframe_id as string
+          const paramKey = p.param_key as string
+          const { tStartUs, track } = readLayerTrack(current(), layer, paramKey)
+          if (!keyframePresent(track, keyframeId)) throw new McpArgError(`keyframe ${keyframeId} not found on layer ${layer} param '${paramKey}' — get_param_track lists its keyframe_ids`)
+          // One key, several aspects, one commit — applied in the order the
+          // description promises: retime first (so an easing lands on the
+          // segment the key now leaves), then the segment easing, then the
+          // sides — `out` last, so a Smooth request re-derives `in` from the
+          // `out` just written, the "out wins" order the write-time solve
+          // settles the pair in — then continuity, then Auto (`smooth`, which
+          // the parser admits only alone or with the retime).
+          let next = track
+          const tUs = p.t_us as number | null
+          if (tUs !== null) {
+            // A retime onto a frame another key holds would merge the two (the
+            // write-time dedupe keeps one): refused, naming the key there.
+            const rel = keyLatticeOf(current(), layer)(tUs - tStartUs)
+            const occupant = track.mode === 'Keyframed' ? track.value.find((k) => k.id !== keyframeId && keyTimeUs(k) === rel) : undefined
+            if (occupant) return { ok: false, error: { code: 'invalid_params',
+              message: `keyframe ${occupant.id} already sits at t_us ${rel + tStartUs} on layer ${layer} param '${paramKey}'; moving ${keyframeId} there would merge the two keys. Pick another frame, or delete_keyframe ${occupant.id} first`,
+              data: { error: 'KeyframeOccupied', keyframe_id: occupant.id, t_us: rel + tStartUs } } }
+            next = retimeKeyframe(next, keyframeId, rel)
+          }
+          const easing = p.easing as Interpolation | null
+          if (easing && next.mode === 'Keyframed') next = easeKey(next, next.value.findIndex((k) => k.id === keyframeId), easing, paramKey)
+          const inXy = p.in as { x: number; y: number } | null
+          const outXy = p.out as { x: number; y: number } | null
+          const continuity = p.continuity as Continuity | null
+          if (inXy) next = setTangent(next, keyframeId, 'in', inXy)
+          if (outXy) next = setTangent(next, keyframeId, 'out', outXy)
+          if (continuity) next = setContinuity(next, keyframeId, continuity)
+          if (p.smooth === true) next = setAuto(next, [keyframeId])
+          const r = writeTrack(layer, paramKey, next)
+          if (!r.ok) return { ok: false, error: mapCommandError(r.error, name) }
+          return { ok: true, result: toolRecord(keyframeByIdResult(layer, paramKey, keyframeId, readLayerTrack(current(), layer, paramKey))) }
+        }
+        case 'set_param_track': {
+          const p = mcpDef('set_param_track').parseDedicated!(a, idGen)
+          const layer = p.layer as string
+          const paramKey = p.param_key as string
+          const { tStartUs } = readLayerTrack(current(), layer, paramKey) // validate layer+param; current discarded
+          const input = p.track as Animated<TrackValue>
+          checkEffectKeyframeValues(current(), layer, paramKey, input.mode === 'Static' ? [input.value] : input.value.map((k) => k.value), 'track')
+          // ADR 0049, the same rule `update_layer_params` refuses with: a Text
+          // layer's box lays out, its scale magnifies, and only animated.
+          if (input.mode === 'Static' && input.value !== 1 && (paramKey === 'scale_x' || paramKey === 'scale_y') && locateLayer(current(), layer as Uuid)?.layer.params.kind === 'Text')
+            throw new McpArgError(`param '${paramKey}' on layer ${layer}: ${TEXT_SCALE_RULE}`, 'track')
+          const shifted: Animated<TrackValue> = input.mode === 'Keyframed'
+            ? { ...input, value: input.value.map((k) => ({ ...k, t_us: k.t_us - tStartUs })) }
+            : input
+          // Two keys on one frame would be deduped to one by the write-time
+          // snap — the value of the other dropped under a success report — so
+          // the pair is refused, naming both.
+          if (shifted.mode === 'Keyframed') {
+            const lattice = keyLatticeOf(current(), layer)
+            const seen = new Map<number, number>()
+            for (const [i, k] of shifted.value.entries()) {
+              const at = k.time_fraction ? keyTimeUs(k) : lattice(k.t_us)
+              const j = seen.get(at)
+              if (j !== undefined) return { ok: false, error: { code: 'invalid_params',
+                message: `track.value[${j}] (t_us ${shifted.value[j]!.t_us + tStartUs}) and track.value[${i}] (t_us ${k.t_us + tStartUs}) land on one frame, t_us ${at + tStartUs}, and a track holds one key per frame — drop one or move it to another frame`,
+                data: { error: 'KeyframesShareFrame', keys: [j, i], t_us: at + tStartUs } } }
+              seen.set(at, i)
+            }
+          }
+          const r = writeTrack(layer, paramKey, shifted)
+          if (!r.ok) return { ok: false, error: mapCommandError(r.error, name) }
+          return { ok: true, result: toolRecord(committedTrackResult(layer, paramKey, readLayerTrack(current(), layer, paramKey))) }
+        }
+        case 'update_link': {
+          const p = mcpDef('update_link').parseDedicated!(a)
+          const link = p.link as Uuid
+          const add = p.add as Uuid[]
+          const remove = p.remove as Uuid[]
+          const reassign = p.reassign as boolean
+          // One commit, add → remove: adding before removing means a link
+          // never dissolves under a member that is about to join it. The row
+          // is labelled by the heavier change present and names the layers
+          // that moved.
+          const summary = add.length > 0 ? HISTORY_SUMMARY.linkAddMembers : HISTORY_SUMMARY.linkRemoveMembers
+          commit(summary, layerRefs([...add, ...remove]), { kind: 'Coarse' }, (d) => {
+            if (add.length > 0) applyLinksAddMembers(d, link, add, reassign)
+            if (remove.length > 0) applyLinksRemoveMembers(d, link, remove)
+          })
+          return { ok: true, result: toolRecord(linkRecord(current(), link) ?? { link_id: link, dissolved: true }) }
+        }
+        case 'read_project': {
+          // The `project://*` state views as a tool result, served by the same
+          // function the resource read uses, so a client without resources
+          // support reads exactly what one with it reads.
+          const p = mcpDef('read_project').parseDedicated!(a)
+          const view = p.view as string
+          // The effects vocabulary is a catalog, not project state, so it needs
+          // no snapshot. The work session and the two picture views live in the
+          // MCP host, which answers them before a call reaches the actor.
+          if (view === 'effects') return { ok: true, result: toolRecord(effectsCatalogView()) }
+          if (view === 'session' || view === 'tacks' || view === 'taste' || view === 'playhead' || view === 'media_thumbnail' || view === 'media_frame')
+            return { ok: false, error: { code: 'invalid_params', message: `view '${view}' is served by the MCP host, not by the state actor — call it over MCP, or read the matching resource` } }
+          const compositionId = p.composition_id as string | null
+          const scoped = compositionId !== null && SCOPED_PROJECT_VIEWS.has(view) ? `?composition=${compositionId}` : ''
+          const uri = view === 'layer' ? `project://layers/${p.id as string}`
+            : view === 'media' && p.id !== null ? `media://${p.id as string}` : `project://${view}${scoped}`
+          try {
+            const res = serveProjectResource(uri, { snapshot: current, historyView: (n) => history.view(n) })
+            const text = (res as { contents?: Array<{ text?: string }> } | null)?.contents?.[0]?.text
+            if (typeof text !== 'string') return { ok: false, error: { code: 'internal', message: `${uri} returned no body` } }
+            return { ok: true, result: toolText(text) }
+          } catch (err) {
+            // `invalid_params`, not `not_found`: the envelope's `not_found` means
+            // "no such TOOL" and the host turns it into a JSON-RPC error. A layer
+            // or composition id that names nothing is a bad argument to a tool
+            // that exists, and travels as an `isError` result like every other.
+            return { ok: false, error: { code: 'invalid_params', message: err instanceof Error ? err.message : String(err) } }
+          }
+        }
+      }
+      const parse = MCP_ARG_PARSERS[name]
+      if (!parse) return { ok: false, error: { code: 'not_found', message: `unknown tool '${name}'` } }
+      const { op, args } = parse(a, idGen)
+      // `update_effect`'s param check needs the effect's KIND, which only the
+      // snapshot knows: an unknown key or an out-of-range value on a catalogued
+      // kind is refused here, before dispatch (mcp-commands.ts owns the rule).
+      if (name === 'update_effect') {
+        const eff = locateLayer(current(), args.layer as Uuid)?.layer.effects.find((e) => e.id === args.effect)
+        if (eff) checkEffectPatchAgainst(eff.kind, args.patch as EffectPatch)
+      }
+      const r = dispatch(op, args)
+      if (!r.ok) return { ok: false, error: mapCommandError(orientOverlap(r.error, before, subjectsOf(args)), name) }
+      const reader = MCP_RESULT_READERS[name]
+      return { ok: true, result: reader ? toolRecord(reader(ctx(r.value))) : toolEmpty() }
+    } catch (e) {
+      if (e instanceof McpArgError) return { ok: false, error: e.toJson() }
+      if (e instanceof CommandFailure) return { ok: false, error: mapCommandError(orientOverlap(e.err, before, []), name) }
+      throw e
+    }
+  }
+
+  return {
+    snapshot: current,
+    dispatch,
+    command,
+    mcpCall,
+    replaceState,
+    subscribe(cb) { subs.add(cb); return () => subs.delete(cb) },
+    historyView: (n) => history.view(n),
+    historyStatus: () => history.status(),
+    historyEffects: (ids) => history.effectStates(ids),
+    historyCapacity: () => history.capacity(),
+    lockHistory: (r, holderMay) => { history.lock(r); lockHolderMay = holderMay ?? null },
+    unlockHistory: () => { history.unlock(); lockHolderMay = null },
+    jumpTo,
+    checkpoint,
+    restoreCheckpoint,
+    deleteCheckpoint,
+    listCheckpoints,
+    reviewState: () => history.reviewState(),
+    reviewRevision: () => history.reviewRevision(),
+    pinReviewBaseline: (checkpointId) => history.pinReviewBaseline(checkpointId),
+    approveReviewAll: () => history.approveAll(),
+    revertReviewAll,
+    reviewOpDiff: (ids) => history.opDiff(ids),
+    subscribeReview(cb) { reviewSubs.add(cb); return () => reviewSubs.delete(cb) },
+  }
+}

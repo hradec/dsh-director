@@ -1,0 +1,390 @@
+// App-level settings store (`docs/data-model.md`).
+//
+// Strict app-level scope: one value across every project. The Electron main
+// process owns persistence (`apps/desktop/src/main/app-settings.ts`);
+// this store mirrors the current value into React. Mutations go through
+// `appSettingsSet` IPC; main emits `app_settings:changed` which
+// `wireAppSettingsStream` listens for and writes back into the store.
+//
+// It owns the UI language ↔ i18next bridge too — see `setLocale`.
+//
+// IMPORTANT: consumers MUST read through the atomic selector hooks exported
+// below, never a composite selector — see the note there.
+
+import { listen, type UnlistenFn } from "@/bridge/events";
+import { create } from "zustand";
+import { applyLayoutTheme } from './layoutTheme';
+import { readLayoutTheme } from '../../shared/layout-theme';
+import { APP_SETTINGS_DEFAULTS } from "../../shared/app-settings";
+import { hydratePerformanceSettings } from "../../shared/performance-settings";
+import { cacheBudget } from '../render/cacheBudget';
+import { hydrateResourceAllocation } from '../../shared/resource-policy';
+import { updateRendererResources, notifyResourceSettingsChanged } from '../render/resourceClient';
+
+import i18n, { SUPPORTED_LOCALES, type Locale } from "../i18n";
+import { onDescribeViewChanged } from "../search/searchIndexStore";
+
+import {
+  APP_SETTINGS_EVENTS,
+  appSettingsGet,
+  appSettingsSet,
+  type AppSettings,
+  type AppSettingsPatch,
+  type DisplayMode,
+} from "../ipc";
+
+/// Local store state. Mirrors the backend value plus a `loaded` flag so
+/// UI can render a placeholder while the first IPC round-trip lands.
+interface AppSettingsState {
+  settings: AppSettings;
+  loaded: boolean;
+}
+
+interface AppSettingsActions {
+  /// Replace the in-memory snapshot. Used by both the initial fetch
+  /// and the `app_settings:changed` event handler.
+  hydrate: (next: AppSettings) => void;
+}
+
+export const useAppSettingsStore = create<AppSettingsState & AppSettingsActions>(
+  (set) => ({
+    settings: APP_SETTINGS_DEFAULTS,
+    loaded: false,
+    hydrate: (next) => {
+      applyLayoutTheme(next.layout_theme);
+      hydrateResourceAllocation(next.resource_allocation);
+      notifyResourceSettingsChanged();
+      hydratePerformanceSettings(next.performance,
+        !next.performance_policy || next.performance_policy.decode === 'tested' && next.performance_test_compatible
+          ? next.performance_calibration : null, !!next.performance_policy);
+      cacheBudget.maintain();
+      set({ settings: next, loaded: true });
+    },
+  }),
+);
+
+// Atomic selectors. Each picks one field: a composite selector builds a fresh
+// object per call, which trips `useSyncExternalStore`'s reference equality and
+// infinite-loops (`feedback_zustand_composite_selector`).
+export const useLayoutTheme = () =>
+  useAppSettingsStore((s) => readLayoutTheme(s.settings.layout_theme));
+export const useAutoInstallUpdatesOnQuit = () =>
+  useAppSettingsStore((s) => s.settings.auto_install_updates_on_quit !== false);
+export const useSkippedUpdateVersion = () =>
+  useAppSettingsStore((s) => s.settings.skipped_update_version);
+// One shared empty list: a fresh `[]` per call is a new reference every render,
+// the same loop the composite-selector note above describes.
+const NO_DISMISSED_NOTICES: readonly string[] = [];
+/// Codes of the environment notices the user dismissed while they stand. Main
+/// forgets a code once its notice is gone, so membership alone decides.
+export const useDismissedNotices = (): readonly string[] =>
+  useAppSettingsStore((s) => s.settings.dismissed_notices ?? NO_DISMISSED_NOTICES);
+export const useDisplayMode = (): DisplayMode =>
+  useAppSettingsStore((s) => s.settings.display_mode);
+export const useDeltaWindowUs = (): number =>
+  useAppSettingsStore((s) => s.settings.delta_window_us);
+export const useTailSnapEnabled = (): boolean =>
+  useAppSettingsStore((s) => s.settings.tail_snap_enabled);
+export const useTailSnapStrengthPx = (): number =>
+  useAppSettingsStore((s) => s.settings.tail_snap_strength_px);
+/// Preview-gizmo snapping. The gizmo itself does NOT use these hooks — its
+/// gestures are pointer-rate and imperative, so `TransformGizmo` reads the
+/// values off `useAppSettingsStore.getState()` at pointerdown (the whole snap
+/// target set is frozen there — see `docs/features.md`, "On-canvas transform
+/// (gizmo)"). These are for the settings UI.
+export const usePreviewSnapEnabled = (): boolean =>
+  useAppSettingsStore((s) => s.settings.preview_snap_enabled);
+export const usePreviewSnapStrengthPx = (): number =>
+  useAppSettingsStore((s) => s.settings.preview_snap_strength_px);
+export const usePreviewGrid = () =>
+  useAppSettingsStore((s) => s.settings.preview_grid);
+export const usePreviewGridEnabled = (): boolean =>
+  useAppSettingsStore((s) => s.settings.preview_grid.enabled);
+export const usePreviewGridOpacity = (): number =>
+  useAppSettingsStore((s) => s.settings.preview_grid.opacity);
+export const usePrebakeMotifsEnabled = (): boolean =>
+  useAppSettingsStore((s) => s.settings.prebake_motifs);
+export const useDecodeEngine = (): AppSettings["decode_engine"] =>
+  useAppSettingsStore((s) => s.settings.decode_engine);
+/// Preview playback resolution (`full` | `half` | `quarter`). The preview
+/// itself does NOT read this hook — `PixiPreview` subscribes to the store
+/// directly so a change re-opens the decode transport in place instead of
+/// re-rendering the React tree. This is for the settings UI.
+export const usePlaybackResolution = (): AppSettings["playback_resolution"] =>
+  useAppSettingsStore((s) => s.settings.playback_resolution);
+/// Media-pool card arrangement: `large` (one card per row), `grid`
+/// (fixed-size cards, adaptive columns), `list` (compact rows).
+export const useMediaPoolLayout = (): AppSettings["media_pool_layout"] =>
+  useAppSettingsStore((s) => s.settings.media_pool_layout);
+/// Which axis the bare wheel scrolls the timeline along. The wheel handler does
+/// NOT use this hook — see `timelineWheelAxis()` below. This is for the
+/// settings UI.
+export const useTimelineWheelAxis = (): AppSettings["timeline_wheel_axis"] =>
+  useAppSettingsStore((s) => s.settings.timeline_wheel_axis);
+/// Whether the timeline pages its view to keep the playhead visible.
+export const useFollowPlayheadEnabled = (): boolean =>
+  useAppSettingsStore((s) => s.settings.timeline_follow_playhead);
+export const useAutoDeleteEmptyTracks = (): boolean =>
+  useAppSettingsStore((s) => s.settings.auto_delete_empty_tracks);
+/// Whether the timeline shows its marker lane at all — both halves of the row,
+/// glyphs and header cell alike (see `markers_visible` in
+/// `shared/app-settings.ts`).
+export const useMarkersVisible = (): boolean =>
+  useAppSettingsStore((s) => s.settings.markers_visible);
+/// Whether the preview draws the title-safe / action-safe rectangles. The
+/// overlay subscribes through this hook and then tracks the canvas box
+/// imperatively — a React re-render per frame is what the playhead gate forbids.
+export const useSafeAreaGuidesVisible = (): boolean =>
+  useAppSettingsStore((s) => s.settings.safe_area_guides_visible);
+export const useAppSettingsLoaded = (): boolean =>
+  useAppSettingsStore((s) => s.loaded);
+export const useExportAutoOverwrite = (): boolean =>
+  useAppSettingsStore((s) => s.settings.export_auto_overwrite === true);
+export const useDefaultTextFont = (): string | undefined =>
+  useAppSettingsStore((s) => s.settings.default_text_font);
+
+/// Apply a patch through IPC. Returns the post-patch snapshot. The
+/// store updates twice for the same mutation — once synchronously when
+/// the IPC promise resolves, once via the `app_settings:changed` event
+/// — but both writes are identical so subscribers see a stable value.
+export async function setAppSettings(
+  patch: AppSettingsPatch,
+): Promise<AppSettings> {
+  const after = await appSettingsSet(patch);
+  useAppSettingsStore.getState().hydrate(after);
+  return after;
+}
+
+/// One-shot helpers for the common pill/menu/shortcut surfaces. They
+/// resolve to `setAppSettings(...)` under the hood but make the
+/// call-sites read like intent.
+export async function toggleDisplayMode(): Promise<AppSettings> {
+  const current = useAppSettingsStore.getState().settings.display_mode;
+  const next: DisplayMode = current === "AbRoll" ? "AllTracks" : "AbRoll";
+  return setAppSettings({ display_mode: next });
+}
+
+export async function toggleFollowPlayhead(): Promise<AppSettings> {
+  const current = useAppSettingsStore.getState().settings.timeline_follow_playhead;
+  return setAppSettings({ timeline_follow_playhead: !current });
+}
+
+export async function toggleMarkersVisible(): Promise<AppSettings> {
+  const current = useAppSettingsStore.getState().settings.markers_visible;
+  return setAppSettings({ markers_visible: !current });
+}
+
+export function previewGridEnabled(): boolean {
+  return useAppSettingsStore.getState().settings.preview_grid.enabled;
+}
+
+export function previewSnapEnabled(): boolean {
+  return useAppSettingsStore.getState().settings.preview_snap_enabled;
+}
+
+export async function togglePreviewGrid(): Promise<AppSettings> {
+  return setAppSettings({ preview_grid: { enabled: !previewGridEnabled() } });
+}
+
+export async function togglePreviewSnap(): Promise<AppSettings> {
+  return setAppSettings({ preview_snap_enabled: !previewSnapEnabled() });
+}
+
+export async function toggleSafeAreaGuides(): Promise<AppSettings> {
+  const current = useAppSettingsStore.getState().settings.safe_area_guides_visible;
+  return setAppSettings({ safe_area_guides_visible: !current });
+}
+
+/// Clip snapping, the timeline's magnet. A preference by storage and a
+/// per-edit switch by use — which is why it has a one-shot toggle and a Quick
+/// Actions button, not just the Settings row it shipped with. Every NLE puts
+/// this on the toolbar.
+export async function toggleTailSnap(): Promise<AppSettings> {
+  const current = useAppSettingsStore.getState().settings.tail_snap_enabled;
+  return setAppSettings({ tail_snap_enabled: !current });
+}
+
+/// Same imperative-read reason as `followPlayheadEnabled`: the magnet's
+/// palette checkmark is evaluated inside `listCommands()`, not during a render.
+export function tailSnapEnabled(): boolean {
+  return useAppSettingsStore.getState().settings.tail_snap_enabled;
+}
+
+/// Preview playback resolution. The SETTER stays absolute — it takes the value
+/// to land on, never a direction — which is what lets three idempotent palette
+/// commands, the Settings slider and the Quick Actions strip's cycling button
+/// all write this one field without having to agree on what "next" means.
+/// Walking the ladder is a caller's job: `cyclePlaybackResolution` in
+/// `appCommands.ts` resolves its successor first and then calls this.
+export async function setPlaybackResolution(
+  next: AppSettings["playback_resolution"],
+): Promise<AppSettings> {
+  return setAppSettings({ playback_resolution: next });
+}
+
+/// Same imperative-read reason again: the three resolution commands report
+/// their check state from inside `listCommands()`.
+export function playbackResolution(): AppSettings["playback_resolution"] {
+  return useAppSettingsStore.getState().settings.playback_resolution;
+}
+
+/// Imperative read for the command palette's checkmark, which is evaluated
+/// inside `listCommands()` rather than during a render — same reason
+/// `appCommands.ts` reads `toolStore` directly.
+export function followPlayheadEnabled(): boolean {
+  return useAppSettingsStore.getState().settings.timeline_follow_playhead;
+}
+
+/// Same imperative-read reason as `followPlayheadEnabled`: the marker toggle's
+/// palette checkmark is evaluated inside `listCommands()`, not during a render.
+export function markersVisible(): boolean {
+  return useAppSettingsStore.getState().settings.markers_visible;
+}
+
+/// Same imperative-read reason again: the safe-area toggle's palette checkmark
+/// is evaluated inside `listCommands()`.
+export function safeAreaGuidesVisible(): boolean {
+  return useAppSettingsStore.getState().settings.safe_area_guides_visible;
+}
+
+/// Read imperatively, per wheel event, by `timeline/hooks/useWheelScroll.ts`.
+/// A selector hook there would subscribe the whole timeline tree to a settings
+/// field and re-register the listener on every unrelated settings write — the
+/// same reason `TransformGizmo` reads its snap preferences at pointerdown
+/// instead of through `usePreviewSnapEnabled`.
+export function timelineWheelAxis(): AppSettings["timeline_wheel_axis"] {
+  return useAppSettingsStore.getState().settings.timeline_wheel_axis;
+}
+
+/// Imperative read for command handlers that have to decide whether a freshly
+/// spawned, role-less lane would be hidden by the A/B Roll filter.
+export function displayMode(): DisplayMode {
+  return useAppSettingsStore.getState().settings.display_mode;
+}
+
+/// Change the UI language AND persist it to app_settings.json — the single
+/// source of truth for language. i18next is updated synchronously so the UI
+/// switches immediately; the disk write is fire-and-forget (the
+/// `app_settings:changed` echo re-applies it — a no-op here, but the path that
+/// syncs the change to OTHER windows).
+export function setLocale(next: Locale): void {
+  void i18n.changeLanguage(next);
+  // The language keys the description cache alongside the sampling and the
+  // focus, so a switch puts every held description in a view nobody is asking
+  // for. Chained AFTER the persist rather than fired beside it: main injects
+  // this field into the read, so a resync racing the write would re-read under
+  // the language being left behind.
+  void setAppSettings({ language: next }).then(onDescribeViewChanged);
+}
+
+/// The old (pre-app_settings) localStorage cache key written by i18next's
+/// LanguageDetector. Read once to migrate the choice, then cleared.
+const LEGACY_LOCALE_STORAGE_KEY = "weftcut.locale";
+
+/// Apply a persisted locale to the i18next runtime. No-op when unset (→ leave
+/// the OS-detected default) or already active (avoids a redundant
+/// `languageChanged` churn on the `app_settings:changed` echo).
+function applyPersistedLocale(locale: string | undefined): void {
+  if (!locale || i18n.resolvedLanguage === locale) return;
+  void i18n.changeLanguage(locale);
+}
+
+/// One-time migration for users upgrading from the localStorage era: older
+/// builds cached the choice under `weftcut.locale`. When app_settings has no
+/// language yet, adopt that value (if it's a supported locale) into the store,
+/// then drop the stale key so this never runs again.
+///
+/// Answers whether it adopted one, so first-launch detection only persists a
+/// locale the migration did not already decide.
+function migrateLegacyLocale(): boolean {
+  let legacy: string | null = null;
+  try {
+    legacy = localStorage.getItem(LEGACY_LOCALE_STORAGE_KEY);
+  } catch {
+    return false; // localStorage unavailable (e.g. tests) — nothing to migrate.
+  }
+  const adopt =
+    legacy !== null && (SUPPORTED_LOCALES as readonly string[]).includes(legacy);
+  if (adopt) {
+    setLocale(legacy as Locale); // persist into app_settings + apply to i18next
+  }
+  try {
+    localStorage.removeItem(LEGACY_LOCALE_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+  return adopt;
+}
+
+/// The SUPPORTED_LOCALES member i18next's detected language means, matched on the
+/// primary subtag — `zh` and `zh-TW` both resolve through i18next's
+/// `nonExplicitSupportedLngs`, so the value on hand may be a bare code that is
+/// not itself a member. Falls back to `en-US`, which is `fallbackLng`.
+function detectedLocale(): Locale {
+  const detected = (i18n.resolvedLanguage ?? "").toLowerCase();
+  const primary = detected.split("-")[0] ?? "";
+  return (
+    SUPPORTED_LOCALES.find((l) => l.toLowerCase() === detected) ??
+    SUPPORTED_LOCALES.find((l) => l.split("-")[0] === primary) ??
+    "en-US"
+  );
+}
+
+/// Pin the OS-detected locale into app_settings on a genuine first launch.
+///
+/// The field's absence used to mean "follow the OS every launch", and that was
+/// only ever observable ON the first launch: the language control is a TOGGLE
+/// over `SUPPORTED_LOCALES` (`AppMenuBar`, `StartupScreen`) and never offers a
+/// "follow the system" position, so there is no state a user can choose that
+/// this write takes away.
+///
+/// What it buys is that `app_settings.language` becomes what `setLocale` already
+/// calls it — the single source of truth — for MAIN as well as for the renderer.
+/// Electron main reads it to tell the vision model which language to describe
+/// footage in, and it keys the description cache (`native/src/vlm/description.rs`
+/// `cache_key`), so a main that guessed `en-US` while the UI ran in Chinese would
+/// look for descriptions under a key nothing ever writes.
+function pinDetectedLocale(): void {
+  setLocale(detectedLocale());
+}
+
+/// Wire-up: fetch the current settings, subscribe to backend changes.
+/// Returns an unlisten function — the renderer root owns its lifetime.
+export async function wireAppSettingsStream(): Promise<UnlistenFn> {
+  const offResources = await listen<{ renderers: number; pressure: string }>('resources:changed', e => {
+    updateRendererResources(e.payload); cacheBudget.maintain();
+  });
+  void window.api?.resources?.status().catch(() => {});
+  // Subscribe BEFORE the seed read: a change emitted between the seed
+  // resolving and the listener registering would be lost, and this store
+  // carries preview-critical fields (playback_resolution, decode_engine) that
+  // would then sit stale until the next unrelated settings write.
+  let eventSeen = false;
+  const unlisten = await listen<AppSettings>(APP_SETTINGS_EVENTS.changed, (e) => {
+    eventSeen = true;
+    useAppSettingsStore.getState().hydrate(e.payload);
+    // Keep i18next in sync when the language changes (incl. from another window).
+    applyPersistedLocale(e.payload.language);
+  });
+  // Seed from the current value so the store reflects the disk state even if
+  // no event ever fires. Events carry point-in-time payloads, so a seed that
+  // lost the race must NOT hydrate over a newer event's payload — hence the
+  // latch, not a blind double-hydrate.
+  try {
+    const initial = await appSettingsGet();
+    if (!eventSeen) {
+      useAppSettingsStore.getState().hydrate(initial);
+      // Apply the persisted language choice to i18next, or — on a first launch
+      // with nothing persisted — adopt a legacy `weftcut.locale` if there is
+      // one, else pin what the OS detection resolved to. Either way the field
+      // is populated from here on, which is what lets main answer "which
+      // language does this app speak" without a second detector of its own.
+      if (initial.language) applyPersistedLocale(initial.language);
+      else if (!migrateLegacyLocale()) pinDetectedLocale();
+    }
+  } catch (e) {
+    // IPC unavailable during early boot or in tests; keep defaults.
+    console.warn("appSettingsGet failed:", e);
+  }
+  return () => { unlisten(); offResources(); };
+}

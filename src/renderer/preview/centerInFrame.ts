@@ -1,0 +1,104 @@
+// Centring a layer in the frame, as pure geometry: a layer's transform frame at
+// an instant, and the `x`/`y` shift that puts its visible box in the middle of
+// the composition. No renderer, no store, no IPC — the commands in
+// `commands/appCommands.ts` supply the layer, the probe's natural size and the
+// commit.
+//
+// `TransformGizmo.tsx` reads `TRANSFORMABLE_KINDS` and
+// `layerFrameAt` from here rather than keeping its own copies, so the rectangle
+// the gizmo draws a box around and the rectangle "Center horizontally" centres
+// are the same rectangle by construction. Anything else that needs a layer's
+// footprint belongs here too. LANDMINE: a second private copy of this geometry
+// is not a duplicate the compiler will catch — nothing enforces the agreement,
+// and a drift looks broken on neither side alone (the gizmo boxes one rectangle
+// while "Center horizontally" centres another).
+
+import type { AnimTrack, LayerSummary } from "../ipc";
+import { resolveAnimated } from "../render/animated";
+import { evaluatePosition, previewPosition } from '../render/position';
+import { DEFAULT_ANCHOR } from "../render/anchorPivot";
+import { layerQuad, type LayerQuadInput, type Pt } from "./gizmoGeometry";
+import { quadAabb } from "./previewSnap";
+
+/// The kinds that carry a transform at all. `Color` fills the composition, so it
+/// is already centred by construction, and `Audio` has no footprint.
+///
+/// A Group is in: its footprint is its composition's frame size, which is a real
+/// rectangle the gizmo can box and "Center horizontally" can move — the same
+/// rectangle a video clip's coded size gives (ADR 0052 §4).
+export const TRANSFORMABLE_KINDS: ReadonlySet<string> = new Set([
+  "VideoClip",
+  "ImageOverlay",
+  "Text",
+  "Motif",
+  "CompositionRef",
+]);
+
+/// The flattened transform fields, read through one cast at the edge because
+/// `LayerParamsView` is a discriminated union and this is deliberately
+/// kind-agnostic past the `TRANSFORMABLE_KINDS` gate.
+interface TransformFields {
+  position?: import('../../shared/position').PositionAnimation;
+  kind: string;
+  x?: AnimTrack<number>;
+  y?: AnimTrack<number>;
+  scale_x?: AnimTrack<number>;
+  scale_y?: AnimTrack<number>;
+  rotation_deg?: AnimTrack<number>;
+  anchor_x?: AnimTrack<number>;
+  anchor_y?: AnimTrack<number>;
+}
+
+/// A layer's transform frame at an ABSOLUTE time on the LAYER'S OWN
+/// composition's clock — the projection of the one moment
+/// (`state/playheadProjection.ts`), never the root's raw playhead, which reads
+/// as a different instant inside every Group.
+///
+/// Given the untransformed content size the compositor reports for it
+/// (`GizmoProbe.naturalSizeOf`) — for a Text layer that is its box when one is
+/// set and its measured glyph bounds when not (ADR 0049), which is why the size
+/// is a parameter and not something this module could read off the params.
+///
+/// `DEFAULT_ANCHOR` and nothing else for the anchor fallback — the same constant
+/// the renderer resolves through, so this frame and the picture cannot pivot
+/// about different points. LANDMINE: a local fallback here makes a box pivot
+/// where the picture does not, and neither looks broken on its own.
+export function layerFrameAt(
+  layer: LayerSummary,
+  tUs: number,
+  size: { w: number; h: number },
+): LayerQuadInput {
+  const p = layer.params as unknown as TransformFields;
+  const tLocalUs = tUs - layer.t_start_us;
+  return {
+    ...(p.position && (p.position.mode==='Path'||previewPosition(p.position)!==p.position) ? evaluatePosition(previewPosition(p.position),tLocalUs) : {x:resolveAnimated(p.x,tLocalUs,0),y:resolveAnimated(p.y,tLocalUs,0)}),
+    anchorX: resolveAnimated(p.anchor_x, tLocalUs, DEFAULT_ANCHOR),
+    anchorY: resolveAnimated(p.anchor_y, tLocalUs, DEFAULT_ANCHOR),
+    naturalW: size.w,
+    naturalH: size.h,
+    scaleX: resolveAnimated(p.scale_x, tLocalUs, 1),
+    scaleY: resolveAnimated(p.scale_y, tLocalUs, 1),
+    rotationDeg: resolveAnimated(p.rotation_deg, tLocalUs, 0),
+    ...(layer.params.kind === 'VideoClip' ? {
+      visibleRect: layer.params.crop,
+      flipX: layer.params.flip_h,
+      flipY: layer.params.flip_v,
+    } : {}),
+  };
+}
+
+/// The `x`/`y` delta that moves the layer's AXIS-ALIGNED BOUNDING BOX onto the
+/// composition's centre. Null on a degenerate quad.
+///
+/// Centering uses the visible footprint, including crop, rotation and flips.
+///
+/// The caller picks the axis: writing both would move a layer the user asked to
+/// centre on one.
+export function centerShift(frame: LayerQuadInput, compW: number, compH: number): Pt | null {
+  const box = quadAabb(layerQuad(frame));
+  if (!box) return null;
+  return {
+    x: compW / 2 - (box.left + box.right) / 2,
+    y: compH / 2 - (box.top + box.bottom) / 2,
+  };
+}

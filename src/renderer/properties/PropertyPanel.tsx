@@ -1,0 +1,1491 @@
+import { RetimeFields } from './RetimeFields';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useTranslation } from "react-i18next";
+import { Lock, LockOpen, Power, Tag } from "lucide-react";
+import { formatTimecode, parseTimecode } from "../frames";
+import {
+  AUDIO_UNITS_ORDER,
+  formatAudioTime,
+  parseAudioTime,
+  setAudioUnits,
+  useAudioUnits,
+  type AudioUnits,
+} from "../state/audioUnitsStore";
+import { AppColorField, hexToRgba, rgbaToHex } from "../components/AppColorField";
+import { AppInput } from "../components/AppInput";
+import { AppTimecodeField } from "../components/AppTimecodeField";
+import { AppNumberField } from "../components/AppNumberField";
+import { AppSelect } from "../components/AppSelect";
+import { FontSelect } from "../components/FontSelect";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import {
+  groupsRename,
+  groupsUngroup,
+  updateLayer,
+  updateLayerParams,
+  moveLayer,
+  trimLayer,
+  AUDIO_ROLES,
+  type AudioRole,
+  type CompositionSummary,
+  type LayerParamsPatch,
+  type AnimTrack,
+  type LayerSummary,
+  type Rgba,
+  type TrackSummary,
+} from "../ipc";
+import { ROTATION, ANCHOR_X, ANCHOR_Y, OPACITY, GAIN_DB, PAN, COLOR_TEXT, COLOR_FILL, type RgbaParamDescriptor } from "../keyframe/descriptors";
+import { groupDisplayName, layerDisplayName } from "../lib/layerName";
+import { trackDisplayName } from "../lib/trackName";
+import { tryMutate } from "../errors/tryMutate";
+import { getGizmoProbe } from "../preview/gizmoProbeRegistry";
+import { linkFanoutActive } from "../timeline/linkEligibility";
+import {
+  groupNotPlainReason,
+  type GroupNotPlainReason,
+} from "../timeline/groupEligibility";
+import { openComposition } from "../state/compositionAnchorStore";
+import { isShrunk, TEXT_BOX_MIN_PX } from "../render/textBox";
+import { AnimatableField, displayValue } from "../components/AnimatableField";
+import { updateLayerParamTrack } from "../ipc";
+import { autoKeyTrack } from "../keyframe/autoKey";
+import { collapseToStaticRgba } from "../keyframe/edits";
+import { resolveAnimatedColor } from "../render/animated";
+import { InspectorAnimField } from "./InspectorAnimField";
+import { ScaleFields } from "./ScaleFields";
+import { PositionFields } from './PositionFields';
+import { TEXT_BOX_MODES, textBoxModeOf, textBoxPatchFor, type TextBoxMode } from "./textBoxMode";
+import { useTextFit } from "./useTextFit";
+
+// Animatable rows render through a stopwatch wrapper: the numeric ones via
+// `InspectorAnimField`, the two colours via `InspectorColorField`. Every other
+// row (fades/flip/mute/content/font, Motif props) commits scalars through
+// `updateLayerParams`.
+import { getMotif, motifUnavailable, subscribeMotifCatalog, motifCatalogRevision } from "../render/motifs/catalog";
+import { MotifManagementRow, MotifSourcePanel } from "./MotifManagement";
+import { MotifProblem } from "../motifs/MotifProblem";
+import { openMotifsPanelAt } from "../motifs/openMotifsPanel";
+import {
+  useCompositionRefCounts,
+  useGroupOrdinals,
+  useMediaById,
+  useOpenComposition,
+  useProjectStore,
+} from "../state/projectStore";
+import {
+  useSelectedCompositionId,
+  useSelectedLayerIds,
+  useSelectedMediaId,
+  useSelectedTransitionId,
+} from "../state/selectionStore";
+import { MediaFields } from "./MediaFields";
+import { TransitionFields } from "./TransitionFields";
+import { Field } from "./Field";
+import { FadeFields } from "./FadeFields";
+import { MotifParamsFrame } from "./MotifParamsFrame";
+import { MotifPropField } from "./MotifPropFields";
+import { PausesSection } from "./PausesSection";
+import { PropSection } from "./PropSection";
+import { InspectorRow } from "./InspectorRow";
+import { useLayerBakeStatus } from "../timeline/motifBakeStatusStore";
+import { findPanelLayer } from "../panels/panelLayer";
+import { LayerReadOnly } from "./LayerEditing";
+import { layerEditLock } from "../../shared/layerLocks";
+import { layerIsReadOnly } from "../state/layerEditability";
+import { AppIcon } from "@/components/AppIcon";
+
+export interface AttributePanelProps {
+  tracks: TrackSummary[];
+  selectedLayerId: string | null;
+  onMutated: () => Promise<void>;
+  fpsNum: number;
+  fpsDen: number;
+  currentTimeUs: number;
+}
+
+const COMMIT_DEBOUNCE_MS = 250;
+
+export function AttributePanel({
+  tracks,
+  selectedLayerId,
+  onMutated,
+  fpsNum,
+  fpsDen,
+  currentTimeUs,
+}: AttributePanelProps) {
+  const { t } = useTranslation();
+  const layer = useMemo(
+    () => findPanelLayer(tracks, selectedLayerId),
+    [tracks, selectedLayerId],
+  );
+  const track = useMemo(
+    () => (layer ? tracks.find((tr) => tr.layers.some((l) => l.id === layer.id)) : undefined),
+    [tracks, layer],
+  );
+  // Selected transition chip, resolved from the project store: the summary is
+  // the same snapshot the timeline chips render from.
+  const selectedTransitionId = useSelectedTransitionId();
+  const compForTransition = useOpenComposition();
+  const transition = useMemo(
+    () =>
+      selectedTransitionId === null
+        ? null
+        : (compForTransition?.transitions ?? []).find(
+            (tr) => tr.id === selectedTransitionId,
+          ) ?? null,
+    [selectedTransitionId, compForTransition],
+  );
+
+  const poolCompositionId = useSelectedCompositionId();
+  const poolComposition = useProjectStore((s) =>
+    poolCompositionId === null
+      ? null
+      : (s.summary?.compositions[poolCompositionId] ?? null),
+  );
+  const poolMedia = useMediaById(useSelectedMediaId());
+
+  if (transition) {
+    return (
+      <aside
+        className="property-panel attribute-panel"
+        aria-label={t("property_panel.heading")}
+      >
+        <LayerReadOnly value={[transition.from_layer, transition.to_layer].some(id => layerIsReadOnly(compForTransition?.tracks ?? [], id))}>
+        <TransitionFields
+          transition={transition}
+          fpsNum={fpsNum}
+          fpsDen={fpsDen}
+          onMutated={onMutated}
+        />
+        </LayerReadOnly>
+      </aside>
+    );
+  }
+
+  // A composition picked in the media pool's Groups section. It has no layer and
+  // no track — that is the point: a Group is reusable, so it must be inspectable
+  // and nameable while nothing references it, which is exactly an orphan's state.
+  if (poolComposition) {
+    return (
+      <aside
+        className="property-panel attribute-panel"
+        aria-label={t("property_panel.heading")}
+      >
+        <CompositionPanel
+          composition={poolComposition}
+          fpsNum={fpsNum}
+          fpsDen={fpsDen}
+          onMutated={onMutated}
+        />
+      </aside>
+    );
+  }
+
+  // The pool's other card. Same reason it is a branch at all: an imported file
+  // is a project-level entity, so what it is and where it is used have to be
+  // readable without placing it first.
+  if (poolMedia) {
+    return (
+      <aside
+        className="property-panel attribute-panel"
+        aria-label={t("property_panel.heading")}
+      >
+        <MediaFields media={poolMedia} fpsNum={fpsNum} fpsDen={fpsDen} />
+      </aside>
+    );
+  }
+
+  if (!layer) {
+    return (
+      <aside
+        className="property-panel attribute-panel"
+        aria-label={t("property_panel.heading")}
+      >
+        <p className="placeholder">{t("property_panel.empty")}</p>
+      </aside>
+    );
+  }
+
+  return (
+    <aside
+      className="property-panel attribute-panel"
+      aria-label={t("property_panel.heading")}
+    >
+      <LayerReadOnly value={layerEditLock(layer, track) !== null}>
+        <LayerPanel layer={layer} track={track} onMutated={onMutated} fpsNum={fpsNum} fpsDen={fpsDen} currentTimeUs={currentTimeUs} />
+      </LayerReadOnly>
+    </aside>
+  );
+}
+
+/// The composition branch: what a Group IS, with no clip in the way — its name,
+/// its frame size, its length, and how many Group clips show it.
+///
+/// Reached only from the media pool's Groups section, and it is the surface that
+/// makes an orphan actionable: a composition nothing references has no clip to
+/// select, so without this the only way to name or read one would be to place it
+/// first. Size and duration are read-only for the same reasons they are on a
+/// Group clip (`GroupFields`): the frame size is copied at pre-compose and not
+/// editable in v1, and the duration autofits from the contents.
+///
+/// `sectionId` is shared with `GroupFields`' section on purpose — collapse state
+/// is per (kind, section), and a Group read from the pool and the same Group read
+/// from its clip are one thing to the user.
+function CompositionPanel({
+  composition,
+  fpsNum,
+  fpsDen,
+  onMutated,
+}: {
+  composition: CompositionSummary;
+  fpsNum: number;
+  fpsDen: number;
+  onMutated: () => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const groupOrdinals = useGroupOrdinals();
+  const refCount = useCompositionRefCounts().get(composition.id) ?? 0;
+  const derivedName = groupDisplayName(
+    composition.id,
+    composition.label,
+    groupOrdinals,
+    t,
+  );
+  const [name, setName] = useState(composition.label ?? "");
+  // Resync from the authoritative snapshot on every committed change (own round
+  // trip, a rename from the pool's dialog, undo). Primitive deps, so an unrelated
+  // refresh cannot clobber the field mid-typing — the `useEnvelope` rule.
+  useEffect(() => {
+    setName(composition.label ?? "");
+  }, [composition.id, composition.label]);
+
+  const commitName = async () => {
+    const next = name.trim();
+    if (next === (composition.label ?? "")) return;
+    if (await tryMutate(() => groupsRename(composition.id, next || null), "groups_rename")) {
+      await onMutated();
+    }
+  };
+
+  return (
+    <>
+      <div className="prop-identity">
+        <p className="prop-identity-title">{derivedName}</p>
+        <p className="prop-identity-meta">{t("property_panel.group")}</p>
+      </div>
+      <PropSection layerKind="CompositionRef" sectionId="group" title={t("property_panel.group")}>
+        <Field label={t("property_panel.group_name")}>
+          <AppInput
+            value={name}
+            placeholder={derivedName}
+            ariaLabel={t("property_panel.group_name")}
+            onValueChange={setName}
+            onBlur={() => void commitName()}
+          />
+        </Field>
+        <Field label={t("property_panel.group_size")}>
+          <span className="text-xs text-muted-foreground">
+            {`${composition.width} × ${composition.height}`}
+          </span>
+        </Field>
+        <Field label={t("property_panel.duration")}>
+          <span className="font-mono text-xs text-muted-foreground">
+            {formatTimecode(composition.duration_us, fpsNum, fpsDen)}
+          </span>
+        </Field>
+        {/* The count is what tells an orphan from a reused Group, and it is the
+            same number the pool row shows and the Delete gate reads. */}
+        <Field label={t("property_panel.group_refs")}>
+          <span className="text-xs text-muted-foreground">
+            {t("media_pool.groups_refs", { count: refCount })}
+          </span>
+        </Field>
+        <Button size="sm" onClick={() => openComposition(composition.id, null)}>
+          {t("property_panel.group_open")}
+        </Button>
+      </PropSection>
+    </>
+  );
+}
+
+/// Identity and flags stay visible. Primary property groups are flat; secondary
+/// settings disclose where they belong, with session memory per kind/section.
+function LayerPanel({
+  layer,
+  track,
+  onMutated,
+  fpsNum,
+  fpsDen,
+  currentTimeUs,
+}: {
+  layer: LayerSummary;
+  track: TrackSummary | undefined;
+  onMutated: () => Promise<void>;
+  fpsNum: number;
+  fpsDen: number;
+  currentTimeUs: number;
+}) {
+  const { t } = useTranslation();
+  const comp = useOpenComposition();
+  const groupOrdinals = useGroupOrdinals();
+  const selectionCount = useSelectedLayerIds().size;
+  const link = comp?.links.find((g) => g.layer_ids.includes(layer.id)) ?? null;
+  const env = useEnvelope({ layer, track, onMutated, fpsNum, fpsDen });
+  const nameInput = useRef<HTMLInputElement>(null);
+
+  const kindLabel = t(`kinds.${layer.kind.toLowerCase()}`, { defaultValue: layer.kind });
+  const trackLabel = track
+    ? trackDisplayName(track, comp?.tracks ?? [], t)
+    : "—";
+  const mediaLabel =
+    layer.params.kind === "VideoClip" ||
+    layer.params.kind === "ImageOverlay" ||
+    layer.params.kind === "Audio"
+      ? layer.params.media_label
+      : null;
+  const tInLayerUs = currentTimeUs - layer.t_start_us;
+  const fallbackName = layerDisplayName({ ...layer, label: null }, t, groupOrdinals);
+  const playheadInSpan = currentTimeUs >= layer.t_start_us && currentTimeUs < layer.t_end_us;
+
+  return (
+    <>
+      <div className="prop-identity">
+        <label className="prop-name-row">
+          <span className="prop-name-icon" title={t("property_panel.label")}>
+            <AppIcon icon={Tag} size="title" aria-hidden />
+          </span>
+          <AppInput
+            ref={nameInput}
+            className="prop-name-input"
+            disabled={env.timingDisabled}
+            value={env.label}
+            placeholder={fallbackName}
+            ariaLabel={t("property_panel.label")}
+            onValueChange={env.setLabel}
+            onFocus={env.beginLabelEdit}
+            onBlur={env.commitLabel}
+            onCancel={() => {
+              env.cancelLabelEdit();
+              nameInput.current?.blur();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                e.currentTarget.blur();
+              }
+            }}
+          />
+        </label>
+        {mediaLabel && env.label.trim() ? (
+          <p className="prop-identity-meta" title={mediaLabel}>
+            {t("property_panel.source_media", { name: mediaLabel })}
+          </p>
+        ) : null}
+        <p className="prop-identity-meta">
+          {`${kindLabel} · ${trackLabel} · ${
+            link
+              ? t("property_panel.link_of", { count: link.layer_ids.length })
+              : t("property_panel.link_none")
+          }`}
+        </p>
+        <div className="prop-flags">
+          <Button size="sm" variant="ghost" className="prop-flag" disabled={env.timingDisabled} aria-label={t("property_panel.enabled")} aria-pressed={layer.enabled} onClick={() => void env.commitFlag({ enabled: !layer.enabled })}>
+            <AppIcon icon={Power} size="label" aria-hidden />
+            {t(layer.enabled ? "property_panel.flag_enabled" : "property_panel.flag_disabled")}
+          </Button>
+          <Button size="sm" variant="ghost" className="prop-flag" aria-label={t("property_panel.locked")} aria-pressed={layer.locked} onClick={() => void env.commitFlag({ locked: !layer.locked })}>
+            {layer.locked ? <AppIcon icon={Lock} size="label" aria-hidden /> : <AppIcon icon={LockOpen} size="label" aria-hidden />}
+            {t(layer.locked ? "property_panel.flag_locked" : "property_panel.flag_unlocked")}
+          </Button>
+        </div>
+        {track?.locked ? <p className="prop-hint">{t("property_panel.track_locked_hint")}</p> : null}
+      </div>
+      {selectionCount > 1 ? (
+        <p className="prop-primary-note">
+          {t("property_panel.multi_primary", {
+            label: layerDisplayName(layer, t, groupOrdinals),
+            count: selectionCount,
+          })}
+        </p>
+      ) : null}
+      {layer.params.kind !== "Audio" && layer.params.kind !== "Color" ? (
+        <TransformFields layer={layer} scaleLinked={layer.params.scale_linked} tInLayerUs={tInLayerUs} playheadInSpan={playheadInSpan} onMutated={onMutated} />
+      ) : null}
+      <PropSection layerKind={layer.kind} sectionId="timing" title={t("property_panel.timing")}>
+        <Field label={t("property_panel.t_start")} hint={t("property_panel.t_start_hint")}>
+          {env.isAudio && env.units !== "frames" ? (
+            <AppInput
+              value={env.startTc}
+              mono
+              disabled={env.timingDisabled}
+              ariaLabel={t("property_panel.t_start")}
+              onValueChange={env.setStartTc}
+              onBlur={() => void env.commitStart()}
+            />
+          ) : (
+            <AppTimecodeField
+              key={`${layer.id}:start:${env.startReset}`}
+              valueUs={parseTimecode(env.startTc, fpsNum, fpsDen) ?? 0}
+              fpsNum={fpsNum}
+              fpsDen={fpsDen}
+              disabled={env.timingDisabled}
+              ariaLabel={t("property_panel.t_start")}
+              onCommit={(us) => void env.commitStart(formatTimecode(us, fpsNum, fpsDen))}
+            />
+          )}
+        </Field>
+        <Field label={t("property_panel.duration")}>
+          {env.isAudio && env.units !== "frames" ? (
+            <AppInput
+              value={env.durTc}
+              mono
+              disabled={env.timingDisabled}
+              ariaLabel={t("property_panel.duration")}
+              onValueChange={env.setDurTc}
+              onBlur={() => void env.commitDuration()}
+            />
+          ) : (
+            <AppTimecodeField
+              key={`${layer.id}:duration:${env.durationReset}`}
+              valueUs={parseTimecode(env.durTc, fpsNum, fpsDen) ?? 0}
+              fpsNum={fpsNum}
+              fpsDen={fpsDen}
+              disabled={env.timingDisabled}
+              ariaLabel={t("property_panel.duration")}
+              onCommit={(us) => void env.commitDuration(formatTimecode(us, fpsNum, fpsDen))}
+            />
+          )}
+        </Field>
+        <Field as="div" label={t("property_panel.t_end")}>
+          <output className="prop-time-end-value" aria-label={t("property_panel.t_end")}>
+            {env.isAudio
+              ? formatAudioTime(layer.t_end_us, env.units, fpsNum, fpsDen)
+              : formatTimecode(layer.t_end_us, fpsNum, fpsDen)}
+          </output>
+        </Field>
+        <RetimeFields key={layer.id} layer={layer} disabled={env.timingDisabled} onMutated={onMutated} fpsNum={fpsNum} fpsDen={fpsDen} />
+        {env.isAudio ? (
+          // Premiere's "audio units" equivalent, placed with the readouts it governs.
+          // Scoped to audio times only: the ruler stays frame-based, because there is no
+          // zoom at which a sample ruler is legible and it would put a second grid on
+          // screen (ADR 0038).
+          <Field label={t("timeline.audio_units")} hint={t("property_panel.audio_units_hint")}>
+            <AppSelect
+              value={env.units}
+              ariaLabel={t("timeline.audio_units")}
+              onValueChange={(v) => setAudioUnits(v as AudioUnits)}
+              options={AUDIO_UNITS_ORDER.map((u) => ({
+                value: u,
+                label: t(`timeline.audio_units_${u}`),
+              }))}
+            />
+          </Field>
+        ) : null}
+      </PropSection>
+      <KindFields layer={layer} onMutated={onMutated} fpsNum={fpsNum} fpsDen={fpsDen} tInLayerUs={tInLayerUs} playheadInSpan={playheadInSpan} />
+      <PausesSection layer={layer} />
+    </>
+  );
+}
+
+/// State + commit routing for the Layer envelope: identity (label), flags
+/// (enabled/locked), and timing (Start/duration). Timing edits route through
+/// the SAME link-aware commands as Timeline
+/// gestures — Start through `move_layer`, duration through `trim_layer` — so
+/// snapping, link fan-out, lock checks, and composition autofit behave
+/// identically no matter where the edit comes from (spec: the inspector
+/// must not create a different editing model; raw `update_layer` envelope
+/// patching is deliberately NOT used for time edits because it neither
+/// snaps nor autofits).
+function useEnvelope({
+  layer,
+  track,
+  onMutated,
+  fpsNum,
+  fpsDen,
+}: {
+  layer: LayerSummary;
+  track: TrackSummary | undefined;
+  onMutated: () => Promise<void>;
+  fpsNum: number;
+  fpsDen: number;
+}) {
+  // ── Audio-layer timing reads and writes on the SAMPLE lattice (ADR 0038) ────
+  // Sample precision is unreachable by dragging (0.042 px per sample at the zoom
+  // ceiling), so these fields — together with the nudge commands — ARE the
+  // fine-authoring surface. The unit is a reading preference scoped to audio
+  // readouts; the ruler, the playhead and every visual layer stay frame-based.
+  const units = useAudioUnits();
+  const isAudio = layer.kind === "Audio";
+  const fmtTime = (us: number): string =>
+    isAudio ? formatAudioTime(us, units, fpsNum, fpsDen) : formatTimecode(us, fpsNum, fpsDen);
+  const parseTime = (s: string): number | null =>
+    isAudio ? parseAudioTime(s, units, fpsNum, fpsDen) : parseTimecode(s, fpsNum, fpsDen);
+
+  const [label, setLabel] = useState(layer.label ?? "");
+  const labelCancelled = useRef(false);
+  // Remount a segmented control on refusal, even when its stored value did not change.
+  const [startReset, setStartReset] = useState(0);
+  const [durationReset, setDurationReset] = useState(0);
+  const [startTc, setStartTc] = useState(() => fmtTime(layer.t_start_us));
+  const [durTc, setDurTc] = useState(() => fmtTime(layer.t_end_us - layer.t_start_us));
+  // Resync from the authoritative snapshot whenever the committed envelope
+  // changes (own commit round-trip, link fan-out, undo) — or when the audio unit
+  // flips, which re-renders the same times in the new unit. Primitive deps —
+  // not the layer object — so unrelated project refreshes can't clobber a
+  // field mid-typing.
+  useEffect(() => {
+    setLabel(layer.label ?? "");
+    labelCancelled.current = false;
+  }, [layer.id, layer.label]);
+  useEffect(() => {
+    setStartTc(fmtTime(layer.t_start_us));
+    setDurTc(fmtTime(layer.t_end_us - layer.t_start_us));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fmtTime is derived from
+    // exactly the primitives listed here; including it would re-run every render.
+  }, [layer.id, layer.t_start_us, layer.t_end_us, fpsNum, fpsDen, isAudio, units]);
+
+  // Timeline gesture suppression parity: a locked Layer (or a Layer on a
+  // locked Track) can't be moved/trimmed from the Timeline, so the
+  // inspector's timing fields read but don't edit.
+  const timingDisabled = layerEditLock(layer, track) !== null;
+
+  // Every edit below records exactly one undo entry per committed gesture.
+  // Guards skip the command entirely when the field still holds the current
+  // (grid-aligned) value, so re-committing an unchanged value can't record
+  // a no-op undo.
+  const commitLabel = async (): Promise<void> => {
+    if (labelCancelled.current) {
+      labelCancelled.current = false;
+      return;
+    }
+    const next = label.trim();
+    setLabel(next);
+    if (next === (layer.label ?? "")) return;
+    // Empty labels are absent to layerDisplayName, as in timeline rename.
+    if (await tryMutate(() => updateLayer(layer.id, { label: next }), "Rename layer")) {
+      await onMutated();
+    } else {
+      setLabel(layer.label ?? "");
+    }
+  };
+
+  const commitFlag = async (patch: { enabled: boolean } | { locked: boolean }): Promise<void> => {
+    // Inspector flags belong to the displayed clip, even in a linked selection.
+    if (await tryMutate(() => updateLayer(layer.id, patch), "Update layer flag")) {
+      await onMutated();
+    }
+  };
+
+  // Start edits move the whole Layer (link-aware); the command snaps to
+  // the comp frame grid and autofits the composition.
+  const commitStart = async (nextTc = startTc): Promise<void> => {
+    const us = parseTime(nextTc);
+    if (us === null) {
+      setStartTc(fmtTime(layer.t_start_us));
+      setStartReset((n) => n + 1);
+      return;
+    }
+    if (us === layer.t_start_us || !track || timingDisabled) return;
+    setStartTc(nextTc);
+    // `escapeLink` on an audio layer: a sub-frame start edit is a SLIP, so it must
+    // move this member alone. Dragging the whole link to a sample boundary would
+    // put the video member off its own grid (ADR 0038 / R2-D7). The link
+    // override escapes too, as it does for every timeline gesture.
+    const escape = isAudio || !linkFanoutActive();
+    if (await tryMutate(() => moveLayer(layer.id, track.id, us, escape), "Move layer")) {
+      await onMutated();
+    } else {
+      setStartTc(fmtTime(layer.t_start_us));
+      setStartReset((n) => n + 1);
+    }
+  };
+
+  // Duration edits are an out-edge trim to t_start + duration; the command
+  // clamps against the minimum Layer duration and media bounds.
+  const commitDuration = async (nextTc = durTc): Promise<void> => {
+    const us = parseTime(nextTc);
+    if (us === null || us <= 0) {
+      setDurTc(fmtTime(layer.t_end_us - layer.t_start_us));
+      setDurationReset((n) => n + 1);
+      return;
+    }
+    const newEnd = layer.t_start_us + us;
+    if (newEnd === layer.t_end_us || timingDisabled) return;
+    setDurTc(nextTc);
+    if (
+      await tryMutate(
+        () => trimLayer(layer.id, "out", newEnd, !linkFanoutActive()),
+        "Trim layer",
+      )
+    ) {
+      await onMutated();
+    } else {
+      setDurTc(fmtTime(layer.t_end_us - layer.t_start_us));
+      setDurationReset((n) => n + 1);
+    }
+  };
+
+  return {
+    label,
+    setLabel,
+    beginLabelEdit: () => { labelCancelled.current = false; },
+    cancelLabelEdit: () => {
+      labelCancelled.current = true;
+      setLabel(layer.label ?? "");
+    },
+    startReset,
+    durationReset,
+    startTc,
+    setStartTc,
+    durTc,
+    setDurTc,
+    units,
+    isAudio,
+    timingDisabled,
+    commitLabel,
+    commitFlag,
+    commitStart,
+    commitDuration,
+  };
+}
+
+function KindFields({
+  layer,
+  onMutated,
+  fpsNum,
+  fpsDen,
+  tInLayerUs,
+  playheadInSpan,
+}: {
+  layer: LayerSummary;
+  onMutated: () => Promise<void>;
+  fpsNum: number;
+  fpsDen: number;
+  tInLayerUs: number;
+  playheadInSpan: boolean;
+}) {
+  const { t } = useTranslation();
+  const commit = commitLayerParams(layer.id, onMutated);
+
+  switch (layer.params.kind) {
+    case "Text":
+      return <TextFields layer={layer} v={layer.params} commit={commit} tInLayerUs={tInLayerUs} playheadInSpan={playheadInSpan} onMutated={onMutated} />;
+    case "VideoClip":
+    case "ImageOverlay":
+      return (
+        <PropSection layerKind={layer.kind} sectionId="effects" title={t("property_panel.effects")}>
+          <FadeFields key={layer.id} v={layer.params} commit={commit} fpsNum={fpsNum} fpsDen={fpsDen} />
+        </PropSection>
+      );
+    case "Color":
+      return <ColorFields layer={layer} v={layer.params} commit={commit} tInLayerUs={tInLayerUs} playheadInSpan={playheadInSpan} onMutated={onMutated} />;
+    case "Audio":
+      return (
+        <>
+          <AudioFields layer={layer} v={layer.params} commit={commit} tInLayerUs={tInLayerUs} playheadInSpan={playheadInSpan} onMutated={onMutated} />
+          <PropSection layerKind={layer.kind} sectionId="effects" title={t("property_panel.effects")}>
+            <FadeFields key={layer.id} v={layer.params} commit={commit} fpsNum={fpsNum} fpsDen={fpsDen} />
+          </PropSection>
+        </>
+      );
+    case "Motif":
+      return <MotifFields layer={layer} v={layer.params} commit={commit} />;
+    case "CompositionRef":
+      return <GroupFields layer={layer} v={layer.params} onMutated={onMutated} fpsNum={fpsNum} fpsDen={fpsDen} />;
+  }
+}
+
+type Commit = (patch: LayerParamsPatch) => Promise<void>;
+
+/// The field-wise params commit shared by the kind-specific fields: one backend command + one refresh per gesture; a refusal
+/// becomes a status-bar line (errors/tryMutate.ts).
+function commitLayerParams(layerId: string, onMutated: () => Promise<void>): Commit {
+  return async (patch) => {
+    if (await tryMutate(() => updateLayerParams(layerId, patch), "Edit layer property")) {
+      await onMutated();
+    }
+  };
+}
+
+/// The animatable colour row, shared by the Text section (glyph colour) and the
+/// Color section (fill): the swatch and its eyedropper inside the same
+/// stopwatch wrapper the f64 rows use, so a colour turns on, off and keys
+/// exactly like opacity does.
+///
+/// The stopwatch decides where a pick lands: lit, it becomes a keyframe at the
+/// playhead through `updateLayerParamTrack`; unlit, it stays the static
+/// `update_layer_params` patch, so a layer nobody animates never grows a track.
+/// Both paths debounce for the same reason — the native picker fires `onChange`
+/// continuously while the user drags inside it.
+function InspectorColorField({
+  layerId,
+  track,
+  desc,
+  tInLayerUs,
+  playheadInSpan,
+  commitStatic,
+  onMutated,
+}: {
+  layerId: string;
+  track: AnimTrack<Rgba>;
+  desc: RgbaParamDescriptor;
+  tInLayerUs: number;
+  playheadInSpan: boolean;
+  /// Where a pick goes while the stopwatch is unlit — the kind's own params
+  /// patch, which is the one thing the two sections do differently.
+  commitStatic: (color: Rgba) => Promise<void>;
+  onMutated: () => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const label = t(desc.labelKey);
+  const shown = displayValue(track, tInLayerUs, desc.fallback, resolveAnimatedColor);
+  // Local draft while a pick is in flight: null = idle, so the swatch follows
+  // the playhead, undo and the stopwatch again the moment a new track arrives.
+  const [draft, setDraft] = useState<Rgba | null>(null);
+  useEffect(() => setDraft(null), [layerId, track]);
+  const value = draft ?? shown;
+
+  const commitColor = useDebouncedCommit<Rgba>(async (next) => {
+    if (track.mode === "Keyframed") {
+      await tryMutate(
+        () => updateLayerParamTrack(layerId, desc.paramKey, autoKeyTrack(track, tInLayerUs, next)).then(onMutated),
+        "Edit keyframes",
+      );
+    } else {
+      await commitStatic(next);
+    }
+  });
+
+  return (
+    <AnimatableField
+      layerId={layerId}
+      paramKey={desc.paramKey}
+      label={label}
+      track={track}
+      fallback={desc.fallback}
+      collapse={collapseToStaticRgba}
+      tInLayerUs={tInLayerUs}
+      playheadInSpan={playheadInSpan}
+      onMutated={onMutated}
+    >
+      <AppColorField
+        value={rgbaToHex(value)}
+        ariaLabel={label}
+        // The native picker edits RGB only, so alpha rides through from what is
+        // on screen rather than being reset to opaque on every pick.
+        onValueChange={(hex) => {
+          const next = hexToRgba(hex, value.a);
+          setDraft(next);
+          commitColor(next);
+        }}
+      />
+    </AnimatableField>
+  );
+}
+
+/// Shared transform controls, placed before the Timing group.
+function TransformFields({
+  layer,
+  scaleLinked,
+  tInLayerUs,
+  playheadInSpan,
+  onMutated,
+}: {
+  layer: LayerSummary;
+  scaleLinked: boolean;
+  tInLayerUs: number;
+  playheadInSpan: boolean;
+  onMutated: () => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const commit = commitLayerParams(layer.id, onMutated);
+  const video = layer.params.kind === "VideoClip" ? layer.params : null;
+  return (
+    <PropSection layerKind={layer.kind} sectionId="transform" title={t("property_panel.transform")}>
+      <InspectorRow label={t("property_panel.anchor")}>
+        <InspectorAnimField layer={layer} desc={ANCHOR_X} tInLayerUs={tInLayerUs} playheadInSpan={playheadInSpan} onMutated={onMutated} layout="cell" />
+        <InspectorAnimField layer={layer} desc={ANCHOR_Y} tInLayerUs={tInLayerUs} playheadInSpan={playheadInSpan} onMutated={onMutated} layout="cell" />
+      </InspectorRow>
+      <PositionFields layer={layer} tInLayerUs={tInLayerUs} playheadInSpan={playheadInSpan} onMutated={onMutated}/>
+      {/* `ScaleFields` owns its own row: one field + closed chain while
+          linked, both axes + open chain while not. */}
+      <ScaleFields layer={layer} scaleLinked={scaleLinked} tInLayerUs={tInLayerUs} playheadInSpan={playheadInSpan} onMutated={onMutated} />
+      <InspectorAnimField layer={layer} desc={ROTATION} tInLayerUs={tInLayerUs} playheadInSpan={playheadInSpan} onMutated={onMutated} />
+      <InspectorAnimField layer={layer} desc={OPACITY} tInLayerUs={tInLayerUs} playheadInSpan={playheadInSpan} onMutated={onMutated} />
+      {video ? <InspectorRow label={t("property_panel.flip")} reserveStopwatch>
+        <div className="prop-flags">
+          <Button size="xs" variant="ghost" className="prop-flag" aria-label={t("property_panel.flip_h")} aria-pressed={video.flip_h} onClick={() => void commit({ kind: "VideoClip", flip_h: !video.flip_h })}>{t("property_panel.horizontal")}</Button>
+          <Button size="xs" variant="ghost" className="prop-flag" aria-label={t("property_panel.flip_v")} aria-pressed={video.flip_v} onClick={() => void commit({ kind: "VideoClip", flip_v: !video.flip_v })}>{t("property_panel.vertical")}</Button>
+        </div>
+      </InspectorRow> : null}
+    </PropSection>
+  );
+}
+
+/// The Text section's box block: the three-way resize control, then the two box
+/// extents.
+///
+/// The mode is re-derived from `boxW`/`boxH` on every render and never cached,
+/// which is what makes the control agree with a gizmo drag or an MCP patch that
+/// moved the fields behind the panel's back.
+function TextBoxFields({
+  layerId,
+  boxW,
+  boxH,
+  localW,
+  localH,
+  setLocalW,
+  setLocalH,
+  onEditingChange,
+  commit,
+}: {
+  layerId: string;
+  /// Committed extents — the mode and the per-axis disabling read THESE, not the
+  /// mirrors below, so an external change is reflected even mid-edit.
+  boxW: number | null;
+  boxH: number | null;
+  /// Mirrors of the same two extents, so typing isn't fighting a round trip.
+  localW: number | null;
+  localH: number | null;
+  setLocalW: (v: number) => void;
+  setLocalH: (v: number) => void;
+  onEditingChange: (editing: boolean) => void;
+  commit: Commit;
+}) {
+  const { t } = useTranslation();
+  const mode = textBoxModeOf(boxW, boxH);
+  // ONE synchronous probe read per render rather than a second rAF sampler: this
+  // only has to answer "is this mode reachable at all", and the panel already
+  // re-renders on every project change. The click below re-reads the probe, so a
+  // stale answer costs at most an enabled button that then does nothing.
+  const measured = getGizmoProbe()?.naturalSizeOf(layerId) ?? null;
+  const current = { boxW, boxH };
+
+  const selectMode = (next: TextBoxMode): void => {
+    if (next === mode) return;
+    const patch = textBoxPatchFor(next, current, getGizmoProbe()?.naturalSizeOf(layerId) ?? null);
+    if (patch === null) return;
+    void commit({ kind: "Text", ...patch });
+  };
+
+  return (
+    <>
+      {/* Deliberately NOT a `Field`: that row is a `<label>`, and a label
+          wrapping buttons activates the FIRST one — clicking the caption would
+          silently drop the layer to Auto width. */}
+      <div className="prop-field">
+        <span className="prop-field-label">{t("property_panel.text_box_mode")}</span>
+        <div className="prop-field-control">
+          {/* Wraps rather than squashes: three word labels do not fit the
+              inspector's control column in one line at every panel width, and a
+              segment whose label is clipped is worse than a second row. */}
+          <div
+            role="group"
+            aria-label={t("property_panel.text_box_mode")}
+            className="flex min-w-0 flex-1 flex-wrap gap-1"
+          >
+            {TEXT_BOX_MODES.map((candidate) => {
+              const reachable = textBoxPatchFor(candidate, current, measured) !== null;
+              return (
+                <button
+                  key={candidate}
+                  type="button"
+                  className={cn(
+                    buttonVariants({ variant: candidate === mode ? "secondary" : "ghost", size: "xs" }),
+                    "grow",
+                  )}
+                  aria-pressed={candidate === mode}
+                  disabled={!reachable}
+                  title={reachable ? undefined : t("property_panel.text_box_unmeasured")}
+                  onClick={() => selectMode(candidate)}
+                >
+                  {t(`property_panel.text_box_mode_${candidate}`)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+      <Field label={t("property_panel.text_box_w")}>
+        <AppNumberField
+          value={localW}
+          step={1}
+          min={TEXT_BOX_MIN_PX}
+          disabled={mode === "auto_width"}
+          ariaLabel={t("property_panel.text_box_w")}
+          onValueChange={setLocalW}
+          onCommit={(w) => commit({ kind: "Text", box_w: w })}
+          onFocus={() => onEditingChange(true)}
+          onBlur={() => onEditingChange(false)}
+        />
+      </Field>
+      <Field label={t("property_panel.text_box_h")} hint={t("property_panel.text_box_h_hint")}>
+        <AppNumberField
+          value={localH}
+          step={1}
+          min={TEXT_BOX_MIN_PX}
+          disabled={mode !== "fixed"}
+          ariaLabel={t("property_panel.text_box_h")}
+          onValueChange={setLocalH}
+          onCommit={(h) => commit({ kind: "Text", box_h: h })}
+          onFocus={() => onEditingChange(true)}
+          onBlur={() => onEditingChange(false)}
+        />
+      </Field>
+    </>
+  );
+}
+
+/// What a fresh outline is coloured until the user says otherwise — the default
+/// caption outline colour, so a stroke added here matches an imported cue's.
+const OUTLINE_BLACK: Rgba = { r: 0, g: 0, b: 0, a: 255 };
+
+/// The block-placement pair, each listed in the direction it reads: `align`
+/// left to right, `valign` top to bottom.
+const ALIGNS = ["Left", "Center", "Right"] as const;
+const VALIGNS = ["Top", "Middle", "Bottom"] as const;
+type TextAlign = (typeof ALIGNS)[number];
+type VAlign = (typeof VALIGNS)[number];
+
+function TextFields({
+  layer,
+  v,
+  commit,
+  tInLayerUs,
+  playheadInSpan,
+  onMutated,
+}: {
+  layer: LayerSummary;
+  v: Extract<LayerSummary["params"], { kind: "Text" }>;
+  commit: Commit;
+  tInLayerUs: number;
+  playheadInSpan: boolean;
+  onMutated: () => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const [content, setContent] = useState(v.content);
+  const [family, setFamily] = useState(v.font_family);
+  const [size, setSize] = useState(v.font_size_px);
+  const [boxW, setBoxW] = useState<number | null>(v.box_w);
+  const [boxH, setBoxH] = useState<number | null>(v.box_h);
+  const [leading, setLeading] = useState(v.line_height);
+  const [tracking, setTracking] = useState(v.letter_spacing);
+  // An absent outline reads as width 0, which is also what commits one away —
+  // the field and the store share one representation of "none".
+  const [outlineW, setOutlineW] = useState(v.outline?.width ?? 0);
+  const [outlineColor, setOutlineColor] = useState<Rgba>(v.outline?.color ?? OUTLINE_BLACK);
+  // The native colour picker fires per drag step; each commit is a history
+  // entry, so bursts coalesce into one commit per gesture (`CaptionsPanel`'s
+  // rule for its colour swatch).
+  const outlineColorDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (outlineColorDebounce.current) clearTimeout(outlineColorDebounce.current); }, []);
+  // While a number in this section is being edited, suppress the prop→local
+  // resync so a mid-typing debounced commit's round-trip can't clobber the
+  // in-progress edit.
+  //
+  // ONE gate for the section, not one ref per field: the resync is a single
+  // all-fields effect, so per-field refs would only start paying off once it is
+  // split per field — and "nothing in this section resyncs while a number here
+  // is focused" is the invariant that stays true as fields keep being added. The
+  // cost is bounded and already the shipped behaviour for the size field: an
+  // external change to the size lands on blur if the user happens to be inside
+  // the tracking field.
+  const editingNumber = useRef(false);
+  useEffect(() => {
+    if (editingNumber.current) return;
+    setContent(v.content);
+    setFamily(v.font_family);
+    setSize(v.font_size_px);
+    setBoxW(v.box_w);
+    setBoxH(v.box_h);
+    setLeading(v.line_height);
+    setTracking(v.letter_spacing);
+    setOutlineW(v.outline?.width ?? 0);
+    setOutlineColor(v.outline?.color ?? OUTLINE_BLACK);
+  }, [layer.id, v]);
+
+  // Fixed is the only mode that can shrink, so it is the only one worth
+  // sampling — see `useTextFit` for why this can't be a plain render-time read.
+  const fit = useTextFit(layer.id, textBoxModeOf(v.box_w, v.box_h) === "fixed");
+  const shrinkNotice =
+    fit !== null && isShrunk(fit)
+      ? t(
+          fit.overflowing ? "property_panel.text_overflowing" : "property_panel.text_reduced",
+          { px: Math.round(fit.effectivePx) },
+        )
+      : null;
+
+  return (
+    <PropSection layerKind={layer.kind} sectionId="text" title={t("property_panel.text")}>
+      <Field label={t("property_panel.content")} stacked>
+        <textarea
+          className="app-input"
+          value={content}
+          rows={2}
+          onChange={(e) => setContent(e.target.value)}
+          onBlur={() => commit({ kind: "Text", content })}
+        />
+      </Field>
+      <Field label={t("property_panel.font_family")}>
+        <FontSelect
+          value={family}
+          ariaLabel={t("property_panel.font_family")}
+          onValueChange={(v) => {
+            setFamily(v);
+            commit({ kind: "Text", font_family: v });
+          }}
+        />
+      </Field>
+      <Field label={t("property_panel.font_size_px")}>
+        <AppNumberField
+          value={size}
+          step={1}
+          min={6}
+          max={400}
+          ariaLabel={t("property_panel.font_size_px")}
+          onValueChange={setSize}
+          onCommit={(v) => commit({ kind: "Text", font_size_px: v })}
+          onFocus={() => { editingNumber.current = true; }}
+          onBlur={() => { editingNumber.current = false; }}
+        />
+      </Field>
+      {/* The authored size stays the one editable number (ADR 0049 keeps exactly
+          one font size in state); this reports what the box let through. */}
+      {shrinkNotice === null ? null : (
+        <p className="prop-hint" data-testid="text-shrink-notice">{shrinkNotice}</p>
+      )}
+      <InspectorColorField
+        layerId={layer.id}
+        track={v.color}
+        desc={COLOR_TEXT}
+        tInLayerUs={tInLayerUs}
+        playheadInSpan={playheadInSpan}
+        commitStatic={(color) => commit({ kind: "Text", color })}
+        onMutated={onMutated}
+      />
+      <PropSection layerKind={layer.kind} sectionId="text_layout" title={t("property_panel.text_layout")} defaultCollapsed>
+        <TextBoxFields
+          layerId={layer.id}
+          boxW={v.box_w}
+          boxH={v.box_h}
+          localW={boxW}
+          localH={boxH}
+          setLocalW={setBoxW}
+          setLocalH={setBoxH}
+          onEditingChange={(editing) => { editingNumber.current = editing; }}
+          commit={commit}
+        />
+        {/* Where the text block sits INSIDE the box, on both axes — the pair ADR
+            0049 promoted `align` into when it stopped being line-to-line only.
+            They belong side by side; what they must NOT sit next to is Transform's
+            `anchor_x`/`anchor_y`, which place the box against x/y. Same axes, one
+            level up: the section split plus the explicit "align" wording is the
+            whole disambiguation, so don't merge the two pairs. */}
+        <Field label={t("property_panel.align")}>
+          <AppSelect
+            value={v.align}
+            ariaLabel={t("property_panel.align")}
+            onValueChange={(next) => commit({ kind: "Text", align: next as TextAlign })}
+            options={ALIGNS.map((o) => ({
+              value: o,
+              label: t(`property_panel.align_${o.toLowerCase()}`),
+            }))}
+          />
+        </Field>
+        <Field label={t("property_panel.valign")}>
+          <AppSelect
+            value={v.valign}
+            ariaLabel={t("property_panel.valign")}
+            onValueChange={(next) => commit({ kind: "Text", valign: next as VAlign })}
+            options={VALIGNS.map((o) => ({
+              value: o,
+              label: t(`property_panel.valign_${o.toLowerCase()}`),
+            }))}
+          />
+        </Field>
+        <Field label={t("property_panel.line_height")} hint={t("property_panel.line_height_hint")}>
+          <AppNumberField
+            value={leading}
+            step={1}
+            min={0}
+            ariaLabel={t("property_panel.line_height")}
+            onValueChange={setLeading}
+            onCommit={(px) => commit({ kind: "Text", line_height: px })}
+            onFocus={() => { editingNumber.current = true; }}
+            onBlur={() => { editingNumber.current = false; }}
+          />
+        </Field>
+        <Field label={t("property_panel.letter_spacing")}>
+          <AppNumberField
+            value={tracking}
+            step={0.5}
+            ariaLabel={t("property_panel.letter_spacing")}
+            onValueChange={setTracking}
+            onCommit={(px) => commit({ kind: "Text", letter_spacing: px })}
+            onFocus={() => { editingNumber.current = true; }}
+            onBlur={() => { editingNumber.current = false; }}
+          />
+        </Field>
+      </PropSection>
+      <PropSection layerKind={layer.kind} sectionId="text_outline" title={t("property_panel.text_outline")} defaultCollapsed={v.outline === null}>
+        {/* Width 0 removes the outline; its colour field leaves with it. */}
+        <Field label={t("property_panel.outline_width")} hint={t("property_panel.outline_width_hint")}>
+          <AppNumberField
+            value={outlineW}
+            step={0.5}
+            min={0}
+            max={64}
+            ariaLabel={t("property_panel.outline_width")}
+            onValueChange={setOutlineW}
+            onCommit={(px) => commit({ kind: "Text", outline_width: px })}
+            onFocus={() => { editingNumber.current = true; }}
+            onBlur={() => { editingNumber.current = false; }}
+          />
+        </Field>
+        {v.outline !== null && (
+          <Field label={t("property_panel.outline_color")}>
+            <AppColorField
+              value={rgbaToHex(outlineColor)}
+              ariaLabel={t("property_panel.outline_color")}
+              onValueChange={(hex) => {
+                // The picker edits the RGB triplet; the stored alpha rides along.
+                const next = hexToRgba(hex, outlineColor.a);
+                setOutlineColor(next);
+                if (outlineColorDebounce.current) clearTimeout(outlineColorDebounce.current);
+                outlineColorDebounce.current = setTimeout(() => {
+                  void commit({ kind: "Text", outline_color: next });
+                }, 250);
+              }}
+            />
+          </Field>
+        )}
+      </PropSection>
+    </PropSection>
+  );
+}
+
+function BakeStatusLine({ layerId }: { layerId: string }) {
+  const { t } = useTranslation();
+  const status = useLayerBakeStatus(layerId);
+  // Durable completion stays quiet (the timeline dot carries it). Preview-only
+  // completion remains explicit so memory coverage does not imply a saved bake.
+  if (!status || status.phase === "ready") return null;
+  const text = t(`property_panel.bake_${status.phase}`, { done: status.done, total: status.total });
+  const reason = status.phase === 'paused' && status.reason
+    ? t(`property_panel.bake_pause_${status.reason}`) : status.error;
+  const cls = `prop-bake-status is-${status.phase}`;
+  return <p className={cls} title={status.error}>{text}{reason ? ` — ${reason}` : ""}</p>;
+}
+
+function MotifFields({
+  layer,
+  v,
+  commit,
+}: {
+  layer: LayerSummary;
+  v: Extract<LayerSummary["params"], { kind: "Motif" }>;
+  commit: Commit;
+}) {
+  const { t } = useTranslation();
+
+  const debouncedCommit = useDebouncedCommit<LayerParamsPatch>(commit);
+
+  // Re-resolve the Motif when the render catalog changes (an edit, an update
+  // from the library, its folder gone) so the props schema / unavailable note
+  // stay in sync, not a stale snapshot from mount.
+  useSyncExternalStore(subscribeMotifCatalog, motifCatalogRevision);
+  // The Motif's prop schema drives the props section. A null lookup is a
+  // project Motif that cannot render (its folder missing, invalid or not
+  // trusted on this machine), or a
+  // catalog sync still in flight — transform/opacity stay editable, and a
+  // note stands in for the prop inputs.
+  const motif = getMotif(v.motif_id);
+  const unavailable = motif ? null : motifUnavailable(v.motif_id);
+  const propEntries = motif
+    ? Object.entries(motif.manifest.props_schema)
+    : [];
+
+  // Partial props patch: send ONLY the changed key so the state actor's
+  // key-wise props merge keeps all other keys untouched. Sending the full
+  // spread risks a stale v.props racing against a concurrent field edit and
+  // silently dropping the earlier write.
+  const commitProp = (key: string, next: unknown) =>
+    commit({ kind: "Motif", props: { [key]: next } });
+
+  return (
+    <>
+      <BakeStatusLine layerId={layer.id} />
+      {motif === null ? (
+        unavailable?.status === "untrusted" ? (
+          // Only the user trusts, and the Motifs panel's trust card is where.
+          <>
+            <MotifProblem id={v.motif_id} status="untrusted" />
+            <Button size="sm" onClick={() => openMotifsPanelAt({ group: "project", id: v.motif_id })}>
+              {t("property_panel.motif_review_trust")}
+            </Button>
+          </>
+        ) : unavailable
+          ? <MotifProblem id={v.motif_id} status={unavailable.status} diagnostic={unavailable.diagnostic} />
+          : <p className="prop-hint">{t("property_panel.unknown_motif")}</p>
+      ) : motif.hasParamsUi ? (
+        // The Motif ships its own page — it owns the whole props surface,
+        // including labels, grouping and order. The fallback form below stays
+        // the default for every Motif that doesn't.
+        <PropSection layerKind={layer.kind} sectionId="props" title={t("property_panel.props")}>
+          <MotifParamsFrame
+            layerId={layer.id}
+            motifId={v.motif_id}
+            manifest={motif.manifest}
+            props={v.props}
+            commit={(patch) => commit({ kind: "Motif", props: patch })}
+          />
+        </PropSection>
+      ) : propEntries.length > 0 ? (
+        <PropSection layerKind={layer.kind} sectionId="props" title={t("property_panel.props")}>
+          {propEntries.map(([key, spec]) => (
+            <MotifPropField
+              key={key}
+              propKey={key}
+              spec={spec}
+              value={v.props[key]}
+              commit={{
+                mode: "commit",
+                onCommit: (next) => commitProp(key, next),
+                onCommitDebounced: (next) =>
+                  debouncedCommit({ kind: "Motif", props: { [key]: next } }),
+              }}
+            />
+          ))}
+        </PropSection>
+      ) : null}
+      <PropSection layerKind={layer.kind} sectionId="motif_management" title={t("property_panel.motif_management")} defaultCollapsed>
+        <MotifManagementRow motifId={v.motif_id} />
+      </PropSection>
+      {motif ? (
+        <PropSection layerKind={layer.kind} sectionId="motif_source" title={t("property_panel.motif_source")} defaultCollapsed>
+          <MotifSourcePanel motifId={v.motif_id} />
+        </PropSection>
+      ) : null}
+    </>
+  );
+}
+
+/// A Group's own section: what composition this clip shows, how big it is, how
+/// long it is, and the two things you can do to it from here.
+///
+/// The name field writes the COMPOSITION (`groups_rename`), not the layer — the
+/// layer's own label is the editable title above, and a Group has
+/// both because it is one composition placed possibly several times. Size and
+/// duration are read-only: a composition's frame size is copied at pre-compose
+/// and not editable in v1 (ADR 0052), and its duration is autofit from what is
+/// inside it, so a field here would be a control that fights the contents.
+///
+/// Ungroup is offered as a BUTTON with a reason rather than silently refused,
+/// which is the same choice the strip and the context menu make: the three
+/// blocking fields are all things the user authored, and a command that greys out
+/// naming the field is how they find out which one.
+function GroupFields({
+  layer,
+  v,
+  onMutated,
+  fpsNum,
+  fpsDen,
+}: {
+  layer: LayerSummary;
+  v: Extract<LayerSummary["params"], { kind: "CompositionRef" }>;
+  onMutated: () => Promise<void>;
+  fpsNum: number;
+  fpsDen: number;
+}) {
+  const { t } = useTranslation();
+  const groupOrdinals = useGroupOrdinals();
+  const composition = useProjectStore(
+    (s) => s.summary?.compositions[v.composition_id],
+  );
+  const derivedName = groupDisplayName(
+    v.composition_id,
+    v.composition_label,
+    groupOrdinals,
+    t,
+  );
+  const [name, setName] = useState(v.composition_label ?? "");
+  // Resync from the authoritative snapshot on every committed change — own round
+  // trip, a rename through the clip's inline editor, undo. Primitive deps, so an
+  // unrelated project refresh cannot clobber the field mid-typing (the
+  // `useEnvelope` rule).
+  useEffect(() => {
+    setName(v.composition_label ?? "");
+  }, [v.composition_id, v.composition_label]);
+
+  const commitName = async () => {
+    const next = name.trim();
+    // Blank clears the name back to the derived `Group N`; unchanged is an
+    // actor-level no-op with no history row.
+    if (next === (v.composition_label ?? "")) return;
+    if (await tryMutate(() => groupsRename(v.composition_id, next || null), "groups_rename")) {
+      await onMutated();
+    }
+  };
+
+  const notPlain: GroupNotPlainReason | null = groupNotPlainReason(layer, composition);
+  const ungroupHint =
+    notPlain === null
+      ? undefined
+      : t(`quick_actions.ungroup_not_plain_${notPlain}`);
+
+  return (
+    <PropSection layerKind={layer.kind} sectionId="group" title={t("property_panel.group")}>
+      <Field label={t("property_panel.group_name")}>
+        <AppInput
+          value={name}
+          placeholder={derivedName}
+          ariaLabel={t("property_panel.group_name")}
+          onValueChange={setName}
+          onBlur={() => void commitName()}
+        />
+      </Field>
+      <Field label={t("property_panel.group_size")}>
+        <span className="text-xs text-muted-foreground">
+          {composition ? `${composition.width} × ${composition.height}` : "—"}
+        </span>
+      </Field>
+      {/* The COMPOSITION's length, not the clip's — the timing section above
+          owns the clip's duration. The two differ exactly when the window
+          overhangs or falls short, which is what the clip's hatched tail and
+          right-edge tick say on the timeline. */}
+      <Field label={t("property_panel.duration")}>
+        <span className="font-mono text-xs text-muted-foreground">
+          {composition
+            ? formatTimecode(composition.duration_us, fpsNum, fpsDen)
+            : "—"}
+        </span>
+      </Field>
+      <div className="prop-field-pair">
+        <Button
+          size="sm"
+          className="flex-1"
+          onClick={() => openComposition(v.composition_id, layer.id)}
+        >
+          {t("property_panel.group_open")}
+        </Button>
+        <Button
+          size="sm"
+          className="flex-1"
+          disabled={notPlain !== null}
+          title={ungroupHint}
+          onClick={() => void tryMutate(() => groupsUngroup(layer.id), "groups_ungroup")}
+        >
+          {t("property_panel.group_ungroup")}
+        </Button>
+      </div>
+    </PropSection>
+  );
+}
+
+function ColorFields({
+  layer,
+  v,
+  commit,
+  tInLayerUs,
+  playheadInSpan,
+  onMutated,
+}: {
+  layer: LayerSummary;
+  v: Extract<LayerSummary["params"], { kind: "Color" }>;
+  commit: Commit;
+  tInLayerUs: number;
+  playheadInSpan: boolean;
+  onMutated: () => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  return (
+    <PropSection layerKind={layer.kind} sectionId="color" title={t("property_panel.color")}>
+      <InspectorColorField
+        layerId={layer.id}
+        track={v.color}
+        desc={COLOR_FILL}
+        tInLayerUs={tInLayerUs}
+        playheadInSpan={playheadInSpan}
+        commitStatic={(color) => commit({ kind: "Color", color })}
+        onMutated={onMutated}
+      />
+      <Field label={t("property_panel.width")}>
+        <AppNumberField
+          value={v.width}
+          ariaLabel={t("property_panel.width")}
+          min={1}
+          step={1}
+          // width/height are u32 on the Rust side — min/round keep them positive
+          // integers. Commit on debounce/Enter/blur (not every keystroke) — Base
+          // UI self-buffers the typed text; onCommit avoids flooding the actor.
+          onValueChange={() => {}}
+          onCommit={(n) => commit({ kind: "Color", width: Math.round(n) })}
+        />
+      </Field>
+      <Field label={t("property_panel.height")}>
+        <AppNumberField
+          value={v.height}
+          ariaLabel={t("property_panel.height")}
+          min={1}
+          step={1}
+          onValueChange={() => {}}
+          onCommit={(n) => commit({ kind: "Color", height: Math.round(n) })}
+        />
+      </Field>
+    </PropSection>
+  );
+}
+
+function AudioFields({
+  layer,
+  v,
+  commit,
+  tInLayerUs,
+  playheadInSpan,
+  onMutated,
+}: {
+  layer: LayerSummary;
+  v: Extract<LayerSummary["params"], { kind: "Audio" }>;
+  commit: Commit;
+  tInLayerUs: number;
+  playheadInSpan: boolean;
+  onMutated: () => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  return (
+    <PropSection layerKind={layer.kind} sectionId="audio" title={t("property_panel.audio")}>
+      <Field label={t("property_panel.role")}>
+        <AppSelect
+          value={v.role}
+          ariaLabel={t("property_panel.role")}
+          onValueChange={(next) => commit({ kind: "Audio", role: next as AudioRole })}
+          options={AUDIO_ROLES.map((r) => ({ value: r, label: t(`audio_roles.${r}`) }))}
+        />
+      </Field>
+      <InspectorAnimField layer={layer} desc={GAIN_DB} tInLayerUs={tInLayerUs} playheadInSpan={playheadInSpan} onMutated={onMutated} />
+      <InspectorAnimField layer={layer} desc={PAN} tInLayerUs={tInLayerUs} playheadInSpan={playheadInSpan} onMutated={onMutated} />
+    </PropSection>
+  );
+}
+
+
+/**
+ * Hook: returns a debounced commit function. Continuous-input controls
+ * (sliders, color pickers) call this so we don't fire a backend command on
+ * every pixel of slider movement; the actor would queue up and the UI
+ * would feel laggy.
+ */
+function useDebouncedCommit<P>(commit: (p: P) => Promise<void>) {
+  const slot: { current: ReturnType<typeof setTimeout> | null } = useMemo(
+    () => ({ current: null }),
+    [],
+  );
+  return (patch: P) => {
+    if (slot.current) clearTimeout(slot.current);
+    slot.current = setTimeout(() => {
+      commit(patch).catch((e) => console.warn(e));
+    }, COMMIT_DEBOUNCE_MS);
+  };
+}

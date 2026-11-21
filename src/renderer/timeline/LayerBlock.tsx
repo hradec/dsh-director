@@ -1,0 +1,1323 @@
+import type { ModifierFlags } from "@/modKeyReading";
+import { sourceIn, sourceOut, layerRateNumber } from '../layerTiming';
+import { approximateTime } from '../timeMapping';
+import { readLayerParamTrack } from "../keyframe/channels";
+import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import {
+  AudioWaveform,
+  Film,
+  Flag,
+  Group as GroupIcon,
+  Image as ImageIcon,
+  Link2,
+  Lock,
+  Palette,
+  Sparkles,
+  Type,
+} from "lucide-react";
+import { getAudioEffect } from "../../shared/audioEffects/catalog";
+import { uiPixels, useUiScale } from "../settings/layoutTheme";
+import { UI_METRICS } from "../settings/uiMetrics";
+import { TEXT_NAME_MAX, textSnippet } from "../../shared/textSnippet";
+import { adjacentFrameBoundaryUs, formatTimecode } from "../frames";
+import { groupDisplayName, useLayerDisplayName } from "../lib/layerName";
+import { AppInput } from "../components/AppInput";
+import {
+  clipDetail,
+  headerColumnPx,
+  linkHue,
+  keyframeHitTest,
+  keyframeXWithinClip,
+  layerSliceRect,
+  sourceWindowTail,
+  type LayerSlice,
+  type LinkTab as LinkTabInfo,
+} from "./geometry";
+import { AudioRegionBand } from "./AudioRegionBand";
+import { PauseBands } from "./PauseBands";
+import { ComputeJobBands } from "./ComputeJobBands";
+import { ReviewClipMarkLayer, ReviewGroupBadge, useLayerReviewTitle } from "./ReviewMarks";
+import { compUsFromSourceUs } from "./audioRegionGeometry";
+import { useArmedRegionSelect } from "./audioRegionArmStore";
+import { useAudioRegionDrag } from "./hooks/useAudioRegionDrag";
+import { useLockedClipFeedback } from "./hooks/useLockedClipFeedback";
+import { useRegionFocus } from "../state/audioRegionFocusStore";
+import { TimelineVisualPreview } from "./TimelineVisualPreview";
+import { useLayerBakePhase } from "./motifBakeStatusStore";
+import { useGroupMarkerCount } from "./groupMarkerCount";
+import { formatSyncOffset } from "./audioSlip";
+import { useAudioSyncOffset } from "./audioSyncOffsetStore";
+import type { Extrapolate, LayerSummary } from "../ipc";
+import {
+  useEditingGroupId,
+  useEditingLayerId,
+  beginLayerRename,
+  endRename,
+} from "./renameStore";
+import { useLinkOverride } from "../state/linkOverrideStore";
+import { openComposition } from "../state/compositionAnchorStore";
+import { revealTrackWithoutSelection } from "../state/navigation";
+import {
+  useCompositionDurationUs,
+  useGroupOrdinals,
+} from "../state/projectStore";
+import { currentSelection, layerIdsOf, setLayerSelection } from "../state/selectionStore";
+import { useFocusedParamFor } from "../keyframe/focusStore";
+import {
+  extrapolateClass,
+  extrapolateGlyph,
+  extrapolateLabelKey,
+  interpGlyphClass,
+} from "../keyframe/curve";
+import { useTrackPreview } from "../keyframe/easingPreviewStore";
+import { useKeyframeDrag } from "../keyframe/useKeyframeDrag";
+import { EasingMenu } from "./EasingMenu";
+import { useKeyframeBatchCommit } from "./keyframeBatch";
+import { transportSeek } from "../state/playbackStore";
+import {
+  selectKeyframe,
+  clearKeyframeSelection,
+  keyframeKey,
+  useIsKeyframeSelected,
+  useKeyframeSelectionStore,
+} from "../keyframe/selectionStore";
+import { timelineLayerTheme } from "./layerTheme";
+import { placementRefuses } from "./placement";
+import { useLayerDragFor, type DragKind, type DragSeed } from "./layerDragStore";
+import { AppIcon } from "@/components/AppIcon";
+
+export interface PendingLayerPlacement {
+  layerId: string;
+  /// For a duplicate that has not landed in refreshed project state yet, use
+  /// this source layer's content to render the pending clone.
+  sourceLayerId?: string;
+  trackId: string;
+  tStartUs: number;
+  tEndUs: number;
+}
+
+const CLIP_LABEL = UI_METRICS.timeline.clipLabel;
+
+const LAYER_ICON_PROPS = {
+  size: "micro",
+  strokeWidth: 2,
+  "aria-hidden": true,
+} as const;
+
+/// Small status dot on a Motif layer block. Hidden when idle (selector
+/// returns null).
+function MotifBakeDot({ layerId, locked }: { layerId: string; locked: boolean }) {
+  const { t } = useTranslation();
+  const phase = useLayerBakePhase(layerId);
+  if (!phase) return null;
+  const label = t(`timeline.bake_dot_${phase}`);
+  return <span className={`motif-bake-dot is-${phase}`} style={{ right: locked ? 20 : undefined }} title={label} aria-label={label} />;
+}
+
+/// The derived A/V sync-offset badge on a slipped audio clip (ADR 0038 / R2-D7).
+/// Renders nothing when the offset is zero or the layer has no visual partner —
+/// which is the normal case, so the badge's presence IS the signal that something was
+/// deliberately slipped. Discoverability is the whole job here: the offset lives
+/// implicitly in each member's own `t_start_us`, with no field to inspect.
+function AudioSyncBadge({ layerId, locked }: { layerId: string; locked: boolean }) {
+  const { t } = useTranslation();
+  const offset = useAudioSyncOffset(layerId);
+  const text = formatSyncOffset(offset);
+  if (text === null) return null;
+  const label = t("timeline.audio_slipped", { offset: text });
+  return (
+    <span
+      data-testid="audio-sync-offset-badge"
+      style={{ right: locked ? 20 : undefined }}
+      className="pointer-events-none absolute bottom-1 right-1 z-[4] rounded bg-sky-600/90 px-1 py-0.5 text-[length:var(--font-size-micro)] font-semibold leading-none text-white shadow-sm"
+      title={label}
+      aria-label={label}
+    >
+      {text}
+    </span>
+  );
+}
+
+/// The `⚑N` badge on a Group clip: how many marks are reachable inside the
+/// composition it shows, nesting included (`groupMarkerCount.ts`). From the
+/// parent timeline a Group is opaque, so without this there is nothing to tell
+/// the user whether going in is worth it.
+///
+/// Nothing at zero. Most Groups hold no marks, so a `⚑0` on every Group clip in
+/// the project would be noise sitting exactly where the signal has to be.
+///
+/// Activating it opens that composition's Panel — the same `openComposition`
+/// the clip's double-click and its `Open group` row run, because "go and look"
+/// gets one route, not a second one that could drift.
+function GroupMarkerBadge({
+  compositionId,
+  layerId,
+  locked,
+}: {
+  compositionId: string;
+  layerId: string;
+  locked: boolean;
+}) {
+  const { t } = useTranslation();
+  const count = useGroupMarkerCount(compositionId);
+  if (count === 0) return null;
+  const label = t("timeline.group_marker_count", { count });
+  return (
+    <button
+      type="button"
+      data-testid="group-marker-count-badge"
+      style={{ right: locked ? 20 : undefined }}
+      className="absolute bottom-1 right-1 z-[4] flex cursor-pointer items-center gap-0.5 rounded bg-black/45 px-1 py-0.5 text-[length:var(--font-size-micro)] font-semibold leading-none text-white shadow-sm hover:bg-black/65"
+      title={label}
+      aria-label={label}
+      // The badge sits inside the block, whose pointerdown selects and arms a
+      // drag: without these a press meant for the badge becomes both. The
+      // context menu is deliberately left to bubble — a right-click anywhere on
+      // a clip, badge included, should reach that clip's menu.
+      onPointerDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        openComposition(compositionId, layerId);
+      }}
+    >
+      <AppIcon icon={Flag} size="fine" strokeWidth={2.5} aria-hidden="true" />
+      {count}
+    </button>
+  );
+}
+
+/// A link's chrome above its anchor member's top-left corner: the `+N` badge
+/// when the display filter hides members. Click reveals the first hidden
+/// member's lane and nothing else — revealing is not selecting, and because the
+/// reveal is single-lane the member revealed leaves the count, so a second click
+/// reaches the next one.
+///
+/// Every pointer event stops here: the badge sits inside the block, whose
+/// pointerdown selects and arms a drag, and a click meant for the badge must
+/// not become either.
+function LinkTab({
+  tab,
+  hue,
+  accentAlpha,
+  clipWidthPx,
+  hiddenCount,
+}: {
+  tab: LinkTabInfo;
+  hue: number;
+  /// The block's accent alpha — 0.4 under the link override, else 1.
+  accentAlpha: number;
+  clipWidthPx: number;
+  /// The count to draw — the tab's own while idle, the drag's while this
+  /// member is the drag anchor.
+  hiddenCount: number;
+}) {
+  const { t } = useTranslation();
+  if (hiddenCount === 0) return null;
+
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+  const badgeTitle = t("timeline.link_hidden_members", { count: hiddenCount });
+
+  return (
+    <div
+      data-testid="link-tab-anchor"
+      className="absolute left-0 bottom-full z-[4] flex max-w-full items-stretch gap-1 rounded-t px-1 py-0.5 text-[length:var(--font-size-micro)] font-semibold leading-none text-white"
+      style={{
+        maxWidth: clipWidthPx,
+        backgroundColor: `hsl(${hue} 75% 45% / ${accentAlpha})`,
+      }}
+      onPointerDown={stop}
+      onClick={stop}
+      onDoubleClick={stop}
+      onContextMenu={stop}
+    >
+      <button
+        type="button"
+        data-testid="link-hidden-badge"
+        className="shrink-0 cursor-pointer rounded-sm bg-black/30 px-1 hover:bg-black/50"
+        title={badgeTitle}
+        aria-label={badgeTitle}
+        onClick={(e) => {
+          e.stopPropagation();
+          const first = tab.hidden[0];
+          if (first) revealTrackWithoutSelection(first.trackId);
+        }}
+      >
+        +{hiddenCount}
+      </button>
+    </div>
+  );
+}
+
+/// The stored composition name of a Group clip, or null for every other kind —
+/// the primitive the rename editor seeds from and compares against.
+function groupLabel(layer: LayerSummary): string | null {
+  return layer.params.kind === "CompositionRef"
+    ? layer.params.composition_label
+    : null;
+}
+
+function shortLayerLabel(label: string): string {
+  const clean = label.trim();
+  if (clean.length <= 12) return clean;
+  return `${clean.slice(0, 12)}...`;
+}
+
+function LayerKindIcon({ kind }: { kind: LayerSummary["params"]["kind"] }) {
+  switch (kind) {
+    case "VideoClip":
+      return <AppIcon icon={Film} {...LAYER_ICON_PROPS} />;
+    case "Audio":
+      return <AppIcon icon={AudioWaveform} {...LAYER_ICON_PROPS} />;
+    case "ImageOverlay":
+      return <AppIcon icon={ImageIcon} {...LAYER_ICON_PROPS} />;
+    case "Text":
+      return <AppIcon icon={Type} {...LAYER_ICON_PROPS} />;
+    case "Motif":
+      return <AppIcon icon={Sparkles} {...LAYER_ICON_PROPS} />;
+    case "Color":
+      return <AppIcon icon={Palette} {...LAYER_ICON_PROPS} />;
+    // The one glyph that names a container rather than a medium — the same
+    // `Group` lucide gives the strip's Group button, so the button and the clip
+    // it makes carry one mark.
+    case "CompositionRef":
+      return <AppIcon icon={GroupIcon} {...LAYER_ICON_PROPS} />;
+  }
+}
+
+export function LayerBlock({
+  layer,
+  trackId,
+  trackKind,
+  trackLocked,
+  isTrackExpanded,
+  pxPerSec,
+  laneHeight,
+  slice,
+  isPrimary,
+  isSelected,
+  linkId,
+  linkTab,
+  pendingPlacement,
+  previewOnly = false,
+  bladeMode,
+  onBladeSplit,
+  onBladePreview,
+  onSelectFromClick,
+  onDragStart,
+  onContextMenu,
+  onCommitLabel,
+  onCommitGroupLabel,
+  fpsNum,
+  fpsDen,
+}: {
+  layer: LayerSummary;
+  trackId: string;
+  trackKind: string;
+  /// Track-level lock — blocks move/trim/blade on every layer in the
+  /// lane, same affordance as the per-layer lock.
+  trackLocked: boolean;
+  /// True when this track's keyframe sub-lanes are expanded — collapsed
+  /// in-clip diamonds are hidden (the sub-lanes render them instead).
+  isTrackExpanded: boolean;
+  pxPerSec: number;
+  laneHeight: number;
+  /// Vertical slot. "full" = entire row; "top" = top half (visual
+  /// layer paired with audio); "bottom" = bottom half (audio paired
+  /// with visual). Determines the rendered height + top offset.
+  slice: LayerSlice;
+  /// Primary selection (drives the Attribute panel). One layer at a time.
+  isPrimary: boolean;
+  /// Member of the current selection set (highlight only).
+  isSelected: boolean;
+  /// `docs/features.md#links` — null when unlinked.
+  linkId: string | null;
+  /// Non-null only on the link's anchor member (`indexLinkTabs`): the label
+  /// tab and hidden-member badge draw there and nowhere else.
+  linkTab: LinkTabInfo | null;
+  pendingPlacement: PendingLayerPlacement | null;
+  /// Non-interactive in-flight clone rendered for an Alt+drag duplicate.
+  previewOnly?: boolean;
+  /// Blade-tool mode: pointerdown splits at the click point instead
+  /// of selecting/dragging. Cursor is set by the `timeline-root-blade`
+  /// class (styles.css) via the `timeline-layer` hook class below.
+  bladeMode: boolean;
+  /// `mods` carries the pointer event's Mod state; the Timeline owns the reading
+  /// (`modKeyReading.ts`), so a key press with the pointer still re-resolves too.
+  onBladeSplit: (layer: LayerSummary, clientX: number, mods: ModifierFlags) => void;
+  onBladePreview: (layer: LayerSummary | null, clientX?: number, mods?: ModifierFlags) => void;
+  /// Applies the click's selection semantics and answers whether THIS layer is
+  /// selected afterwards — `false` only for an additive click that removed it.
+  onSelectFromClick: (
+    layerId: string,
+    e: { altKey: boolean; shiftKey: boolean; metaKey: boolean },
+  ) => boolean;
+  onDragStart: (state: DragSeed) => void;
+  onContextMenu: (
+    e: React.MouseEvent,
+    layerId: string,
+    layerKind: string,
+    layerEnabled: boolean,
+  ) => void;
+  /// Persist an inline-rename edit. `label` may be empty (clears the custom
+  /// label → block falls back to the kind name). Wired by Timeline to
+  /// `updateLayer({label}) + onMutated`, matching the drag-commit pattern.
+  onCommitLabel: (layerId: string, label: string) => void;
+  /// Persist a Group's COMPOSITION name from the clip's inline editor; `null`
+  /// clears it back to the derived `Group N`. Wired by Timeline to
+  /// `groupsRename`. Separate from `onCommitLabel` because the two write
+  /// different things: that one is this clip's own label, this one is the name
+  /// every clip placing the composition shows.
+  onCommitGroupLabel: (compositionId: string, label: string | null) => void;
+  fpsNum: number;
+  fpsDen: number;
+}) {
+  const { t } = useTranslation();
+  // Null for every block the gesture does not carry, so a pointermove renders
+  // the clips that move and nothing else (`layerDragStore.ts`).
+  const liveDrag = useLayerDragFor(layer.id);
+  const locked = layer.locked || trackLocked;
+  const lockFeedback = useLockedClipFeedback(locked);
+  const lockHint = t(trackLocked ? "timeline.clip_track_lock_hint" : "timeline.clip_lock_hint");
+  // Under the Review overlay a marked clip's tooltip says what its change did.
+  // A duplicate's clone carries its source's id and stays unmarked.
+  const reviewTitle = useLayerReviewTitle(previewOnly ? null : layer.id);
+  // A duplicate leaves its sources where they are, so a source block draws as
+  // if nothing were happening; the in-flight clone — one `previewOnly` block
+  // per subject — is the only one that follows the pointer.
+  const dragState = !previewOnly && liveDrag?.duplicate === true ? null : liveDrag;
+  const dragSubject =
+    dragState?.subjects.find((subject) => subject.layerId === layer.id) ??
+    null;
+  const movePlacement = dragState?.movePlacements?.get(layer.id);
+  const isDragging = dragSubject !== null;
+  const isDragAnchor = dragState?.layerId === layer.id;
+  const isPendingPlacement = pendingPlacement?.layerId === layer.id;
+  const dragValidity =
+    isDragging && dragState?.kind === "move" ? dragState.validity : "valid";
+  // Not `!== "valid"`: a drag over the drop strip reads `"spawn"`, which is a
+  // destination being created rather than a refusal.
+  const dragIsInvalid = placementRefuses(dragValidity);
+  const dragInvalidLabel =
+    dragValidity === "collision"
+      ? t("timeline.drop_collision", { defaultValue: "Overlap" })
+      : dragValidity === "locked"
+        ? t("timeline.drop_locked", { defaultValue: "Locked" })
+        : null;
+
+  const editingLayerId = useEditingLayerId();
+  const groupCompositionId =
+    layer.params.kind === "CompositionRef" ? layer.params.composition_id : null;
+  const editingGroupId = useEditingGroupId();
+  // The composition-name editor uses the same slot as the layer-label one: only
+  // one input can hold the caret (`renameStore.ts`), and putting them in one
+  // place is what keeps the block's sticky-label geometry to a single branch.
+  const isEditingGroupName =
+    groupCompositionId !== null && editingGroupId === groupCompositionId;
+  const isEditing = editingLayerId === layer.id || isEditingGroupName;
+  const linksOff = useLinkOverride();
+  const focusedParam = useFocusedParamFor(layer.id);
+  const groupOrdinals = useGroupOrdinals();
+  // Null for every other kind, and for a Group whose composition the summary no
+  // longer carries — `sourceWindowTail` reads that as "draw neither affordance".
+  const groupSourceDurationUs = useCompositionDurationUs(groupCompositionId);
+  // The sample-region gesture, instantiated per block: only one clip can be
+  // under a region drag and only that clip draws the band, so its preview
+  // re-renders this block and nothing else.
+  const regionDrag = useAudioRegionDrag();
+  const armedRegion = useArmedRegionSelect();
+  const regionFocus = useRegionFocus();
+  // Measured at a handle's press for the band's px↔µs mapping. The handle's own
+  // element cannot answer it — the mapping is the CLIP's.
+  const blockElRef = useRef<HTMLDivElement | null>(null);
+  const [draft, setDraft] = useState("");
+  // Which of THIS layer+param's keyframes are selected. Reads the shared
+  // selection store so the chip diamonds and the sub-lane ones agree.
+  const isKfSelected = useIsKeyframeSelected(layer.id, focusedParam);
+  // A gesture's preview of the focused property — a menu row armed over the
+  // selection, a retime in flight — drawn in place of the committed track.
+  // Read untyped in the value: the row draws times and segment classes only,
+  // so a colour preview moves its diamonds the same as a numeric one.
+  const kfPreview = useTrackPreview(layer.id, focusedParam);
+  const commitKeyframeBatch = useKeyframeBatchCommit();
+  const beginKeyframeDrag = useKeyframeDrag();
+  const [interpMenu, setInterpMenu] = useState<{ x: number; y: number; kfId: string } | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (isEditing) {
+      setDraft(
+        (isEditingGroupName && layer.params.kind === "CompositionRef"
+          ? layer.params.composition_label
+          : layer.label) ?? "",
+      );
+      // preventScroll: the timeline is a scroll container, so a plain
+      // focus() would scroll the block into view and jolt the timeline.
+      inputRef.current?.focus({ preventScroll: true });
+      inputRef.current?.select();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seeded from
+    // whichever name is being edited; `layer.params` is not a stable dep and the
+    // two label primitives below are the only content that can change it.
+  }, [isEditing, isEditingGroupName, layer.id, layer.label, groupLabel(layer)]);
+
+  // Drop the diamond selection when this layer is no longer the primary
+  // selection, so a keyframe selection cannot stay armed after the user moves
+  // on — `deleteSelected` takes keyframes whenever any are selected, and Delete
+  // has to revert to deleting the layer.
+  useEffect(() => {
+    if (!isPrimary) clearKeyframeSelection();
+  }, [isPrimary]);
+
+  const commitRename = () => {
+    const next = draft.trim();
+    if (isEditingGroupName && groupCompositionId !== null) {
+      // Blank clears the name, which is a Group's ordinary unnamed state (the
+      // derived `Group N` takes over) — unlike a layer label, where the actor
+      // stores the empty string and the naming chain reads it as absent.
+      if (next !== (groupLabel(layer) ?? "")) {
+        onCommitGroupLabel(groupCompositionId, next || null);
+      }
+    } else if (next !== (layer.label ?? "")) {
+      onCommitLabel(layer.id, next);
+    }
+    endRename();
+  };
+  let liveStart = isPendingPlacement
+    ? pendingPlacement.tStartUs
+    : (dragSubject?.originalTStart ?? layer.t_start_us);
+  let liveEnd = isPendingPlacement
+    ? pendingPlacement.tEndUs
+    : (dragSubject?.originalTEnd ?? layer.t_end_us);
+  if (dragSubject && dragState) {
+    const dx = dragState.deltaUs;
+    switch (dragState.kind) {
+      case "move": {
+        liveStart = movePlacement?.tStartUs ?? liveStart;
+        liveEnd = movePlacement?.tEndUs ?? liveEnd;
+        break;
+      }
+      case "trim-start":
+        liveStart = Math.min(
+          dragSubject.originalTStart + dx,
+          adjacentFrameBoundaryUs(
+            dragSubject.originalTEnd,
+            -1,
+            fpsNum,
+            fpsDen,
+          ),
+        );
+        liveEnd = dragSubject.originalTEnd;
+        break;
+      case "trim-end":
+        liveEnd = Math.max(
+          adjacentFrameBoundaryUs(
+            dragSubject.originalTStart,
+            1,
+            fpsNum,
+            fpsDen,
+          ),
+          dragSubject.originalTEnd + dx,
+        );
+        liveStart = dragSubject.originalTStart;
+        break;
+    }
+  }
+
+  const left = (Math.max(0, liveStart) / 1_000_000) * pxPerSec;
+  // A clip narrower than a pixel still draws a hairline where it sits: the one
+  // case where a chip outgrows its time span, by less than a pixel.
+  const layerWidthPx = Math.max(((liveEnd - liveStart) / 1_000_000) * pxPerSec, 1);
+  const uiScale = useUiScale();
+  const detail = clipDetail(layerWidthPx, uiScale);
+  const label = useLayerDisplayName(layer, t, groupOrdinals);
+
+  /// The clip's head in SOURCE time — 0 for the kinds that window no source.
+  const srcInUs = approximateTime(sourceIn(layer.params));
+
+  // Source copies are normally filtered out for cross-track drag/pending
+  // states. If one still renders during a transitional frame, keep it
+  // non-interactive and visually secondary.
+  const dragPreviewTrackId = movePlacement?.trackId ?? null;
+  const movedAcrossTracks =
+    (dragPreviewTrackId !== null && dragPreviewTrackId !== trackId) ||
+    (isPendingPlacement && pendingPlacement.trackId !== trackId);
+
+  // Edge-hover trim: pointerdown within the trim edge zone of the layer's
+  // left/right edge dispatches trim-start/trim-end; everywhere else
+  // dispatches a move. A chip too narrow for both zones and a grip between
+  // them has none (`clipDetail`), so a press on a thin clip never trims.
+  const [edgeHover, setEdgeHover] = useState<"left" | "right" | null>(null);
+
+  const edgeZoneFor = (
+    clientX: number,
+    rect: DOMRect,
+  ): "left" | "right" | null => {
+    // The measured box, not `layerWidthPx`: it shares `clientX`'s coordinates.
+    const zone = clipDetail(rect.width, uiScale).trimEdgePx;
+    if (zone <= 0) return null;
+    const rel = clientX - rect.left;
+    if (rel < zone) return "left";
+    if (rect.width - rel < zone) return "right";
+    return null;
+  };
+
+  const onPointerMoveHover = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.buttons !== 0) return; // ignore moves with a button held (drag)
+    if (bladeMode) {
+      if (layer.locked || trackLocked || isDragging) {
+        onBladePreview(null);
+      } else {
+        onBladePreview(layer, e.clientX, e);
+      }
+      if (edgeHover !== null) setEdgeHover(null);
+      return;
+    }
+    if (layer.locked || trackLocked || bladeMode || isDragging) {
+      if (edgeHover !== null) setEdgeHover(null);
+      return;
+    }
+    const next = edgeZoneFor(
+      e.clientX,
+      e.currentTarget.getBoundingClientRect(),
+    );
+    if (next !== edgeHover) setEdgeHover(next);
+  };
+
+  const onPointerLeaveHover = () => {
+    if (bladeMode) onBladePreview(null);
+    if (edgeHover !== null) setEdgeHover(null);
+  };
+
+  const onLayerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    // Clicking the clip body (diamond pointerdown stops propagation, so this
+    // only fires off-diamond) deselects any selected keyframe → Delete then
+    // targets the layer again.
+    clearKeyframeSelection();
+    // Blade-tool mode hijacks every pointerdown on the layer surface:
+    // the click is a cut request, not a select/drag.
+    if (bladeMode) {
+      if (!locked) onBladeSplit(layer, e.clientX, e);
+      return;
+    }
+    const blockRect = e.currentTarget.getBoundingClientRect();
+    // An armed card outranks select and move both: while its "Select region"
+    // has armed THIS clip, a press on it paints the noise-profile span and
+    // nothing else (spec Decision 12). The gesture claims the event itself, so
+    // a press it took reaches none of the paths below.
+    if (
+      !locked && regionDrag.startRegionDrag(e, {
+        layerId: layer.id,
+        tStartUs: layer.t_start_us,
+        tEndUs: layer.t_end_us,
+        srcInUs,
+        rate: layerRateNumber(layer.params),
+        pxPerSec,
+        blockLeftPx: blockRect.left,
+      })
+    ) {
+      return;
+    }
+    const zone = locked ? null : edgeZoneFor(e.clientX, blockRect);
+    const kind: DragKind =
+      zone === "left" ? "trim-start" : zone === "right" ? "trim-end" : "move";
+    // Snapshotted BEFORE the click's selection applies — see
+    // `DragSeed.selectedAtPointerDown`.
+    const selectedAtPointerDown = layerIdsOf(currentSelection());
+    // `docs/features.md#links` — match click-selection semantics on
+    // pointerdown so drag and click share the same link-aware path.
+    const narrowLinkedSelection = linksOff && linkId !== null && !e.altKey && !e.shiftKey;
+    const preserveSelection = kind === "move" && !e.altKey && !e.shiftKey &&
+      !narrowLinkedSelection && selectedAtPointerDown.size > 1 && selectedAtPointerDown.has(layer.id);
+    // Keep the batch for a possible move, but let the inspector and gizmo
+    // follow the clip under the pointer even when it was already selected.
+    if (preserveSelection) setLayerSelection(layer.id, selectedAtPointerDown);
+    const stillSelected = preserveSelection || onSelectFromClick(layer.id, {
+      altKey: e.altKey,
+      shiftKey: e.shiftKey,
+      metaKey: e.metaKey,
+    });
+    // A Shift+click that REMOVED this clip from the selection was a deselect,
+    // full stop — no drag. Not merely cosmetic: `wasSelectedAtPointerDown` was
+    // true a moment ago, which buys a ZERO arm delay in `useLayerDrag`, so
+    // without this the smallest pointer wobble would move the clip the user just
+    // dropped from the selection.
+    // A lock protects edits, not inspection: keep the normal click/focus and
+    // Shift-toggle behavior so the property panel remains an unlock route.
+    if (!stillSelected) return;
+    if (locked) {
+      lockFeedback.start(e);
+      return;
+    }
+    onDragStart({
+      kind,
+      layerId: layer.id,
+      trackId,
+      trackKind,
+      startX: e.clientX,
+      startY: e.clientY,
+      // Converted to time HERE, where this Panel's zoom is in scope. Carrying
+      // the px would hand a Panel at another zoom a number it cannot read, which
+      // is exactly why the crossing used to drop the grab point altogether.
+      grabOffsetUs:
+        pxPerSec > 0 ? ((e.clientX - blockRect.left) / pxPerSec) * 1_000_000 : 0,
+      originalTStart: layer.t_start_us,
+      originalTEnd: layer.t_end_us,
+      deltaUs: 0,
+      overTrackId: trackId,
+      duplicate: e.altKey && kind === "move",
+      escapeLink: e.altKey && kind !== "move",
+      wasSelectedAtPointerDown: isSelected,
+      // Links off must not resurrect the old linked selection when this same
+      // press becomes a drag. Ordinary multi-selection and Alt-copy keep their
+      // pre-click snapshot.
+      selectedAtPointerDown: narrowLinkedSelection
+        ? layerIdsOf(currentSelection()) : selectedAtPointerDown,
+    });
+  };
+
+  // A Group's source length is its composition's duration, so the two right-edge
+  // affordances below follow the composition rather than any media (ADR 0052
+  // §6). Only a Group draws either today — every other kind hands in a null
+  // source length and gets nothing back — but the arithmetic is the source
+  // window's, not the Group's, so it is asked kind-agnostically: a media clip
+  // whose file was replaced by a shorter one is the same picture.
+  const sourceTail = sourceWindowTail({
+    srcInUs,
+    srcOutUs: "src_out_us" in layer.params ? approximateTime(sourceOut(layer)) : 0,
+    sourceDurationUs: groupSourceDurationUs,
+  });
+
+  // The name in the two tail tooltips: the SOURCE's name, which for a Group is
+  // its composition's rather than this clip's own label — the sentence is about
+  // what ran out, not about the clip that shows it.
+  const sourceName =
+    layer.params.kind === "CompositionRef"
+      ? groupDisplayName(
+          layer.params.composition_id,
+          layer.params.composition_label,
+          groupOrdinals,
+          t,
+        )
+      : label;
+
+  const showLabel = detail.label;
+  const showFullAffordances = detail.fullAffordances;
+  const labelCap = showFullAffordances ? CLIP_LABEL.maxWidth : CLIP_LABEL.compactMaxWidth;
+  const labelReserve = !locked
+    ? CLIP_LABEL.edgeReserve
+    : layer.kind === "Motif" ? CLIP_LABEL.lockedReserveMotif : CLIP_LABEL.lockedReserve;
+  const visibleLabel = showFullAffordances ? label : shortLayerLabel(label);
+  const layerTheme = timelineLayerTheme(layer.params.kind, layer.color_hint);
+
+  const { top: sliceTop, height: sliceHeight } = layerSliceRect(
+    laneHeight,
+    slice,
+  );
+
+  // `docs/features.md#links` — a 2 px left border in the link's hue on every
+  // member wider than a sliver, plus a chain glyph inside that edge on a clip
+  // wide enough for its full label (a narrow clip keeps the accent alone). The glyph is the same
+  // `Link2` the inspector's scale-link uses: one chain means "tied together"
+  // everywhere. The extra left padding keeps the label clear of the glyph.
+  const linkHueValue = linkId !== null ? linkHue(linkId) : null;
+  const showLinkGlyph = linkHueValue !== null && showFullAffordances;
+  // Dimmed to 40 % under the link override (`linkOverrideStore.ts`), so the
+  // canvas itself says links are not in force.
+  const linkAccentAlpha = linksOff ? 0.4 : 1;
+  const linkStyle: React.CSSProperties = {};
+  if (linkHueValue !== null && !detail.sliver) {
+    linkStyle.borderLeft = `2px solid hsl(${linkHueValue} 75% 60% / ${linkAccentAlpha})`;
+  }
+  if (showLinkGlyph) linkStyle.paddingLeft = 16;
+  // The count the anchor's badge draws. During a move the dragged member's
+  // ghost carries the drag's own count instead — that is the one moment the
+  // invisible fan-out is happening — and every other member draws none.
+  const linkHiddenCount =
+    linkTab === null
+      ? 0
+      : dragSubject !== null
+        ? isDragAnchor && dragState?.kind === "move"
+          ? dragState.hiddenSubjectCount
+          : 0
+        : linkTab.hidden.length;
+  // The tab sits above the block's top edge, in the seam where the lane
+  // above's resize handle (`z-[3]`) lives. A selected block is a `z-[2]`
+  // stacking context, so the tab cannot out-rank the handle on its own — the
+  // BLOCK is lifted while it draws link chrome, or the badge is unclickable.
+  const linkChromeShown = linkTab !== null && !previewOnly && linkHiddenCount > 0 && showLabel;
+
+  const sliceClasses =
+    slice === "top"
+      ? "rounded-b-none border-b border-b-black/25"
+      : slice === "bottom"
+        ? "rounded-t-none border-t border-t-white/10"
+        : "";
+
+  // Derive from the LIVE edges (not the committed t_end/t_start) so diamond
+  // positions stay consistent with `layerWidthPx` during a trim drag; the
+  // actor re-bases keyframes on commit, so this is just the in-flight preview.
+  const clipDurationUs = liveEnd - liveStart;
+  const { diamonds, extrapMarks } = (() => {
+    const none = {
+      diamonds: [] as { id: string; x: number; glyph: string }[],
+      extrapMarks: [] as { side: "before" | "after"; x: number; mode: Extrapolate }[],
+    };
+    // When the track is expanded the keyframes render in the sub-lanes
+    // below (KeyframeLane), so the collapsed in-clip diamonds are hidden.
+    // A sliver has no room to tell its keys apart or to grab one.
+    if (isTrackExpanded || !focusedParam || detail.sliver) return none;
+    const track = kfPreview ?? readLayerParamTrack(layer, focusedParam);
+    if (!track || track.mode !== "Keyframed") return none;
+    // collapsed mode hides out-of-range keys (kept in data)
+    const inRange = (k: { t_us: number }) => k.t_us >= 0 && k.t_us <= clipDurationUs;
+    const xOf = (k: { t_us: number }) => keyframeXWithinClip(k.t_us, clipDurationUs, layerWidthPx);
+    const diamonds = track.value.flatMap((k) =>
+      inRange(k) ? [{ id: k.id, x: xOf(k), glyph: interpGlyphClass(k.segment.kind) }] : [],
+    );
+    // A non-Hold side is announced by one mark beside its end key — only when
+    // that key is drawn (an end key past the clip edge has nothing visible to
+    // extrapolate from) and only with two or more keys (one never extrapolates).
+    const extrapMarks: typeof none.extrapMarks = [];
+    if (track.value.length > 1) {
+      const first = track.value[0]!;
+      const last = track.value[track.value.length - 1]!;
+      if (track.extrapolate.before !== "Hold" && inRange(first)) {
+        extrapMarks.push({ side: "before", x: xOf(first) - uiPixels(UI_METRICS.timeline.keyframe.extrapGlyphGap), mode: track.extrapolate.before });
+      }
+      if (track.extrapolate.after !== "Hold" && inRange(last)) {
+        extrapMarks.push({ side: "after", x: xOf(last) + uiPixels(UI_METRICS.timeline.keyframe.extrapGlyphGap), mode: track.extrapolate.after });
+      }
+    }
+    return { diamonds, extrapMarks };
+  })();
+
+  /// The card whose sample region this clip may draw, with everything the band
+  /// needs to read it: the armed payload while a card has armed this clip (it
+  /// carries both param keys already), else the focused card's effect looked up
+  /// in the audio catalog.
+  const regionCard = (() => {
+    if (previewOnly) return null;
+    if (armedRegion?.layerId === layer.id) return armedRegion;
+    if (regionFocus?.layerId !== layer.id) return null;
+    const effect = layer.effects.find(
+      (candidate) => candidate.id === regionFocus.effectId,
+    );
+    const region = effect ? getAudioEffect(effect.kind)?.region : undefined;
+    return effect && region ? { effectId: effect.id, ...region } : null;
+  })();
+
+  /// The band lives exactly as long as the open card (spec Decision 12), so a
+  /// collapse takes it away. A gesture in flight is the one thing that outlives
+  /// the card: its preview has to keep drawing until the commit lands.
+  const regionBandCard =
+    regionCard !== null &&
+    (regionFocus?.layerId === layer.id || regionDrag.preview !== null)
+      ? regionCard
+      : null;
+
+  /// While a card has armed this clip, the press means "paint the region" — the
+  /// cursor says so, and inline so no other `cursor-*` utility on the block can
+  /// win the emit order. Never on a clip the gesture would refuse.
+  const armedHere =
+    regionCard !== null &&
+    armedRegion?.layerId === layer.id &&
+    !layer.locked &&
+    !trackLocked;
+
+  /// The region's stored bounds on the timeline's own axis — what a handle drag
+  /// must know to hold one bound a minimum span from the other. Null while
+  /// either is unwritten, which is when there is no band to grab.
+  const regionBoundsCompUs = (card: {
+    effectId: string;
+    inKey: string;
+    outKey: string;
+  }): { inUs: number; outUs: number } | null => {
+    const effect = layer.effects.find((candidate) => candidate.id === card.effectId);
+    const inTrack = effect?.params[card.inKey];
+    const outTrack = effect?.params[card.outKey];
+    if (inTrack?.mode !== "Static" || outTrack?.mode !== "Static") return null;
+    const map = { tStartUs: layer.t_start_us, srcInUs, rate: layerRateNumber(layer.params) };
+    return {
+      inUs: compUsFromSourceUs(inTrack.value, map),
+      outUs: compUsFromSourceUs(outTrack.value, map),
+    };
+  };
+
+  return (
+    <div
+      ref={blockElRef}
+      data-drag-validity={
+        isDragging && dragState?.kind === "move" ? dragValidity : undefined
+      }
+      data-duplicate-preview={previewOnly || undefined}
+      // Absent on an in-flight duplicate ghost, which draws its SOURCE layer:
+      // the attribute is a unique handle onto one clip, and a second element
+      // carrying the same id would break every locator built on it.
+      data-layer-id={previewOnly ? undefined : layer.id}
+      data-link-id={linkId ?? undefined}
+      aria-invalid={dragIsInvalid || undefined}
+      className={[
+        "timeline-layer", // JS hook for the blade-cursor rule; carries no styles itself.
+        "absolute flex items-center",
+        "text-[length:var(--font-size-caption)] font-semibold text-white select-none cursor-grab",
+        // Every tier keeps the corners and shadow, which take no width: CSS
+        // shrinks radii that outgrow the box, so a sliver rounds as far as it
+        // can. The border and padding do take width, so only chips that fit
+        // them get them (`clipDetail`).
+        "rounded shadow-[0_1px_2px_rgba(0,0,0,0.28)] transition-[outline,box-shadow,border-color] duration-75",
+        "hover:shadow-[0_2px_5px_rgba(0,0,0,0.36)]",
+        detail.sliver ? "" : "border border-white/10 hover:border-white/20",
+        showLabel ? "px-2" : "",
+        sliceClasses,
+        linkChromeShown && !isDragging ? "z-[4]" : isSelected ? "z-[2]" : "",
+        isDragging
+          ? "z-[3] cursor-grabbing border-white/25 shadow-[0_4px_10px_rgba(0,0,0,0.45)]"
+          : "",
+        // Selection paints above the preview in its own overlay below. An
+        // inset outline here is covered by the positioned preview's fill.
+        dragIsInvalid ? "cursor-not-allowed" : "",
+        movedAcrossTracks || previewOnly ? "pointer-events-none" : "",
+      ].join(" ")}
+      style={{
+        left,
+        top: sliceTop,
+        width: layerWidthPx,
+        height: sliceHeight,
+        backgroundColor: layerTheme.surface,
+        borderColor:
+          dragValidity === "collision"
+            ? "rgb(252 165 165)"
+            : dragValidity === "locked"
+              ? "rgb(252 211 77)"
+              : undefined,
+        outline:
+          dragValidity === "collision"
+            ? "2px solid rgb(248 113 113)"
+            : dragValidity === "locked"
+              ? "2px solid rgb(251 191 36)"
+              : undefined,
+        outlineOffset: dragIsInvalid ? -2 : undefined,
+        boxShadow: dragIsInvalid
+          ? dragValidity === "collision"
+            ? "0 4px 12px rgb(248 113 113 / 0.45)"
+            : "0 4px 12px rgb(251 191 36 / 0.38)"
+          : undefined,
+        opacity: movedAcrossTracks ? 0.3 : layer.enabled ? 1 : 0.45,
+        // The body is inspectable; only an attempted drag gets a refusal.
+        cursor: locked
+          ? lockFeedback.blocked ? "not-allowed" : "default"
+          : armedHere
+          ? "crosshair"
+          : dragIsInvalid
+            ? "not-allowed"
+            : !layer.locked && !trackLocked && !bladeMode && !isDragging && edgeHover !== null
+            ? "ew-resize"
+            : undefined,
+        ...linkStyle,
+      }}
+      onClick={(e) => {
+        // Selection happens on pointerdown (onLayerPointerDown, which also arms
+        // the drag). This handler exists only to stop the click bubbling to the
+        // timeline-root background-deselect, which would clear that selection.
+        e.stopPropagation();
+      }}
+      onDoubleClick={(e) => {
+        if (layer.locked || trackLocked || bladeMode) return;
+        e.stopPropagation();
+        // A Group clip's double-click ENTERS it (AE, Premiere and Resolve all
+        // open a nest this way), so the gesture that renames every other clip
+        // is spent here on navigation — the same `openGroup` the Edit menu and
+        // the clip's own context menu run, which under ADR 0053 means "give
+        // this composition a timeline Panel beside this one, and activate it".
+        // Renaming a Group is still reachable — `Rename` for the clip's own
+        // label, `Rename group…` for the composition's, both on the context
+        // menu.
+        if (groupCompositionId !== null) {
+          openComposition(groupCompositionId, layer.id);
+          return;
+        }
+        beginLayerRename(layer.id);
+      }}
+      onPointerDown={onLayerPointerDown}
+      onPointerMove={onPointerMoveHover}
+      onPointerLeave={onPointerLeaveHover}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // Locked layers remain inspectable by left-click; editing actions in
+        // the context menu stay suppressed until the lock is released.
+        if (layer.locked || trackLocked) return;
+        onContextMenu(e, layer.id, layer.kind, layer.enabled);
+      }}
+      // The kind by its UI name (`kinds.*`: Video, Image, Group), never the discriminant.
+      title={[
+        locked ? lockHint : "",
+        `${t(`kinds.${layer.kind.toLowerCase()}`, { defaultValue: layer.kind })}: ${formatTimecode(liveStart, fpsNum, fpsDen)} → ${formatTimecode(liveEnd, fpsNum, fpsDen)}`,
+        // The chip is where a Text layer's words live now, and the chip
+        // truncates: to 12 characters on a narrow block, to 240px of ellipsis on
+        // a wide one, and to nothing at all once the layer has been renamed. The
+        // tooltip is the one place the line itself stays readable without
+        // opening the inspector.
+        layer.params.kind === "Text"
+          ? textSnippet(layer.params.content, TEXT_NAME_MAX)
+          : "",
+        reviewTitle ?? "",
+      ]
+        .filter(Boolean)
+        .join("\n")}
+    >
+      <TimelineVisualPreview
+        layer={layer}
+        layerWidthPx={layerWidthPx}
+        layerHeightPx={sliceHeight}
+        pxPerSec={pxPerSec}
+      />
+      {/* Review overlay (ADR 0115): paint only, `pointer-events: none`, inside
+          this box — no hit-testing or geometry of the clip changes with it. A
+          duplicate ghost carries its source's id and stays unmarked. */}
+      {!previewOnly && <ReviewClipMarkLayer layerId={layer.id} />}
+      {locked && !previewOnly && (
+        <span
+          data-testid="layer-lock-badge"
+          data-emphasized={lockFeedback.emphasized || (isDragging && dragValidity === "locked")}
+          role="img"
+          aria-label={lockHint}
+          title={lockHint}
+          // Reserve the rightmost column for the lock. Stay inside the clip
+          // and below its selection border, including short A/V half-slices.
+          className="pointer-events-none absolute right-[calc(3*var(--ui-px))] top-[calc(3*var(--ui-px))] z-[2] flex items-center justify-center overflow-hidden rounded-sm bg-black/65 text-amber-200/70 transition-colors data-[emphasized=true]:bg-amber-400 data-[emphasized=true]:text-black"
+          style={{ width: Math.max(0, Math.min(14, layerWidthPx - 8)), height: Math.max(0, Math.min(14, sliceHeight - 8)) }}
+        >
+          <AppIcon icon={Lock} size="micro" className="max-h-full max-w-full shrink-0" aria-hidden="true" />
+        </span>
+      )}
+      {isSelected && !dragIsInvalid && !previewOnly && (
+        <span
+          data-testid="layer-selection-outline"
+          data-primary={isPrimary}
+          aria-hidden="true"
+          className={`pointer-events-none absolute -inset-px z-[3] rounded-[inherit] border-solid border-ring ${
+            isPrimary ? "border-2" : "border"
+          }`}
+          style={{
+            borderColor: isPrimary
+              ? "color-mix(in srgb, var(--ring) 55%, var(--foreground))"
+              : undefined,
+          }}
+        />
+      )}
+      {/* Candidate pauses, on the subject Audio clip only: the component asks
+          the store by id and draws nothing on any other block. A duplicate
+          ghost carries the source layer's id, so it is kept out the same way
+          the sample region is — one clip, one set of bands. */}
+      {!previewOnly && (
+        <PauseBands
+          layerId={layer.id}
+          pxPerSec={pxPerSec}
+          blockLeftPx={((layer.t_start_us - liveStart) / 1_000_000) * pxPerSec}
+          tStartUs={layer.t_start_us}
+          blockLoUs={liveStart}
+          blockHiUs={liveEnd}
+        />
+      )}
+      {/* A transcription or description reading this clip, over the window
+          it reads (ADR 0121). Subscribed per clip and empty for every clip
+          without a job; a duplicate ghost stays blank like the bands above. */}
+      {!previewOnly && (
+        <ComputeJobBands
+          layerId={layer.id}
+          pxPerSec={pxPerSec}
+          blockLoUs={liveStart}
+          blockHiUs={liveEnd}
+          heightPx={sliceHeight}
+        />
+      )}
+      {regionBandCard && (
+        <AudioRegionBand
+          layer={layer}
+          effectId={regionBandCard.effectId}
+          inKey={regionBandCard.inKey}
+          outKey={regionBandCard.outKey}
+          minUs={regionBandCard.minUs}
+          pxPerSec={pxPerSec}
+          // The block's left edge follows the LIVE clip head through a trim or
+          // move preview while the stored region stays on the committed one;
+          // this offset is what keeps the band over its own audio for the
+          // length of that gesture, and is 0 the rest of the time.
+          blockLeftPx={((layer.t_start_us - liveStart) / 1_000_000) * pxPerSec}
+          visibleLoUs={srcInUs}
+          visibleHiUs={approximateTime(sourceOut(layer))}
+          preview={regionDrag.preview}
+          onHandlePointerDown={(e, bound) => {
+            const bounds = regionBoundsCompUs(regionBandCard);
+            if (bounds === null) return;
+            regionDrag.startHandleDrag(
+              e,
+              {
+                layerId: layer.id,
+                tStartUs: layer.t_start_us,
+                tEndUs: layer.t_end_us,
+                srcInUs,
+                rate: layerRateNumber(layer.params),
+                pxPerSec,
+                // Measured at the press, in the coordinates the press reports.
+                blockLeftPx: blockElRef.current?.getBoundingClientRect().left ?? 0,
+                effectId: regionBandCard.effectId,
+                inKey: regionBandCard.inKey,
+                outKey: regionBandCard.outKey,
+                minUs: regionBandCard.minUs,
+                ...bounds,
+              },
+              bound,
+            );
+          }}
+        />
+      )}
+      {dragIsInvalid && (
+        <span
+          className={`pointer-events-none absolute inset-0 z-[1] rounded-[inherit] ${
+            dragValidity === "collision" ? "bg-red-500/30" : "bg-amber-500/25"
+          }`}
+          aria-hidden="true"
+        />
+      )}
+      {isDragAnchor && dragInvalidLabel && (
+        <span
+          data-testid="layer-drag-invalid-badge"
+          className={`pointer-events-none absolute right-1 top-1 z-[4] rounded px-1 py-0.5 text-[length:var(--font-size-micro)] font-semibold leading-none text-white shadow-sm ${
+            dragValidity === "collision" ? "bg-red-600/90" : "bg-amber-600/90"
+          }`}
+        >
+          {dragInvalidLabel}
+        </span>
+      )}
+      {/* The kind's accent IS the block's top edge: laid over the border box
+          with the block's own radius, so it bends round the corners instead of
+          poking square ends past them, and replaces the faint border line
+          rather than sitting a pixel below it. A sliced block's flat corners
+          come through `inherit` as well. */}
+      {layer.params.kind !== "Color" && (
+        <span
+          className={`pointer-events-none absolute ${detail.sliver ? "inset-0" : "-inset-px"} z-[1] rounded-[inherit] border-t-2 opacity-90`}
+          style={{ borderTopColor: layerTheme.accent }}
+          aria-hidden="true"
+        />
+      )}
+      {/* Where the source ran out. Hatched rather than dimmed, because dimming
+          is what a disabled layer already looks like, and a diagonal hatch is
+          the mark every NLE uses for "no media here". Drawn under the label's
+          scrim (`z-[1]`) so a long name stays readable across it. */}
+      {sourceTail.overhangFromFraction !== null && (
+        <span
+          data-testid="layer-overhang-tail"
+          className="pointer-events-none absolute inset-y-0 right-0 z-[1] rounded-r-[inherit]"
+          style={{
+            left: `${sourceTail.overhangFromFraction * 100}%`,
+            backgroundImage:
+              "repeating-linear-gradient(135deg, rgba(0,0,0,0.42) 0 3px, rgba(255,255,255,0.10) 3px 6px)",
+          }}
+          title={t("timeline.group_overhang", { label: sourceName })}
+          aria-hidden="true"
+        />
+      )}
+      {/* The opposite case: there is content past the out edge, so the edge can
+          be dragged out. A 2 px tick and nothing more — it is an affordance the
+          user needs only while reaching for that edge, and anything larger would
+          read as a lane the editor wants managed. */}
+      {sourceTail.hasUnusedTail && (
+        <span
+          data-testid="layer-source-tail-tick"
+          className="pointer-events-none absolute inset-y-1 right-0 z-[1] w-0.5 rounded-full opacity-70"
+          style={{ backgroundColor: layerTheme.accent }}
+          title={t("timeline.group_more_content", { label: sourceName })}
+          aria-hidden="true"
+        />
+      )}
+      {showLinkGlyph && (
+        <span
+          data-testid="link-glyph"
+          className="pointer-events-none absolute left-[calc(3*var(--ui-px))] top-1/2 z-[1] -translate-y-1/2"
+          style={{ color: `hsl(${linkHueValue} 75% 72% / ${linkAccentAlpha})` }}
+          aria-hidden="true"
+        >
+          <AppIcon icon={Link2} size="micro" strokeWidth={2} />
+        </span>
+      )}
+      {linkTab !== null && linkHueValue !== null && !previewOnly && showLabel && (
+        <LinkTab
+          tab={linkTab}
+          hue={linkHueValue}
+          accentAlpha={linkAccentAlpha}
+          clipWidthPx={layerWidthPx}
+          hiddenCount={linkHiddenCount}
+        />
+      )}
+      {/* The corner badges are gated with the label: narrower, a badge is
+          wider than the clip and would sit on the next one. */}
+      {layer.params.kind === "Audio" && !previewOnly && showLabel && (
+        <AudioSyncBadge layerId={layer.id} locked={locked} />
+      )}
+      {groupCompositionId !== null && !previewOnly && showLabel && (
+        <GroupMarkerBadge compositionId={groupCompositionId} layerId={layer.id} locked={locked} />
+      )}
+      {groupCompositionId !== null && !previewOnly && showLabel && (
+        <ReviewGroupBadge layerId={layer.id} locked={locked} />
+      )}
+      {isEditing && showLabel ? (
+        <AppInput
+          ref={inputRef}
+          // Sticky like the label so the editor appears at the clip's current
+          // visible left edge, not its (possibly scrolled-off) absolute start.
+          // Width pinned inline because .app-input's width:100% would beat a
+          // `w-40` utility class.
+          className="sticky z-[2]"
+          style={{ left: headerColumnPx() + uiPixels(CLIP_LABEL.headerInset), width: "10rem", maxWidth: "100%" }}
+          value={draft}
+          // Named only when it is the composition-name editor: the two editors
+          // share this slot, and "Group name" on a clip's own label field would
+          // be a lie about what the field writes.
+          {...(isEditingGroupName ? { ariaLabel: t("timeline.group_label") } : {})}
+          onValueChange={setDraft}
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onBlur={commitRename}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commitRename();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              endRename();
+            }
+          }}
+        />
+      ) : showLabel && sliceHeight >= (CLIP_LABEL.line + CLIP_LABEL.slack) * uiScale ? (
+        <span
+          // Sticky so the label stays readable while scrolling a long clip:
+          // it pins just past the sticky track-header column and slides along
+          // within the clip until the clip's tail scrolls past it. Content-
+          // width (capped) so it can actually slide; clips itself with ellipsis.
+          className="sticky z-[2] flex items-center gap-1 overflow-hidden text-ellipsis whitespace-nowrap rounded-sm bg-gradient-to-r from-black/65 via-black/40 to-transparent py-1 pl-1.5 pr-3 text-[length:var(--font-size-micro)] leading-none text-white"
+          style={{
+            left: headerColumnPx() + uiPixels(CLIP_LABEL.headerInset),
+            maxHeight: "100%",
+            paddingBlock: Math.max(0, Math.min(
+              CLIP_LABEL.padding * uiScale,
+              (sliceHeight - (CLIP_LABEL.line + CLIP_LABEL.slack) * uiScale) / 2,
+            )),
+            maxWidth: `min(calc(100% - ${labelReserve * uiScale}px), ${labelCap * uiScale}px)`,
+          }}
+        >
+          <span
+            className="shrink-0"
+            style={{
+              color:
+                layer.params.kind === "Color"
+                  ? "currentColor"
+                  : layerTheme.accent,
+            }}
+          >
+            <LayerKindIcon kind={layer.params.kind} />
+          </span>
+          <span className="overflow-hidden text-ellipsis whitespace-nowrap">
+            {visibleLabel}
+          </span>
+        </span>
+      ) : null}
+      {layer.kind === "Motif" && showFullAffordances && (
+        <MotifBakeDot layerId={layer.id} locked={locked} />
+      )}
+      {diamonds.length > 0 && focusedParam && (
+        <div
+          className="kf-diamond-row"
+          aria-hidden
+          style={{ pointerEvents: "auto" }}
+          onContextMenu={(e) => {
+            if (!focusedParam) return;
+            const track = readLayerParamTrack(layer, focusedParam);
+            if (!track || track.mode !== "Keyframed") return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const hitId = keyframeHitTest(diamonds, e.clientX - rect.left, 6);
+            if (!hitId) return;
+            e.preventDefault();
+            e.stopPropagation();
+            // Right-clicking a diamond INSIDE the selection keeps it, so the
+            // menu reaches every key the user swept; outside it, the selection
+            // becomes this one key first. The rule `Timeline`'s clip
+            // `onContextMenu` states in full.
+            const key = { layerId: layer.id, paramKey: focusedParam, kfId: hitId };
+            if (!useKeyframeSelectionStore.getState().selected.has(keyframeKey(key))) {
+              selectKeyframe(key);
+            }
+            setInterpMenu({ x: e.clientX, y: e.clientY, kfId: hitId });
+          }}
+          onPointerDown={(e) => {
+            if (e.button !== 0) return;
+            const paramTrack = readLayerParamTrack(layer, focusedParam);
+            if (!paramTrack || paramTrack.mode !== "Keyframed") return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const hitId = keyframeHitTest(diamonds, e.clientX - rect.left, 6);
+            if (!hitId) return;
+            const key = paramTrack.value.find((k) => k.id === hitId);
+            if (!key) return;
+            e.stopPropagation();
+            // Only a resolved click parks the transport on the diamond.
+            // The shared gesture owns click/drag arbitration so pressing a
+            // key never relocates the playhead before the intent is known.
+            beginKeyframeDrag({
+              layerId: layer.id,
+              paramKey: focusedParam,
+              kfId: hitId,
+              clientX: e.clientX,
+              clientY: e.clientY,
+              pointerId: e.pointerId,
+              pxPerSec,
+              altKey: e.altKey,
+              onClick: () => transportSeek(layer.t_start_us + key.t_us),
+            });
+          }}
+        >
+          {diamonds.map((d) => (
+            <span
+              key={d.id}
+              className={`kf-diamond${d.glyph ? ` ${d.glyph}` : ""}${isKfSelected(d.id) ? " is-selected" : ""}`}
+              style={{ left: d.x }}
+              data-kf-id={d.id}
+            />
+          ))}
+          {extrapMarks.map((m) => (
+            <span
+              key={`extrap-${m.side}`}
+              className={extrapolateClass(m.mode)}
+              data-testid="kf-extrap"
+              data-side={m.side}
+              title={t(extrapolateLabelKey(m.mode))}
+              style={{ left: m.x }}
+            >
+              {extrapolateGlyph(m.mode)}
+            </span>
+          ))}
+        </div>
+      )}
+      {interpMenu && focusedParam && (() => {
+        const track = readLayerParamTrack(layer, focusedParam);
+        if (!track || track.mode !== "Keyframed") return null;
+        return (
+          <EasingMenu
+            x={interpMenu.x}
+            y={interpMenu.y}
+            track={track}
+            kfId={interpMenu.kfId}
+            onClose={() => setInterpMenu(null)}
+            onApply={commitKeyframeBatch}
+          />
+        );
+      })()}
+    </div>
+  );
+}

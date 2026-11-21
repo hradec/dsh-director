@@ -1,0 +1,272 @@
+import { CAPTURE_HOST_FILE, FRAME_MARKER_PIXELS, frameMarkerBits, frameWitnessBits } from "../../../shared/motifs/frameMarker";
+import { MOTIF_DEADLINES } from "../../../shared/motifs/tuning";
+
+/** Testable core: installs clock takeover onto an arbitrary global-like object. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function createMotifRuntime(g: any = {}) {
+  let vclock = 0;
+  const epoch = 1700000000000;
+  let rafQ: Array<(t: number) => void> = [];
+  g.performance = { now: () => vclock };
+  g.Date = Object.assign(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    function () { return new (Date as any)(epoch + vclock); },
+    { now: () => epoch + vclock },
+  );
+  g.requestAnimationFrame = (cb: (t: number) => void) => { rafQ.push(cb); return rafQ.length; };
+  g.cancelAnimationFrame = () => {};
+  g.setTimeout = () => 0;
+  g.setInterval = () => 0;
+  function seek(t: number) {
+    vclock = t;
+    if (g.document?.getAnimations) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const a of (g.document as any).getAnimations()) {
+        a.pause();
+        try { a.currentTime = t; } catch { /* read-only animation */ }
+      }
+    }
+    // Flush the queued rAF callbacks up to 4 rounds to handle re-queued cbs.
+    for (let i = 0; i < 4; i++) { const q = rafQ; rafQ = []; for (const cb of q) try { cb(vclock); } catch { /* cb threw */ } }
+    if (g.document?.body) void (g.document.body as HTMLElement).offsetHeight;
+  }
+  return { global: g, seek, epoch, get now() { return vclock; } };
+}
+
+/**
+ * Browser-injection source. Injected into the hidden host window with CDP
+ * `Page.addScriptToEvaluateOnNewDocument`, which runs it in every frame before
+ * the frame's own scripts; sourced from this string handed to main at boot via
+ * `motif_register_runtime`. It plays one of two roles:
+ * - In the capture host shell (`CAPTURE_HOST_FILE`, the top frame), it forwards
+ *   `__motifSetup`/`__motifRender` to the framed Motif and writes the frame id
+ *   and its canvas witness into the marker rows below it
+ *   (`shared/motifs/frameMarker.ts`).
+ * - In the Motif's own frame, it installs the clock takeover, exposes
+ *   motif.define and the `__motifRender(t, props, meta)` entry point.
+ *
+ * String.raw template — the substitution below (createMotifRuntime.toString)
+ * is resolved by TypeScript at module-evaluation time into a plain string.
+ * ZERO raw backticks are present inside the body of this literal; the only
+ * backtick characters are the outer delimiters. (A stray backtick anywhere
+ * inside the body would close the String.raw literal early and break the esbuild parse.)
+ */
+export const MOTIF_RUNTIME_SOURCE: string = String.raw`
+(function () {
+  if (window.top === window && window.location && window.location.pathname.endsWith(${JSON.stringify('/' + CAPTURE_HOST_FILE)})) {
+    var markerBits = (${frameMarkerBits.toString()});
+    var witnessBits = (${frameWitnessBits.toString()});
+    var motifWindow = function () { var f = document.querySelector('iframe'); return f && f.contentWindow; };
+    // The capture's picture size and its marker rows (frameMarkerRows),
+    // set by main before the Motif loads and on every resize.
+    var size = null, laidOut = null;
+    var marker = null, canvas = null, witness = null;
+    window.__motifShellFit = function (width, height, rows) {
+      var f = document.querySelector('iframe');
+      if (!f) throw new Error('capture host shell has no Motif frame');
+      f.style.width = width + 'px';
+      f.style.height = height + 'px';
+      size = { width: width, height: height, rows: rows };
+    };
+    // The id's pixels are DOM, wrapping at the picture's width; the witness
+    // canvas covers the marker rows, transparent but for the pixels after the
+    // id, so both read as one run of pixels, row after row.
+    var mark = function (id) {
+      if (!size) throw new Error('capture host shell was never fitted');
+      if (!marker) {
+        marker = document.createElement('div');
+        for (var i = 0; i < ${FRAME_MARKER_PIXELS}; i++) {
+          var px = document.createElement('i');
+          px.style.cssText = 'display:block;flex:none;width:1px;height:1px';
+          marker.appendChild(px);
+        }
+        document.body.appendChild(marker);
+        canvas = document.createElement('canvas');
+        document.body.appendChild(canvas);
+        witness = canvas.getContext('2d');
+      }
+      if (laidOut !== size) {
+        var box = 'position:fixed;left:0;top:' + size.height + 'px;width:' + size.width + 'px;height:' + size.rows + 'px;pointer-events:none;';
+        marker.style.cssText = box + 'display:flex;flex-wrap:wrap;align-content:flex-start';
+        canvas.width = size.width;
+        canvas.height = size.rows;
+        canvas.style.cssText = box + 'display:block';
+        laidOut = size;
+      }
+      var bits = markerBits(id);
+      for (var j = 0; j < bits.length; j++) marker.children[j].style.background = bits[j] ? '#fff' : '#000';
+      var wbits = witnessBits(id);
+      for (var w = 0; w < wbits.length; w++) {
+        var at = ${FRAME_MARKER_PIXELS} + w;
+        witness.fillStyle = wbits[w] ? '#fff' : '#000';
+        witness.fillRect(at % size.width, Math.floor(at / size.width), 1, 1);
+      }
+    };
+    // 'ready' once the Motif's frame holds the page it was last sent to, as
+    // the protocol served it with a success status; 'unserved <status>' for an
+    // error body, which has the runtime but no Motif; 'loading' before either,
+    // and while an earlier version's document is still there.
+    window.__motifHostReady = function (motifId) {
+      var f = document.querySelector('iframe');
+      var w = motifWindow();
+      if (document.readyState !== 'complete' || location.hostname !== motifId || !w || !f.src ||
+        w.location.href !== f.src ||
+        typeof w.__motifRender !== 'function' || typeof w.__motifServed !== 'function' ||
+        w.document.readyState !== 'complete') return 'loading';
+      var status = w.__motifServed();
+      return status >= 200 && status < 300 ? 'ready' : 'unserved ' + status;
+    };
+    // Main registers the runtime after the shell has loaded, then loads the
+    // Motif's page src here, so the Motif's documents start with the
+    // runtime; another content version of the Motif loads the same way.
+    window.__motifShellLoad = function (src) {
+      return new Promise(function (resolve, reject) {
+        var f = document.querySelector('iframe');
+        if (!f) { reject(new Error('capture host shell has no Motif frame')); return; }
+        f.addEventListener('load', function () { resolve(true); }, { once: true });
+        f.src = src;
+      });
+    };
+    window.__motifSetup = function (props, meta) { return motifWindow().__motifSetup(props, meta); };
+    // Resolves once the frame's rendering step has run: rAF callbacks run in
+    // it, and the task after them belongs to the next frame. Main renders its
+    // next frame then, while this one is still on its way to a paint (ADR
+    // 0159). Pacing only: the marker, not this wait, proves what a paint
+    // shows. The timeout keeps a host that stopped producing frames from
+    // holding the render.
+    var committed = function () {
+      return new Promise(function (resolve) {
+        var timer = window.setTimeout(resolve, ${MOTIF_DEADLINES.renderStepMs});
+        window.requestAnimationFrame(function () { window.setTimeout(function () { window.clearTimeout(timer); resolve(); }, 0); });
+      });
+    };
+    // The id is written after the frame's seek with no rendering step between
+    // them (only microtasks), so the commit that shows it shows that frame.
+    window.__motifRender = async function (t, props, meta) {
+      var done = await motifWindow().__motifRender(t, props, meta);
+      if (meta && typeof meta.frameId === 'number') {
+        mark(meta.frameId);
+        await committed();
+      }
+      return done;
+    };
+    return;
+  }
+
+  // The status of the response this document came from, read before the clock
+  // takeover replaces performance.
+  var pagePerformance = window.performance;
+  window.__motifServed = function () {
+    var navigation = pagePerformance.getEntriesByType('navigation')[0];
+    return navigation ? navigation.responseStatus : 0;
+  };
+  var rt = (${createMotifRuntime.toString()})(window);
+  var def = null, didSetup = false, lastPropsKey = null;
+  // Decoder workers belong to one setup. They must not outlive it and mutate
+  // later frames on a real clock. This is lifecycle management, not a sandbox:
+  // the protocol CSP and Electron isolation confine their capabilities.
+  var setupActive = false, rejectWorker = null;
+  var workers = new Set();
+  var NativeWorker = window.Worker;
+  function retireWorkers() {
+    setupActive = false;
+    for (var worker of workers) worker.terminate();
+    workers.clear();
+    rejectWorker = null;
+  }
+  if (NativeWorker) {
+    window.Worker = class extends NativeWorker {
+      constructor(url, options) {
+        if (!setupActive) throw new Error('motif: decoder Workers may only be created during setup()');
+        if (workers.size >= 8) throw new Error('motif: setup supports at most 8 concurrent decoder Workers');
+        super(url, options);
+        workers.add(this);
+        this.motifWorkerError = function (event) {
+          if (rejectWorker) rejectWorker(new Error('motif: decoder worker failed (' + url + '): ' +
+            (event.message || 'script loading, CSP or decoder initialization failed')));
+        };
+        this.addEventListener('error', this.motifWorkerError);
+      }
+      terminate() {
+        this.removeEventListener('error', this.motifWorkerError);
+        workers.delete(this);
+        super.terminate();
+      }
+    };
+  }
+  if (window.SharedWorker) window.SharedWorker = function () {
+    throw new Error('motif: SharedWorker is unsupported; use dedicated decoder Workers during setup()');
+  };
+  window.addEventListener('pagehide', retireWorkers);
+
+  function makeRandom(seedKey) {
+    // Minimal seeded PRNG stub (Mulberry32). seedKey is a string; hash it to seed.
+    var seed = 0;
+    for (var i = 0; i < seedKey.length; i++) {
+      seed = (seed ^ seedKey.charCodeAt(i)) >>> 0;
+      seed = ((seed >>> 16) ^ seed) * 0x45d9f3b >>> 0;
+    }
+    return function () {
+      seed += 0x6d2b79f5;
+      var t = seed;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  window.motif = {
+    define: function (d) { def = d; didSetup = false; lastPropsKey = null; },
+    random: makeRandom,
+  };
+
+  function ctxFor(t, props, meta) {
+    return {
+      duration: meta.duration,
+      width: meta.width,
+      height: meta.height,
+      fps: meta.fps,
+      frame: Math.round(t * meta.fps),
+      random: makeRandom,
+    };
+  }
+
+  // Main gives initialization its own wall-clock budget, separate from frame.
+  // __motifRender also calls this for standalone authoring/test compatibility.
+  window.__motifSetup = async function (props, meta) {
+    if (!def) throw new Error("motif: no motif.define() called");
+    var propsKey = JSON.stringify(props);
+    if (didSetup && propsKey === lastPropsKey) return true;
+    // A frame whose color-scheme differs from its document's gets an opaque
+    // backdrop, which would cover a transparent Motif.
+    if (window.frameElement) window.frameElement.style.colorScheme = getComputedStyle(document.documentElement).colorScheme;
+    didSetup = false;
+    setupActive = true;
+    var workerFailure = new Promise(function (_, reject) { rejectWorker = reject; });
+    try {
+      await Promise.race([
+        (async function () {
+          if (def.setup) await def.setup(props, ctxFor(0, props, meta));
+          if (document.fonts && document.fonts.ready) await document.fonts.ready;
+        })(),
+        workerFailure
+      ]);
+      didSetup = true; lastPropsKey = propsKey;
+      return true;
+    } finally { retireWorkers(); }
+  };
+
+  // Driven from the Electron main process (main/motif/captureHost.ts) via CDP
+  // Runtime.evaluate(awaitPromise:true), through the capture host shell.
+  // Resolves once setup (once-per-props), frame(t) and the seek to t
+  // (seconds) have run; the shell's frame id proves which commit shows it.
+  window.__motifRender = function (t, props, meta) {
+    return (async function () {
+      await window.__motifSetup(props, meta);
+      if (def.frame) def.frame(t, ctxFor(t, props, meta));
+      rt.seek(t * 1000);
+      return true;
+    })();
+  };
+})();
+`;

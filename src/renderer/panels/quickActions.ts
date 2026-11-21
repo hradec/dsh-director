@@ -1,0 +1,546 @@
+// The Quick Actions strip's authored catalogue: which commands appear, in
+// what order, under which section, with which icon, and when each reads as
+// armed.
+//
+// These four facts live HERE rather than on `CommandDef` because they are
+// presentation, not contract: `commands/registry.ts` stays pure data with no
+// React/lucide dependency, and the ~60 commands that never reach a button
+// don't grow optional icon/section/order fields. The behavioural half
+// (`run` / `enabled` / `labelKey`) is still resolved from the registry by id,
+// so a button can never drift from the command the palette and menus invoke.
+//
+// LANDMINE: order here is authored and load-bearing. Do NOT switch to
+// iterating `listCommands()` — that walks a `Set` of providers registered at
+// component mount, so its order is a by-product of mount sequence.
+
+import {
+  Bookmark,
+  Crop,
+  BookmarkPlus,
+  FoldHorizontal,
+  FoldVertical,
+  Group,
+  Grid3x3,
+  Hand,
+  Link,
+  Link2Off,
+  Magnet,
+  MousePointer2,
+  ScanEye,
+  Scissors,
+  SquareDashed,
+  SquareSplitHorizontal,
+  Type,
+  UnfoldVertical,
+  Ungroup,
+  Unlink,
+  type LucideProps,
+} from "lucide-react";
+import type { ComponentType } from "react";
+
+import type { AppSettings, DisplayMode } from "../ipc";
+import type { LinkToggleState } from "../timeline/linkEligibility";
+import type { GroupState, UngroupState } from "../timeline/groupEligibility";
+import type { Tool } from "../state/toolStore";
+import { CanvasSnapIcon } from "./CanvasSnapIcon";
+import { FollowPlayheadIcon } from "./FollowPlayheadIcon";
+import { ClearRangeIcon, MarkInIcon, MarkOutIcon } from "./MarkRangeIcon";
+import {
+  PlaybackResolutionFullIcon,
+  PlaybackResolutionHalfIcon,
+  PlaybackResolutionQuarterIcon,
+} from "./PlaybackResolutionIcon";
+
+/// What a strip button may draw: anything shaped like a lucide glyph. Widened
+/// from `LucideIcon` itself so a hand-drawn one can sit on the same row — see
+/// `PlaybackResolutionIcon.tsx`, which draws a value lucide has no glyph for.
+/// Lucide's own props are the shared shape rather than a narrower invention,
+/// so every stock icon stays assignable without a cast.
+export type QuickActionIcon = ComponentType<LucideProps>;
+
+/// A tooltip the item has already resolved, for the one kind of hint a key
+/// cannot carry: a refusal sentence names the layer, link or lane that blocks,
+/// and those names come from the project mirror rather than from the locale.
+/// Everything else stays a plain i18n key, which is what keeps the catalogue a
+/// pure data table.
+export interface QuickActionHintText {
+  text: string;
+}
+
+/// The store-derived inputs every `active`/`hint` predicate reads. Snapshotted
+/// once at the top of the panel component so the per-item predicates stay pure
+/// functions — hooks can't be called per row.
+export interface QuickActionState {
+  cropActive: boolean;
+  cropAvailable: boolean;
+  tool: Tool;
+  /// Whether the project has any layer (`AppCommandFlags.hasLayers`, read here
+  /// off the project store as one boolean). The Text tool's hint reads it to
+  /// name the remedy on the greyed button; the greying itself comes from the
+  /// command's `enabled`, so the two cannot disagree about the gate.
+  hasLayers: boolean;
+  displayMode: DisplayMode;
+  /// Whether any in/out point is marked (`rangeStore.ts`). Not a position —
+  /// the strip can't render one, and subscribing to the positions would
+  /// re-render the whole strip on every handle drag.
+  hasRange: boolean;
+  /// Whether the timeline's marker lane paints markers (app-level pref). The strip's
+  /// whole marker state: it never reports whether the project HAS any markers,
+  /// so the strip takes no project-store subscription and the hint stays
+  /// two-state.
+  markersVisible: boolean;
+  /// Whether the Review overlay is on (ADR 0115): agent review material on
+  /// the timeline. Runtime state of the agent panel's store, not a setting.
+  reviewOverlay: boolean;
+  /// Clip snapping — the magnet (`tail_snap_enabled`).
+  snapEnabled: boolean;
+  /// Canvas snapping (`preview_snap_enabled`): frame, layers and grid lines.
+  previewSnapEnabled: boolean;
+  /// The alignment grid (`preview_grid.enabled`), drawn and snapped together.
+  gridEnabled: boolean;
+  /// Whether the timeline pages itself to keep the playhead on screen.
+  followPlayhead: boolean;
+  /// Whether the preview draws the title-safe / action-safe rectangles.
+  safeAreaGuides: boolean;
+  /// Preview decode resolution. The `resolution` section's one button draws
+  /// it and names it in the tooltip — with no pressed state to fall back on,
+  /// this field IS what the button reports. The preview itself subscribes to
+  /// the store directly.
+  playbackResolution: AppSettings["playback_resolution"];
+  /// Which way the Link / Unlink toggle would go for the selection, or why it
+  /// can't (`useLinkToggleState`). A string selector for the `hasRange`
+  /// reason: the strip re-renders when the answer flips, not on every
+  /// click-select.
+  linkToggle: LinkToggleState;
+  /// Whether the link override is on (`linkOverrideStore.ts`): links are
+  /// not in force, every edit acts on single layers.
+  linkOverride: boolean;
+  /// Whether the selection can be pre-composed, or why not
+  /// (`useGroupState`). A string selector for the `linkToggle` reason.
+  groupSelection: GroupState;
+  /// Whether the selection can be ungrouped, or which condition failed
+  /// (`useUngroupState`).
+  ungroupSelection: UngroupState;
+  /// Why Ripple delete is unavailable, ALREADY RESOLVED — or undefined when it
+  /// is live. The one field here that is a sentence rather than a state, and for
+  /// the `QuickActionHintText` reason: a refused ripple names the layer, link or
+  /// lane that blocks, and only the panel's `t` and the project mirror together
+  /// can produce that string (`timeline/rippleEligibility.ts`). Keeping the
+  /// state here instead would push the resolution into the predicate, which is
+  /// the pure function this whole snapshot exists to preserve.
+  rippleDeleteReason: string | undefined;
+}
+
+export interface QuickActionItem {
+  /// Command id in `commands/registry.ts`. Resolved through `getCommand` for
+  /// `run` / `enabled` / `labelKey`.
+  id: string;
+  /// The button's glyph. Static for everything whose meaning doesn't move.
+  icon: QuickActionIcon;
+  /// State-bearing glyph, for buttons where the icon itself depicts the
+  /// current state rather than a fixed concept. Overrides `icon` when present,
+  /// the same way `hint` overrides the command's `labelKey`.
+  iconFor?: (state: QuickActionState) => QuickActionIcon;
+  /// Whether the button renders pressed. For a radio section exactly one item
+  /// should be true; for an independent section each item answers for itself.
+  /// Omitted by `command` items, which have no pressed state at all.
+  active?: (state: QuickActionState) => boolean;
+  /// State-bearing tooltip / aria-label key, for buttons whose meaning depends
+  /// on the current value ("showing X, click for Y"). Omit to use the
+  /// command's own `labelKey`. A `QuickActionHintText` instead of a key is the
+  /// escape valve for a sentence the locale cannot hold on its own — see that
+  /// type.
+  hint?: (state: QuickActionState) => string | QuickActionHintText;
+}
+
+export interface QuickActionSection {
+  id: string;
+  /// How the section's buttons report state to assistive tech, which is the
+  /// whole reason the split exists:
+  /// - `radio` = modal, mutually exclusive (the exclusivity comes from the
+  ///   underlying state, not from this panel) → `aria-checked` in a radiogroup.
+  /// - `independent` = each button answers only for itself → `aria-pressed`.
+  /// - `command` = momentary; fires and forgets → NEITHER attribute.
+  ///
+  /// `command` is not cosmetic. A one-shot action carrying `aria-pressed=false`
+  /// is narrated as an off switch, which promises a state it does not have —
+  /// so these items also omit `active` rather than hard-coding it false.
+  mode: "radio" | "independent" | "command";
+  items: QuickActionItem[];
+}
+
+/// Tooltip per toggle state: the two live directions name the action, the two
+/// disabled ones name what the selection is missing.
+const LINK_TOGGLE_HINT: Record<LinkToggleState, string> = {
+  link: "quick_actions.link_selected",
+  unlink: "quick_actions.unlink_selected",
+  needs_two: "quick_actions.link_needs_two",
+  mixed: "quick_actions.link_mixed_selection",
+};
+
+/// Tooltip per Group state, and per Ungroup state. Two total `Record`s for the
+/// `RESOLUTION_HINTS` reason: a new state must not compile until someone has
+/// written the sentence that tells the user what to do about it — which is the
+/// whole job of a disabled button's tooltip.
+const GROUP_HINT: Record<GroupState, string> = {
+  group: "quick_actions.group_selected",
+  needs_selection: "quick_actions.group_needs_selection",
+  locked: "quick_actions.group_locked",
+};
+
+const UNGROUP_HINT: Record<UngroupState, string> = {
+  ungroup: "quick_actions.ungroup_selected",
+  needs_one_group: "quick_actions.ungroup_needs_one_group",
+  locked: "quick_actions.ungroup_locked",
+  not_plain_transform: "quick_actions.ungroup_not_plain_transform",
+  not_plain_opacity: "quick_actions.ungroup_not_plain_opacity",
+  not_plain_effects: "quick_actions.ungroup_not_plain_effects",
+  not_plain_time_map: "quick_actions.ungroup_not_plain_time_map",
+};
+
+export const QUICK_ACTION_SECTIONS: readonly QuickActionSection[] = [
+  {
+    id: "tools",
+    mode: "radio",
+    items: [
+      {
+        id: "selectTool",
+        icon: MousePointer2,
+        active: (s) => s.tool === "select" && !s.cropActive,
+      },
+      {
+        id: "selectHandTool",
+        icon: Hand,
+        active: (s) => s.tool === "hand",
+        hint: () => "quick_actions.hand_tool_hint",
+      },
+      {
+        // Historical id — it selects the Blade, it no longer toggles.
+        id: "toggleBladeMode",
+        icon: Scissors,
+        active: (s) => s.tool === "blade",
+      },
+      {
+        // The Text tool (`preview/TextToolOverlay.tsx`): a preview click edits
+        // the Text layer under the pointer or creates one at the click point.
+        // Greyed on an empty project for the Blade's reason — no canvas to
+        // click — and, unlike the Blade, it says so: a `Type` glyph cannot
+        // teach a click gesture, so the hint carries it while the tool is
+        // usable, and names the remedy while it is not (`clear_range_empty`'s
+        // rule).
+        id: "selectTextTool",
+        icon: Type,
+        active: (s) => s.tool === "text",
+        hint: (s) =>
+          s.hasLayers
+            ? "quick_actions.text_tool_hint"
+            : "quick_actions.text_tool_needs_layer",
+      },
+      {
+        id: 'editCrop',
+        icon: Crop,
+        active: s => s.cropActive,
+        hint: s => !s.cropAvailable ? 'crop.unavailable' : s.cropActive ? 'crop.done' : 'crop.edit',
+      },
+    ],
+  },
+  {
+    id: "toggles",
+    mode: "independent",
+    items: [
+      {
+        id: "toggleDisplayMode",
+        // Fallback only; `iconFor` answers on every real render. Matches the
+        // `AbRoll` default in `appSettingsStore.ts`'s FALLBACK settings.
+        icon: FoldVertical,
+        // The glyph depicts the CURRENT state, not the click's effect, so it
+        // agrees with `aria-pressed` instead of contradicting it: folded rows
+        // = pressed = fold arrows. The "click to X" half is the hint's job.
+        iconFor: (s) => (s.displayMode === "AbRoll" ? FoldVertical : UnfoldVertical),
+        // Pressed = filtered down to the A/B-roll rows.
+        active: (s) => s.displayMode === "AbRoll",
+        // The hint separates state from action: "showing X, click for Y".
+        hint: (s) =>
+          s.displayMode === "AbRoll"
+            ? "timeline.mode_ab_roll_hint"
+            : "timeline.mode_all_tracks_hint",
+      },
+      {
+        id: "toggleMarkersVisible",
+        // One fixed glyph, unlike the display toggle above: that button switches
+        // between two MODES whose glyphs depict which one is current, whereas
+        // this is a plain on/off switch whose state the pressed styling and
+        // `aria-pressed` already carry. A crossed-out bookmark would restate at
+        // 16 px what the button already says.
+        icon: Bookmark,
+        // Pressed = the marker layer is painting.
+        active: (s) => s.markersVisible,
+        // Two states, so two keys — same "showing X, click for Y" split as the
+        // display toggle's pair.
+        hint: (s) =>
+          s.markersVisible
+            ? "quick_actions.markers_shown_hint"
+            : "quick_actions.markers_hidden_hint",
+      },
+      {
+        // Beside the marker toggle: both say what the timeline's rows above
+        // the tracks paint — the user's marks, the agent's review material.
+        // Here rather than on the Review lane, which the switch removes, so
+        // the one place to turn it back on would be the place it took away.
+        id: "toggleReviewOverlay",
+        icon: ScanEye,
+        active: (s) => s.reviewOverlay,
+        hint: (s) =>
+          s.reviewOverlay
+            ? "quick_actions.review_overlay_on_hint"
+            : "quick_actions.review_overlay_off_hint",
+      },
+      {
+        // Auto-scroll. A lane with the playhead standing in it, drawn in
+        // `FollowPlayheadIcon.tsx`: every reticle lucide offers says "centre on
+        // a target", and centring is the one thing `followPlayhead.ts` does not
+        // do — it pages, and parks the playhead off to the leading side.
+        id: "toggleFollowPlayhead",
+        icon: FollowPlayheadIcon,
+        active: (s) => s.followPlayhead,
+        hint: (s) =>
+          s.followPlayhead
+            ? "quick_actions.follow_on_hint"
+            : "quick_actions.follow_off_hint",
+      },
+      {
+        // The magnet. Its home in every NLE is a toolbar button, and until this
+        // row it lived only in Settings — a per-edit switch behind a
+        // preferences panel. One fixed glyph for the marker-toggle reason: a
+        // plain on/off whose state the pressed styling already carries.
+        id: "toggleTailSnap",
+        icon: Magnet,
+        active: (s) => s.snapEnabled,
+        hint: (s) =>
+          s.snapEnabled
+            ? "quick_actions.snap_on_hint"
+            : "quick_actions.snap_off_hint",
+      },
+      {
+        // After the magnet: the two snap switches sit together, and lead from
+        // the timeline's toggles into the preview's (grid, then safe areas,
+        // which the grid divides when both are on).
+        id: "togglePreviewSnap",
+        icon: CanvasSnapIcon,
+        active: (s) => s.previewSnapEnabled,
+        hint: (s) => s.previewSnapEnabled
+          ? "quick_actions.canvas_snap_on_hint"
+          : "quick_actions.canvas_snap_off_hint",
+      },
+      {
+        id: "togglePreviewGrid",
+        icon: Grid3x3,
+        active: (s) => s.gridEnabled,
+        hint: (s) => s.gridEnabled
+          ? "quick_actions.grid_on_hint"
+          : "quick_actions.grid_off_hint",
+      },
+      {
+        // Title-safe / action-safe rectangles. It has NO keyboard binding at
+        // all, so before this row the only way to reach it was the search
+        // palette — the strip is its one-click home.
+        id: "toggleSafeAreaGuides",
+        icon: SquareDashed,
+        active: (s) => s.safeAreaGuides,
+        hint: (s) =>
+          s.safeAreaGuides
+            ? "quick_actions.safe_area_on_hint"
+            : "quick_actions.safe_area_off_hint",
+      },
+      {
+        // Link override (`linkOverrideStore.ts`). Sits here rather than beside
+        // the Link / Unlink button in `edit`: that section is `command` mode,
+        // and this is a switch whose whole point is its pressed state —
+        // `aria-pressed` is only honest in an `independent` section. A broken
+        // chain: pressed = links not in force.
+        id: "toggleLinkOverride",
+        icon: Link2Off,
+        active: (s) => s.linkOverride,
+        hint: (s) =>
+          s.linkOverride
+            ? "quick_actions.link_override_on_hint"
+            : "quick_actions.link_override_off_hint",
+      },
+    ],
+  },
+  {
+    // Edits that need no pointer. The Blade above can only cut where the mouse
+    // is; `splitAtPlayhead` cuts on the line, which is how the same operation
+    // is reached from the keyboard and from here.
+    id: "edit",
+    mode: "command",
+    items: [
+      {
+        // No `hint`, and deliberately no disabled state: whether a clip
+        // straddles the playhead changes as the playhead MOVES, and gating on
+        // it would mean subscribing the strip to the playhead — one re-render
+        // per frame, which the playhead gate forbids. The command no-ops over
+        // a gap, exactly as `Ctrl+K` does in Premiere.
+        id: "splitAtPlayhead",
+        icon: SquareSplitHorizontal,
+      },
+      {
+        // Delete AND close the gap (docs/features.md#ripple-delete). Only the
+        // ripple gets a button: plain Delete is the key every editor already
+        // presses, and a strip slot spent restating it would buy nothing.
+        // `FoldHorizontal` is the glyph because that is literally the edit —
+        // two sides drawn together along the timeline's own axis, where the
+        // Group pair's `FoldVertical` folds rows.
+        //
+        // Gated, unlike `splitAtPlayhead` above it, and affordably so: the
+        // verdict depends on the SELECTION and the mirror, not on the playhead,
+        // so the strip subscribes to two stores that tick on edits rather than
+        // on frames.
+        id: "rippleDeleteSelected",
+        icon: FoldHorizontal,
+        // The `clearRange` rule, with the reason resolved upstream: a greyed
+        // button names the precondition instead of restating a label that
+        // cannot be acted on.
+        hint: (s) =>
+          s.rippleDeleteReason === undefined
+            ? "actions.ripple_delete_selected"
+            : { text: s.rippleDeleteReason },
+      },
+      {
+        // One button for both directions, as the key is one key: the glyph
+        // shows which way a click would go.
+        id: "toggleLinkSelected",
+        icon: Link,
+        iconFor: (s) => (s.linkToggle === "unlink" ? Unlink : Link),
+        // Same disabled-button rule as `clearRange`: when neither direction
+        // applies the hint names the precondition instead of restating a
+        // label that cannot be used.
+        hint: (s) => LINK_TOGGLE_HINT[s.linkToggle],
+      },
+      // TWO buttons for Group / Ungroup where Link / Unlink is one, because the
+      // key is two keys: the two directions are not inverses over one selection
+      // (`timeline/groupEligibility.ts`), so a single button would have to grey
+      // itself out in states where the OTHER direction is live. The glyphs are
+      // lucide's own Group / Ungroup — the same `Group` glyph the timeline draws
+      // on a Group clip, so the button and the thing it makes read as one idea.
+      {
+        id: "groupSelected",
+        icon: Group,
+        hint: (s) => GROUP_HINT[s.groupSelection],
+      },
+      {
+        id: "ungroupSelected",
+        icon: Ungroup,
+        hint: (s) => UNGROUP_HINT[s.ungroupSelection],
+      },
+    ],
+  },
+  {
+    // In/out marking. The strip is where this feature becomes discoverable at
+    // all: the buttons carry their `I` / `O` accelerator in the tooltip, so the
+    // one-click path teaches the keyboard path. It cannot show WHERE the points
+    // are — that is the ruler's job — but the clear button's enabled state is a
+    // standing, zero-cost signal that a range exists at all.
+    id: "range",
+    mode: "command",
+    items: [
+      // Square brackets, drawn in `MarkRangeIcon.tsx`: the in/out glyph every
+      // other NLE uses, and the only pair whose two halves stay apart at 16 px
+      // — the stock arrows mirror into the same silhouette.
+      { id: "markIn", icon: MarkInIcon },
+      { id: "markOut", icon: MarkOutIcon },
+      {
+        id: "clearRange",
+        // The same cross it always wore, now with a subject: brackets struck
+        // through. A cross rather than lucide's `*Off` slash because this
+        // command DELETES the marks rather than switching them off.
+        icon: ClearRangeIcon,
+        // The command is disabled with no range marked, and a disabled button
+        // with an unchanged tooltip reads as broken — so the hint explains the
+        // reason instead of restating the label.
+        hint: (s) =>
+          s.hasRange ? "actions.clear_range" : "quick_actions.clear_range_empty",
+      },
+    ],
+  },
+  {
+    // Marker AUTHORING, separate from the marker toggle up in `toggles` — the
+    // two are the same feature but not the same kind of control, and the ARIA
+    // mode is what splits them: adding a marker is momentary, showing them is
+    // a switch. Before this row the strip could hide markers it had no way to
+    // create.
+    id: "markers",
+    mode: "command",
+    items: [{ id: "addMarkerAtPlayhead", icon: BookmarkPlus }],
+  },
+  {
+    // Preview decode resolution — ONE button walking three rungs, where the
+    // section used to spend three slots stating one value.
+    //
+    // `command`, not `radio`, and the mode is the substance of the change: a
+    // radiogroup of one button cannot say anything ("exactly one of one is
+    // chosen" is not information), and `aria-pressed` on a three-state control
+    // would announce a switch that has no off. Momentary is what a cycling
+    // button honestly is, so the whole current value rides on the glyph and
+    // the hint — which is also why `active` is absent and the button never
+    // renders pressed.
+    //
+    // That is only honest because the glyph SAYS the value. This section was
+    // three buttons for as long as its icons were a signal ladder that could
+    // draw "less" but not "half"; `PlaybackResolutionIcon` fills that
+    // fraction of a frame, so a single button can be read at rest and the
+    // cycle has a direction from every rung.
+    id: "resolution",
+    mode: "command",
+    items: [
+      {
+        id: "cyclePlaybackResolution",
+        // Fallback only; `iconFor` answers on every real render. Matches the
+        // `full` default in `appSettingsStore.ts`'s FALLBACK settings.
+        icon: PlaybackResolutionFullIcon,
+        iconFor: (s) => RESOLUTION_ICONS[s.playbackResolution],
+        hint: (s) => RESOLUTION_HINTS[s.playbackResolution],
+      },
+    ],
+  },
+];
+
+/// Glyph per rung. Total `Record`s rather than lookups with a fallback: a
+/// fourth playback resolution must not compile until someone has decided what
+/// it looks like and what its tooltip promises, because the only fallback
+/// available here — draw the previous rung — would be a lie about the value
+/// the preview is actually shipping.
+const RESOLUTION_ICONS: Record<
+  AppSettings["playback_resolution"],
+  QuickActionIcon
+> = {
+  full: PlaybackResolutionFullIcon,
+  half: PlaybackResolutionHalfIcon,
+  quarter: PlaybackResolutionQuarterIcon,
+};
+
+/// Tooltip per rung, keyed on the CURRENT value. Each string names the value
+/// the button is on and the one a click moves to, so the successor order in
+/// `PLAYBACK_RESOLUTION_CYCLE` is restated in prose here — the pair that can
+/// drift, and the reason `quickActions.test.ts` asserts one key per rung and
+/// no two rungs sharing one.
+const RESOLUTION_HINTS: Record<AppSettings["playback_resolution"], string> = {
+  full: "quick_actions.resolution_full_hint",
+  half: "quick_actions.resolution_half_hint",
+  quarter: "quick_actions.resolution_quarter_hint",
+};
+
+/// The glyph to draw for `item` right now. Called per render, so a
+/// state-bearing icon can never be cached into a stale component.
+export function resolveIcon(
+  item: QuickActionItem,
+  state: QuickActionState,
+): QuickActionIcon {
+  return item.iconFor?.(state) ?? item.icon;
+}
+
+/// Flat id list — used by the alignment test and by anything that needs to
+/// know whether a command has a strip button.
+export const QUICK_ACTION_IDS: readonly string[] = QUICK_ACTION_SECTIONS.flatMap(
+  (section) => section.items.map((item) => item.id),
+);

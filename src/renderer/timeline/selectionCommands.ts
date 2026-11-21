@@ -1,0 +1,92 @@
+// Select All / Deselect All, and the one rule they both rest on: which Layers a
+// bulk selection should include.
+//
+// Lifted out of Timeline for the reason `linkEligibility.ts` gives — a
+// command's `enabled` gate is evaluated inside `listCommands()` by whichever
+// surface draws the row, where there is no React and no reach into Timeline's
+// locals — and because "which Layers should Select All include" is worth stating
+// once, in one place, with a test on it.
+
+import type { TrackSummary } from "../ipc";
+import {
+  clearKeyframeSelection,
+  hasKeyframeSelection,
+} from "../keyframe/selectionStore";
+import { currentOpenComposition } from "../state/projectStore";
+import {
+  clearLayerSelection,
+  currentSelection,
+  primaryLayerIdOf,
+  setLayerSelection,
+} from "../state/selectionStore";
+
+/// Every unlocked Layer on an unlocked track, in the order the tracks arrive
+/// and the Layers sit inside them.
+///
+/// Locked clips can be explicitly clicked for inspection and unlocking, but
+/// Select All must not include protected clips the user never chose: their
+/// presence would prevent the next batch move or delete.
+export function selectableLayerIds(tracks: readonly TrackSummary[]): string[] {
+  const ids: string[] = [];
+  for (const track of tracks) {
+    if (track.locked) continue;
+    for (const layer of track.layers) {
+      if (!layer.locked) ids.push(layer.id);
+    }
+  }
+  return ids;
+}
+
+/// Select every selectable Layer in `tracks` — which the caller passes as the
+/// tracks the timeline is currently RENDERING, not the project's full list. A/B
+/// Roll display mode filters role-less tracks out of the view entirely
+/// (`Timeline`'s `orderedTracks`), and a Select All that reached them would arm
+/// a Delete for clips that are not on screen.
+///
+/// A surviving primary is KEPT, so Select All does not move the Attribute panel
+/// off the clip being inspected; otherwise the first selectable Layer takes it.
+export function selectAllLayers(tracks: readonly TrackSummary[]): void {
+  const ids = selectableLayerIds(tracks);
+  if (ids.length === 0) return;
+  const primary = primaryLayerIdOf(currentSelection());
+  setLayerSelection(
+    primary !== null && ids.includes(primary) ? primary : null,
+    ids,
+  );
+}
+
+/// Drop every selection the timeline can hold: Layers and the transition chip
+/// (`clearLayerSelection` owns both), plus the keyframe diamond. All three arm
+/// Delete (`subSelectionDelete.ts`), so a Deselect All that left one standing
+/// would leave Delete live with nothing visibly selected.
+export function deselectAll(): void {
+  clearLayerSelection();
+  clearKeyframeSelection();
+}
+
+/// Live-read gate for Select All: has the project anything selectable at all?
+///
+/// Deliberately OPTIMISTIC about the display filter — it asks the project, which
+/// has no notion of which tracks are on screen, so in A/B Roll mode it can offer
+/// the command when every unlocked clip happens to sit on a hidden track. That
+/// is the safe direction: the command then selects nothing. A pessimistic gate
+/// would grey out a row the user could legitimately run.
+///
+/// Builds the id list rather than short-circuiting on `some()` so the lock rule
+/// has exactly one definition; the list is bounded by the project's clip count
+/// and this runs once per surface render.
+export function canSelectAll(): boolean {
+  const tracks = currentOpenComposition()?.tracks ?? [];
+  return selectableLayerIds(tracks).length > 0;
+}
+
+/// Live-read gate for Deselect All: is anything selected?
+///
+/// Asks the selection by ABSENCE rather than by listing the kinds that count,
+/// because `deselectAll` clears the selection whatever kind it holds — a gate
+/// enumerating kinds greys the row out for every kind it forgets, and would
+/// have to be revisited each time a kind is added. Keyframes are a separate
+/// store, so they are still asked separately.
+export function canDeselectAll(): boolean {
+  return currentSelection().kind !== "none" || hasKeyframeSelection();
+}

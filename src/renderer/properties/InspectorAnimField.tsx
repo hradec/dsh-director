@@ -1,0 +1,64 @@
+import { readLayerParamTrack } from "../keyframe/channels";
+import { useTranslation } from "react-i18next";
+import { KeyframeField } from "../components/KeyframeField";
+import { tryMutate } from "../errors/tryMutate";
+import { updateLayerParamTrack, updateLayerParamTracks, type LayerSummary } from "../ipc";
+import { type NumberParamDescriptor } from "../keyframe/descriptors";
+import { fanOutEntries } from "../keyframe/fanOut";
+
+/// Inspector adapter: maps a (layer, NumberParamDescriptor) pair onto the shared
+/// KeyframeField with the stopwatch + the inspector commit path;
+/// widgets/step/min/max come from the descriptor (keyframe/descriptors.ts).
+///
+/// A composite descriptor (fanOutKeys) writes the authored track to every
+/// listed key in ONE plural batch — the linked-scale twin write. The
+/// stopwatch shares this sink (KeyframeField forwards it), so lift/collapse
+/// fans out too and the twin invariant holds on every inspector write path.
+export function InspectorAnimField({
+  layer,
+  desc,
+  tInLayerUs,
+  playheadInSpan,
+  onMutated,
+  layout,
+}: {
+  layer: LayerSummary;
+  desc: NumberParamDescriptor;
+  tInLayerUs: number;
+  playheadInSpan: boolean;
+  onMutated: () => Promise<void>;
+  /// `"cell"` for one axis of a merged pair row (see `InspectorRow`), which
+  /// drops the caption and keeps only stopwatch + control.
+  layout?: "row" | "cell";
+}) {
+  const { t } = useTranslation();
+  const track = readLayerParamTrack(layer, desc) ?? { mode: "Static" as const, value: desc.fallback };
+  const fanOut = desc.fanOutKeys;
+  return (
+    <KeyframeField
+      layerId={layer.id}
+      paramKey={desc.paramKey}
+      label={t(desc.labelKey, { defaultValue: desc.labelFallback ?? desc.paramKey })}
+      track={track}
+      fallback={desc.fallback}
+      tInLayerUs={tInLayerUs}
+      playheadInSpan={playheadInSpan}
+      onCommitTrack={async (k, next) => {
+        await tryMutate(
+          () =>
+            (fanOut
+              ? updateLayerParamTracks(layer.id, fanOutEntries(fanOut, next))
+              : updateLayerParamTrack(layer.id, k, next)
+            ).then(onMutated),
+          "Edit keyframes",
+        );
+      }}
+      onMutated={onMutated}
+      {...(layout ? { layout } : {})}
+      widgets={desc.widgets ?? ["number"]}
+      {...(desc.step !== undefined ? { step: desc.step } : {})}
+      {...(desc.min !== undefined ? { min: desc.min } : {})}
+      {...(desc.max !== undefined ? { max: desc.max } : {})}
+    />
+  );
+}

@@ -1,0 +1,248 @@
+
+
+.separator {
+  display: inline-block;
+  width: calc(1 * var(--ui-px));
+  height: calc(18 * var(--ui-px));
+  background: var(--accent);
+  margin: 0 calc(4 * var(--ui-px));
+}
+
+.error {
+  color: var(--destructive);
+  font-size: var(--font-size-body);
+  margin-left: auto;
+}
+
+.ping {
+  font-size: var(--font-size-body);
+  color: var(--muted-foreground);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: calc(16 * var(--ui-px));
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--app-chrome-gap);
+  /* Let the caption buttons stretch to the header's full height. */
+  align-self: stretch;
+}
+
+/* Header search entry — a <button> skinned as an input box (same skin
+   variables as .app-input). The auto left margin pushes it against the
+   right header group, inside the space between the left (brand + menus)
+   and right (locale + window controls) groups, so it can never overlap
+   the menus. */
+.header-search {
+  margin-left: auto;
+  /* The same bar rhythm .header-right spaces its own items by. */
+  margin-right: var(--app-chrome-gap);
+  min-width: max-content;
+  display: flex;
+  align-items: center;
+  gap: calc(7 * var(--ui-px));
+  width: var(--header-search-width);
+  max-width: 100%;
+  padding: calc(4 * var(--ui-px)) calc(10 * var(--ui-px));
+  font-family: inherit;
+  font-size: var(--font-size-body);
+  color: var(--muted-foreground);
+  background: var(--card);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.header-search:hover {
+  color: var(--foreground);
+  border-color: var(--border);
+}
+
+.header-search:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+}
+
+.header-search-label {
+  flex: 1;
+  min-width: max-content;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.header-search-kbd {
+  flex-shrink: 0;
+  font-family: inherit;
+  font-size: var(--font-size-micro);
+  opacity: 0.6;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: calc(1 * var(--ui-px)) calc(5 * var(--ui-px));
+}
+
+/* The display can cap a large theme below its requested window minimum.
+   rem follows the theme's root font size, so compact chrome starts when the
+   scaled controls need it. Keep menus, search text and caption buttons usable;
+   the locale button retains its globe, accessible name and tooltip. */
+@container app-chrome (width < 52rem) {
+  .app-brand h1,
+  .app-header .locale-toggle-label,
+  .header-search-kbd {
+    display: none;
+  }
+
+  .header-left {
+    gap: calc(8 * var(--ui-px));
+  }
+
+  .app-header .menu-trigger {
+    padding-inline: calc(6 * var(--ui-px));
+  }
+}
+
+.standalone-row.level-error .row-body {
+  color: var(--destructive);
+}
+
+.standalone-row.level-warn .row-body {
+  color: var(--color-amber-400);
+}
+
+.op-row.status-error {
+  border-left-color: var(--destructive);
+}
+
+.op-row.status-running {
+  border-left-color: var(--color-blue-400);
+}
+
+/* Restore-divider row — short marker showing where the rolled-back
+   window ends. Pre-restore rows in that window are pruned upstream
+   in buildRows(); only this divider + the target checkpoint pin
+   stay visible across the boundary. */
+.restore-divider-row {
+  background: rgba(148, 163, 184, 0.06);
+  border-left-color: var(--color-slate-400);
+  color: var(--color-slate-400);
+  font-style: italic;
+}
+
+.restore-divider-row .row-icon {
+  color: var(--color-slate-400);
+}
+
+.placeholder {
+  font-size: var(--font-size-body);
+  color: var(--color-gray-500);
+}
+
+.truncate {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Standard visually-hidden helper for aria-live regions; not present
+   elsewhere in styles.css. */
+.sr-only {
+  position: absolute;
+  width: calc(1 * var(--ui-px));
+  height: calc(1 * var(--ui-px));
+  padding: 0;
+  margin: calc(-1 * var(--ui-px));
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* About dialog (Help menu) — three tiers on the settings-panel chrome:
+   brand hero → info band → action. Separation comes from the info tier's
+   full-bleed background band (the .settings-card idiom), NOT an inset
+   divider line — a padded-in line clashes with the dialog header's
+   full-width border. Sections own their padding; the root adds none. */
+.about-dialog {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: center;
+  color: var(--foreground);
+  font-size: var(--font-size-body);
+}
+
+/* Hero: logo + name + version read as ONE unit (tight internal gap). */
+.about-hero {
+  padding: calc(24 * var(--ui-px)) calc(24 * var(--ui-px)) calc(18 * var(--ui-px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(2 * var(--ui-px));
+}
+
+.about-logo {
+  width: calc(56 * var(--ui-px));
+  height: calc(56 * var(--ui-px));
+  margin-bottom: calc(8 * var(--ui-px));
+}
+
+.about-name {
+  margin: 0;
+  font-size: var(--font-size-heading);
+  font-weight: 600;
+}
+
+.about-version {
+  margin: 0;
+  color: var(--muted-foreground);
+}
+
+/* Info tier: author / license / notices / repo link as one full-width band. */
+.about-info {
+  background: var(--card);
+  padding: calc(12 * var(--ui-px)) calc(24 * var(--ui-px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(4 * var(--ui-px));
+}
+
+.about-meta {
+  margin: 0;
+  color: var(--muted-foreground);
+}
+
+/* Link-styled buttons (About dialog: repo address + the inline license /
+   notices links). Opens via shell:open, not an anchor — the renderer has no
+   navigation. Underlined at rest: hover-only underlining read as plain text. */
+.about-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--color-blue-400);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.about-link:hover {
+  color: var(--color-blue-300);
+}
+
+.about-actions {
+  padding: calc(12 * var(--ui-px)) calc(24 * var(--ui-px)) calc(16 * var(--ui-px));
+  display: flex;
+  justify-content: center;
+}
+
+/* Help → Check for Updates: the message-and-actions dialog width the other
+   small confirm dialogs use. Compound selector: misc.css is imported before
+   settings.css, so a lone .update-dialog would lose to .settings-panel. */
+.settings-panel.update-dialog {
+  width: min(var(--dialog-width-prompt), calc(100vw - calc(32 * var(--ui-px))));
+}

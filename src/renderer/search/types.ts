@@ -1,0 +1,65 @@
+import type { ActionId } from "../shortcuts/defs";
+
+export type SearchEntryType =
+  | "command"
+  | "media"
+  | "group"
+  | "track"
+  | "clip"
+  | "caption"
+  | "marker"
+  | "description";
+
+export interface MediaUsage {
+  layerId: string;
+  trackId: string;
+  trackLabel: string;
+  tStartUs: number;
+}
+
+/// What activation needs, discriminated by `type`. Ids only (+ the times
+/// needed to seek) — the index may be stale, so navigation re-validates
+/// ids against projectStore's live maps at activation time.
+export type SearchPayload =
+  | { type: "command"; commandId: string; actionId?: ActionId }
+  | { type: "media"; mediaId: string; available: boolean; usages: MediaUsage[] }
+  /// A composition, findable whether or not anything places it. `refCount` is
+  /// what lets the row say "not on the timeline" for an orphan, the same note a
+  /// media item with no usages carries.
+  | { type: "group"; compositionId: string; refCount: number }
+  | { type: "track"; trackId: string; firstLayerId: string | null }
+  | { type: "clip"; layerId: string; tStartUs: number }
+  | { type: "caption"; layerId: string; tStartUs: number }
+  /// `compositionId`: a marker sits on one composition's timeline, and the
+  /// palette has to open that timeline before it can seek there.
+  | { type: "marker"; markerId: string; tUs: number; compositionId: string }
+  /// One described segment as it lands on ONE placement of its source: the
+  /// clip to select, and where on that clip's timeline the described stretch
+  /// begins. `compositionId` names the clock `tStartUs` is on — the clip may
+  /// have moved to another composition since the index was built, and a time
+  /// from the old one names no instant of the new one.
+  | {
+      type: "description";
+      layerId: string;
+      tStartUs: number;
+      compositionId: string;
+    };
+
+export interface SearchEntry {
+  /// `${type}:${id}` — stable React list key.
+  key: string;
+  type: SearchEntryType;
+  /// Display label; always haystacks[0].
+  label: string;
+  /// Secondary display line (media kind, "track · timecode", …).
+  context: string;
+  /// [0] = label; then extra text (en-US command label) and pinyin strings.
+  haystacks: string[];
+  /// Longer text standing behind the entry — a marker's note — and the index
+  /// its haystacks start at. `buildEntries` is the only place that knows which
+  /// haystack came from where and it never sees the query, so provenance is
+  /// recorded here and the ranker reports which haystack won; together they let
+  /// a row that was found by its note show the words that were found.
+  detail?: { text: string; from: number };
+  payload: SearchPayload;
+}

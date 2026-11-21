@@ -1,0 +1,157 @@
+
+
+/* Copyable content: config snippets, log
+ * text and structured details, error messages. */
+.connect-snippet pre,
+.log-message,
+.log-details-json,
+.settings-error,
+.new-project-error,
+.export-progress-status {
+  user-select: text;
+}
+
+/* ---- Agent (MCP connect) section — lives in the Settings "Agent" tab ----
+ * Layout follows the settings-panel idiom (`settings-section` + h3 + hairline
+ * separation); only the token-note callout, the client-tab strip and the
+ * snippet box are local. */
+
+/* The token posture note, with the one action its last clause names. Boxed
+ * rather than a bare `.settings-blurb` because it carries a control: the
+ * border is what scopes the button to the sentence that motivates it. Neutral
+ * (`--border-soft`), not `.settings-warn` — the amber callout reads as "known
+ * unfinished thing" everywhere else in Settings, and nothing here is. */
+.connect-token-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(12 * var(--ui-px));
+  margin: 0 0 calc(12 * var(--ui-px));
+  padding: calc(8 * var(--ui-px)) calc(10 * var(--ui-px));
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--popover);
+}
+
+.connect-token-note p {
+  margin: 0;
+  font-size: var(--font-size-body);
+  color: var(--muted-foreground);
+  line-height: 1.45;
+}
+
+/* The note is long and the label is short: without this the flex line steals
+   width from the button and wraps it mid-word. */
+.connect-token-note button {
+  flex: none;
+}
+
+.connect-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(2 * var(--ui-px));
+  margin: 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.connect-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: calc(-1 * var(--ui-px));
+  padding: calc(4 * var(--ui-px)) calc(10 * var(--ui-px));
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.connect-tab:hover {
+  color: var(--foreground);
+}
+
+.connect-tab.is-active {
+  color: var(--foreground);
+  border-bottom-color: var(--primary);
+}
+
+/* One tab's content: the config snippet, plus the CLI one-liner for the
+ * clients whose command line can express the same entry. */
+.connect-panel {
+  display: flex;
+  flex-direction: column;
+  gap: calc(8 * var(--ui-px));
+}
+
+.connect-snippet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(8 * var(--ui-px));
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+  margin-bottom: calc(4 * var(--ui-px));
+}
+
+.connect-snippet-actions {
+  display: flex;
+  gap: calc(2 * var(--ui-px));
+}
+
+.connect-snippet pre {
+  margin: 0;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  padding: calc(8 * var(--ui-px)) calc(10 * var(--ui-px));
+  font-size: var(--font-size-body);
+  color: var(--foreground);
+  overflow-x: auto;
+  max-height: calc(180 * var(--ui-px));
+}
+
+.connect-snippet code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* The staged skill folder, in the manual section: caption + copy on top (the
+ * shared `.connect-snippet-header`, whose own margin sets the gap), then the
+ * read-only path field with Browse beside it — the export dialog's
+ * output-location row. */
+.connect-path-block {
+  display: flex;
+  flex-direction: column;
+}
+
+.connect-path {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+}
+
+/* The field takes the width; Browse keeps its label's. Unlike the export
+ * dialog's fixed 220px, this one spans the pane — the path is the content
+ * here, not one row of a form. */
+.connect-path-input {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-caption);
+}
+
+.connect-path button {
+  flex: none;
+}
+
+/* The skill fault callout: the diagnosis, then the one action that can clear
+ * it. Severity comes from the shared `.settings-warn` / `.settings-error`
+ * skins — only the stacking is local, and the reset is because those skins are
+ * written for a bare <p>. */
+.connect-skill-fault {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: calc(8 * var(--ui-px));
+}
+
+.connect-skill-fault p {
+  margin: 0;
+}

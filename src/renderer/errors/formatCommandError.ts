@@ -1,0 +1,509 @@
+import i18n from "../i18n";
+import { formatTimecode } from "../frames";
+import { layerDisplayName } from "../lib/layerName";
+import { trackDisplayName } from "../lib/trackName";
+import { audioUnits, formatAudioTime } from "../state/audioUnitsStore";
+import { getMotif } from "../render/motifs/catalog";
+import { currentOpenComposition, useProjectStore } from "../state/projectStore";
+import type {
+  CommandError,
+  Rational,
+  ValidationError,
+} from "../../shared/commandErrors";
+
+/// Refusal → one legible status-bar line. Three tiers, every variant filed
+/// (the Record over the union is the completeness lock — adding a variant
+/// without deciding its tier fails to compile, the same trick MENU_SPEC uses):
+///
+///   * suppress — no-op refusals (`NothingToUndo`). A native NLE does nothing
+///     on an empty undo; a Debug row keeps the trace without the noise.
+///   * generic — plumbing / not user-reachable from this process's UI. The
+///     code is humanized mechanically; English only, per the status-log rule
+///     that plumbing errors stay raw.
+///   * curated — refusals a user can actually hit from the editor surface.
+///     Hand-written copy under `errors.*` (en-US + zh-CN), uuids resolved to
+///     the names the timeline shows.
+///
+/// The canonical `message` is ALWAYS composed with the en-US fixed t
+/// (status-log contract: `message` is canonical English; the console's
+/// translated rendering reads `i18n_key`/`i18n_args` instead).
+
+export interface FormattedRefusal {
+  level: "error" | "debug";
+  /// Canonical English, names resolved. What non-curated consumers show.
+  message: string;
+  i18n_key?: string;
+  i18n_args?: Record<string, unknown>;
+}
+
+/// Presentation upgrade slot (see issue #18): a curated refusal MAY one day
+/// declare remedy actions ("unlock the track") for a surface that can show
+/// buttons. Nothing constructs or reads these in v1 — the type exists so the
+/// upgrade is an entry in COPY, not a re-architecture.
+export interface RefusalAction {
+  labelKey: string;
+  run: () => Promise<void>;
+}
+
+/// Name/number resolution against the renderer's project mirror. Injectable
+/// so formatter tests run against a fixture instead of the live store; `t`
+/// decides the language of DERIVED names only (a stored label and a media name
+/// are user content and language-neutral).
+export interface RefusalContext {
+  t: (key: string, values?: Record<string, unknown>) => string;
+  layer(id: string): string;
+  track(id: string): string;
+  /// A link, named the way the timeline shows it: its label tab if it has one,
+  /// otherwise its MEMBERS. Unlike a layer or a lane, a link has no derived
+  /// name to fall back on — the timeline draws an unlabelled one as a tint
+  /// across the clips it holds — so the clips are the only thing a user could
+  /// look for.
+  link(id: string): string;
+  media(id: string): string;
+  /// A project Motif by its manifest name; its id when the render catalog
+  /// holds none that renders.
+  motif(id: string): string;
+  timecode(us: number): string;
+  seconds(us: number): string;
+  fps(r: Rational): string;
+  transition(id: string): string;
+  retimeDuration(us: number, layerId: string): string;
+}
+
+function shortId(id: string): string {
+  return `#${id.slice(0, 8)}`;
+}
+
+export function liveRefusalContext(
+  t: (key: string, values?: Record<string, unknown>) => string,
+): RefusalContext {
+  return {
+    t,
+    layer(id) {
+      const layer = useProjectStore.getState().layerById.get(id);
+      return layer ? layerDisplayName(layer, t) : shortId(id);
+    },
+    track(id) {
+      // A refusal may name a lane in ANY composition; its name counts within
+      // the composition that holds it.
+      const compositions = useProjectStore.getState().summary?.compositions ?? {};
+      const owner = Object.values(compositions).find((c) => c.tracks.some((candidate) => candidate.id === id));
+      const track = owner?.tracks.find((candidate) => candidate.id === id);
+      // The header's own name, or a refusal reads as being about a lane the
+      // user cannot find.
+      return track && owner ? trackDisplayName(track, owner.tracks, t) : shortId(id);
+    },
+    link(id) {
+      // Searched across every composition, like `track` above and for the same
+      // reason: a link's members all live in one composition, but the refusal
+      // need not be about the one on screen.
+      const compositions = useProjectStore.getState().summary?.compositions ?? {};
+      const link = Object.values(compositions)
+        .flatMap((c) => c.links)
+        .find((candidate) => candidate.id === id);
+      if (!link) return shortId(id);
+      // A link has no name, so it is named by its members.
+      const layers = useProjectStore.getState().layerById;
+      const members = link.layer_ids
+        .map((memberId) => {
+          const layer = layers.get(memberId);
+          return layer ? layerDisplayName(layer, t) : shortId(memberId);
+        })
+        .join(" + ");
+      return members.length > 0 ? members : shortId(id);
+    },
+    media(id) {
+      const media = useProjectStore.getState().mediaById.get(id);
+      const label = media?.label.trim();
+      return label ? label : shortId(id);
+    },
+    motif(id) {
+      return getMotif(id)?.manifest.name ?? id;
+    },
+    timecode(us) {
+      const comp = currentOpenComposition();
+      return formatTimecode(us, comp?.fps_num ?? 30, comp?.fps_den ?? 1);
+    },
+    seconds(us) {
+      return `${(us / 1e6).toFixed(2)}s`;
+    },
+    fps(r) {
+      const value = r.num / r.den;
+      return Number.isInteger(value) ? String(value) : value.toFixed(2);
+    },
+    transition(id) {
+      const store = useProjectStore.getState();
+      const transition = Object.values(store.summary?.compositions ?? {})
+        .flatMap(c => c.transitions).find(candidate => candidate.id === id);
+      if (!transition) return shortId(id);
+      const name = (layerId: string) => {
+        const layer = store.layerById.get(layerId);
+        return layer ? layerDisplayName(layer, t, store.groupOrdinals) : shortId(layerId);
+      };
+      return `${name(transition.from_layer)} → ${name(transition.to_layer)}`;
+    },
+    retimeDuration(us, layerId) {
+      const store = useProjectStore.getState();
+      const layer = store.layerById.get(layerId);
+      const compId = store.compositionIdByLayerId.get(layerId);
+      const comp = compId ? store.summary?.compositions[compId] : currentOpenComposition();
+      return formatAudioTime(us, layer?.params.kind === 'Audio' ? audioUnits() : 'frames', comp?.fps_num ?? 30, comp?.fps_den ?? 1);
+    },
+  };
+}
+
+/** Shared by the local plan preview and actor refusals after a stale preview. */
+export function formatRetimeConflict(reason: Record<string, unknown>, ctx: RefusalContext): string {
+  if (reason.kind === 'Collision' && typeof reason.layer_id === 'string' && typeof reason.blocking_layer_id === 'string') {
+    const args = { clip: ctx.layer(reason.layer_id), blocking: ctx.layer(reason.blocking_layer_id) };
+    const rate = reason.minimum_rate as Rational | null | undefined;
+    if (typeof reason.maximum_duration_us === 'number' && reason.maximum_duration_us > 0
+      && rate && Number.isFinite(rate.num) && Number.isFinite(rate.den) && rate.num > 0 && rate.den > 0) {
+      return ctx.t('retime.details.collision_limits', { ...args,
+        duration: ctx.retimeDuration(reason.maximum_duration_us, reason.layer_id),
+        rate: Number((rate.num / rate.den).toPrecision(8)).toString(),
+      });
+    }
+    return ctx.t('retime.details.collision', args);
+  }
+  if (reason.kind === 'Transition' && typeof reason.transition_id === 'string') {
+    return ctx.t('retime.details.transition', { transition: ctx.transition(reason.transition_id) });
+  }
+  return ctx.t(`retime.conflicts.${String(reason.kind)}`);
+}
+
+// ── The tier ledger ─────────────────────────────────────────────────────────
+
+type CommandCode = CommandError["error"];
+type ValidationRule = ValidationError["rule"];
+type CommandOf<C extends CommandCode> = Extract<CommandError, { error: C }>;
+type ValidationOf<R extends ValidationRule> = Extract<
+  ValidationError,
+  { rule: R }
+>;
+
+type Spec<E> =
+  | { tier: "suppress" }
+  | { tier: "generic" }
+  | {
+      tier: "curated";
+      key: string;
+      args: (err: E, ctx: RefusalContext) => Record<string, unknown>;
+      actions?: (err: E, ctx: RefusalContext) => RefusalAction[];
+    };
+
+const COMMAND_COPY: { [C in CommandCode]: Spec<CommandOf<C>> } = {
+  RetimeRejected: { tier: "curated", key: "retime.refused", args: (e, ctx) => ({ reason: formatRetimeConflict(e.reason, ctx) }) },
+  TrackNotFound: { tier: "generic" },
+  LayerNotFound: { tier: "generic" },
+  CompositionNotFound: { tier: "generic" },
+  CrossCompositionMove: { tier: "generic" },
+  CrossCompositionSet: { tier: "generic" },
+  WrongLayerKind: { tier: "generic" },
+  MarkerNotFound: { tier: "generic" },
+  TransitionNotFound: { tier: "generic" },
+  TransitionLayersNotAdjacent: {
+    tier: "curated",
+    key: "errors.transition_layers_not_adjacent",
+    args: (e, ctx) => ({ from: ctx.layer(e.from), to: ctx.layer(e.to) }),
+  },
+  TransitionUnsupportedLayerKind: { tier: "generic" },
+  TransitionInsufficientHandle: {
+    tier: "curated",
+    key: "errors.transition_insufficient_handle",
+    args: (e, ctx) => ({
+      layer: ctx.layer(e.layer),
+      available: ctx.seconds(e.available_us),
+    }),
+  },
+  TransitionRestoreCollision: {
+    tier: "curated",
+    key: "errors.transition_restore_collision",
+    args: (e, ctx) => ({ layer: ctx.layer(e.layer) }),
+  },
+  TransitionParticipantsShareLink: {
+    tier: "curated",
+    key: "errors.transition_participants_share_link",
+    args: (e, ctx) => ({ from: ctx.layer(e.from), to: ctx.layer(e.to) }),
+  },
+  CheckpointNotFound: { tier: "generic" },
+  MediaNotFound: { tier: "generic" },
+  // Curated PRESENTATION already exists: MediaPool's RemoveMediaDialog turns
+  // this into a confirm flow with the reference list. Reaching the formatter
+  // means some other path tripped it — generic is the honest fallback.
+  MediaInUse: { tier: "generic" },
+  MotifNotFound: { tier: "generic" },
+  // Remove from project in the Motifs panel; the clips are what to remove.
+  MotifInUse: {
+    tier: "curated",
+    key: "errors.motif_in_use",
+    args: (e, ctx) => ({ motif: ctx.motif(e.motif_id), count: e.referenced_by.length }),
+  },
+  TrackPositionOutOfRange: { tier: "generic" },
+  // The timeline offers no drag for a reserved lane (canReorderTrack).
+  TrackReserved: { tier: "generic" },
+  TrackNotEmpty: {
+    tier: "curated",
+    key: "errors.track_not_empty",
+    args: (e, ctx) => ({ track: ctx.track(e.track) }),
+  },
+  TrackNotRemovable: {
+    tier: "curated",
+    key: "errors.track_not_removable",
+    args: (e, ctx) => ({ track: ctx.track(e.track) }),
+  },
+  TrackLocked: {
+    tier: "curated",
+    key: "errors.track_locked",
+    args: (e, ctx) => ({ track: ctx.track(e.track) }),
+  },
+  LayerLocked: {
+    tier: "curated",
+    key: "errors.layer_locked",
+    args: (e, ctx) => ({ layer: ctx.layer(e.layer) }),
+  },
+  // Ripple delete's four (docs/features.md#ripple-delete). Curated because
+  // every one of them is reachable from a key, and because these lines have a
+  // second job no other curated entry has: `timeline/rippleEligibility.ts`
+  // composes them from the PREDICTED refusal to grey the row before the gesture
+  // is sent, so the sentence the user reads in the tooltip and the sentence the
+  // status bar shows when the actor refuses for real are the same sentence.
+  //
+  // `hole` is deliberately not interpolated. It is the span being closed, and a
+  // pair of timecodes in the middle of the line would be read as the layer's own
+  // range — which it is not — while the remedy ("add it to the selection") does
+  // not depend on the numbers.
+  RippleInsideHole: {
+    tier: "curated",
+    key: "errors.ripple_inside_hole",
+    args: (e, ctx) => ({ layer: ctx.layer(e.layer) }),
+  },
+  RippleCollision: {
+    tier: "curated",
+    key: "errors.ripple_collision",
+    args: (e, ctx) => ({ moving: ctx.layer(e.moving), blocking: ctx.layer(e.blocking) }),
+  },
+  RippleLinkStraddles: {
+    tier: "curated",
+    key: "errors.ripple_link_straddles",
+    args: (e, ctx) => ({ link: ctx.link(e.link) }),
+  },
+  // No renderer gesture sweeps layers by time, so this one only ever reaches
+  // an agent, which reads the mapper's sentence instead of this table.
+  ShiftLinkStraddles: { tier: "generic" },
+  RippleLockedLayer: {
+    tier: "curated",
+    key: "errors.ripple_locked_layer",
+    args: (e, ctx) => ({ layer: ctx.layer(e.layer) }),
+  },
+  // The gap closing's own refusal (docs/features.md#ripple-delete), curated for
+  // the ripple four's reason: reachable from the Delete key when the mirror
+  // lags the actor. The span is not interpolated — the user's highlight already
+  // showed it, and "no longer there" is the whole message.
+  GapNotFound: {
+    tier: "curated",
+    key: "errors.gap_not_found",
+    args: (e, ctx) => ({ track: ctx.track(e.track) }),
+  },
+  SplitOutsideLayer: {
+    tier: "curated",
+    key: "errors.split_outside_layer",
+    args: (e, ctx) => ({
+      layer: ctx.layer(e.layer),
+      time: ctx.timecode(e.at_t),
+    }),
+  },
+  LinkLockedMember: {
+    tier: "curated",
+    key: "errors.link_locked_member",
+    args: (e, ctx) => ({
+      layer: ctx.layer(e.touched),
+      locked: ctx.layer(e.locked_layer),
+    }),
+  },
+  TrimEdgeOutOfRange: {
+    tier: "curated",
+    key: "errors.trim_edge_out_of_range",
+    args: (e, ctx) => ({
+      layer: ctx.layer(e.layer),
+      time: ctx.timecode(e.new_t),
+    }),
+  },
+  LayerParamsKindMismatch: { tier: "generic" },
+  LinkNotFound: { tier: "generic" },
+  LayerAlreadyLinked: { tier: "generic" },
+  LinkCreateNeedsTwoLayers: { tier: "generic" },
+  LayerNotInLink: { tier: "generic" },
+  GroupLockedMember: { tier: "generic" },
+  GroupNotPlain: { tier: "generic" },
+  CompositionInUse: { tier: "generic" },
+  RootComposition: { tier: "generic" },
+  NothingToUndo: { tier: "suppress" },
+  NothingToRedo: { tier: "suppress" },
+  HistoryLocked: { tier: "generic" },
+  // Dispatch unwraps to VALIDATION_COPY before consulting this entry; it
+  // exists only so the Record stays total over the union.
+  ValidationFailed: { tier: "generic" },
+  EmptyKeyframeTrack: { tier: "generic" },
+  UnknownKeyframeParam: { tier: "generic" },
+  EffectNotFound: { tier: "generic" },
+  EffectIndexOutOfRange: { tier: "generic" },
+  EffectKindNotApplicable: { tier: "generic" },
+  AudioEffectParamStatic: { tier: "generic" },
+  FpsLockedByContent: {
+    tier: "curated",
+    key: "errors.fps_locked_by_content",
+    args: (e, ctx) => ({
+      current: ctx.fps(e.current),
+      layers: e.layer_count,
+      // i18next context suffix: `_history` picks the undo-history phrasing,
+      // where `layer_count` is 0 by construction and must not be shown.
+      context: e.locked_by === "history" ? "history" : undefined,
+    }),
+  },
+  InvalidArgument: { tier: "generic" },
+  Backend: { tier: "generic" },
+};
+
+const VALIDATION_COPY: { [R in ValidationRule]: Spec<ValidationOf<R>> } = {
+  InvalidCanvas: { tier: "generic" },
+  InvalidFps: { tier: "generic" },
+  DuplicateTransitionId: { tier: "generic" },
+  TransitionSelfReference: { tier: "generic" },
+  TransitionLayerMissing: { tier: "generic" },
+  TransitionCrossTrack: { tier: "generic" },
+  TransitionUnsupportedLayerKind: { tier: "generic" },
+  TransitionDurationOutOfRange: { tier: "generic" },
+  TransitionDurationMismatch: { tier: "generic" },
+  TransitionExtendedOutOfRange: { tier: "generic" },
+  LayerInMultipleTransitions: { tier: "generic" },
+  DuplicateLayerId: { tier: "generic" },
+  InvalidLayerRange: { tier: "generic" },
+  NegativeLayerStart: { tier: "generic" },
+  OffGridLayerBoundary: { tier: "generic" },
+  OffGridTime: { tier: "generic" },
+  MissingMedia: { tier: "generic" },
+  InvalidSrcRange: { tier: "generic" },
+  SrcRangeExceedsMedia: { tier: "generic" },
+  LayerOverlap: {
+    tier: "curated",
+    key: "errors.layer_overlap",
+    args: (e, ctx) => ({
+      incoming: ctx.layer(e.b),
+      blocking: ctx.layer(e.a),
+      track: ctx.track(e.track),
+    }),
+  },
+  DuplicateLinkId: { tier: "generic" },
+  LinkBelowMinSize: { tier: "generic" },
+  LinkMemberMissing: { tier: "generic" },
+  LayerInMultipleLinks: { tier: "generic" },
+  // Composition-tree rules (Groups). Generic until the Group UI lands with
+  // copy of its own; today nothing in the renderer can trip them.
+  RootMissing: { tier: "generic" },
+  CompositionIdMismatch: { tier: "generic" },
+  CompositionMissing: { tier: "generic" },
+  RootReferenced: { tier: "generic" },
+  DuplicateMarkerId: { tier: "generic" },
+  CompositionCycle: { tier: "generic" },
+  CompositionLatticeMismatch: { tier: "generic" },
+  // Marker anchoring. Generic: only an attach op can raise either, and it
+  // offers the user no anchor a live selection could not satisfy.
+  MarkerAnchorNotInComposition: { tier: "generic" },
+  MarkerAnchorLayerHasNoSourceWindow: { tier: "generic" },
+  // Project Motifs: placement records the table entry with the layer, so only
+  // a hand-edited project or a rebind to an id it lacks can raise either.
+  MotifNotInProject: { tier: "generic" },
+  InvalidMotifKey: { tier: "generic" },
+};
+
+// ── Composition ─────────────────────────────────────────────────────────────
+
+/// "TrackPositionOutOfRange" → "Track position out of range".
+function humanizeCode(code: string): string {
+  const spaced = code.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+  return (
+    spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase()
+  );
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/// Non-discriminant fields, compact: `layer #3f9c12ab, at_t 1500000`. Uuids
+/// are shortened — a generic line names things the mirror may not know — but
+/// prose fields (`reason`, `detail`) pass through whole; the full structure
+/// rides the entry's `details` either way.
+function fieldSummary(err: Record<string, unknown>, discriminant: string): string {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(err)) {
+    if (k === discriminant) continue;
+    const shown =
+      typeof v === "string" && UUID_RE.test(v)
+        ? shortId(v)
+        : typeof v === "object" && v !== null
+          ? JSON.stringify(v)
+          : String(v);
+    parts.push(`${k} ${shown}`);
+  }
+  return parts.join(", ");
+}
+
+function composeGeneric(
+  prefix: string,
+  code: string,
+  raw: Record<string, unknown>,
+  discriminant: string,
+): FormattedRefusal {
+  const fields = fieldSummary(raw, discriminant);
+  return {
+    level: "error",
+    message: `${prefix}${humanizeCode(code)}${fields ? ` (${fields})` : ""}`,
+  };
+}
+
+function composeCurated<E>(
+  spec: Extract<Spec<E>, { tier: "curated" }>,
+  err: E,
+): FormattedRefusal {
+  const tEn = i18n.getFixedT("en-US");
+  const activeArgs = spec.args(
+    err,
+    liveRefusalContext((k, v) => i18n.t(k, v ?? {})),
+  );
+  const enArgs = spec.args(err, liveRefusalContext((k, v) => tEn(k, v ?? {})));
+  return {
+    level: "error",
+    message: tEn(spec.key, enArgs),
+    i18n_key: spec.key,
+    i18n_args: activeArgs,
+  };
+}
+
+export function formatCommandError(err: CommandError): FormattedRefusal {
+  if (err.error === "ValidationFailed") {
+    const detail = err.detail;
+    const spec = VALIDATION_COPY[detail.rule] as Spec<ValidationError>;
+    if (spec.tier === "curated") return composeCurated(spec, detail);
+    // Suppress has no validation member today; the arm keeps the switch total.
+    if (spec.tier === "suppress") {
+      return { level: "debug", message: humanizeCode(detail.rule) };
+    }
+    return composeGeneric(
+      "Validation failed: ",
+      detail.rule,
+      detail as unknown as Record<string, unknown>,
+      "rule",
+    );
+  }
+  const spec = COMMAND_COPY[err.error] as Spec<CommandError>;
+  if (spec.tier === "curated") return composeCurated(spec, err);
+  if (spec.tier === "suppress") {
+    return { level: "debug", message: humanizeCode(err.error) };
+  }
+  return composeGeneric(
+    "",
+    err.error,
+    err as unknown as Record<string, unknown>,
+    "error",
+  );
+}

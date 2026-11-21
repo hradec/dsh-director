@@ -1,0 +1,3422 @@
+import { parseManifestIsland } from '../../shared/motifs/catalog';
+import type { MotifStatus } from '../../shared/motifs/projectMotifs';
+import type { TimingFields } from '../../shared/timeMapping'
+import type { CropRect } from '../../shared/crop';
+// Renderer-side IPC surface: typed `invoke` wrappers plus the wire shapes the
+// renderer reads back. It owns no state and no persistence.
+//
+// Re-export convention: types shared with main are single-sourced under
+// `src/shared/` (main owns persistence, the renderer consumes) and re-exported
+// from here, so every call site can import them from "../ipc". `@/` only
+// aliases src/renderer, hence the relative paths to `../../shared/`.
+
+import { invoke } from "@/bridge/ipc";
+import type { PositionAnimation } from '../../shared/position';
+import type { ResourceHolder } from '../../shared/resource-policy';
+import { TACK_DELETE_CHANNEL, TACK_SET_STATUS_CHANNEL, type TackDeleteSelector, type TackStatus } from '../../shared/agent-activity';
+import {
+  COMPUTE_CANCELLED_FIELD,
+  COMPUTE_JOB_CANCEL_CHANNEL,
+  COMPUTE_JOBS_SNAPSHOT_CHANNEL,
+  COMPUTE_REQUEST_ID_ARG,
+  type ComputeCancelledPayload,
+  type ComputeJobsSnapshot,
+} from '../../shared/compute-jobs';
+export { COMPUTE_JOBS_EVENT } from '../../shared/compute-jobs';
+export type {
+  ComputeJob,
+  ComputeJobEnded,
+  ComputeJobsSnapshot,
+  ComputeJobsUpdate,
+  ComputeOrigin,
+  ComputeOutcome,
+  ComputePhase,
+  ComputeTool,
+} from '../../shared/compute-jobs';
+
+// ============================================================
+// Clip-compute jobs (ADR 0121)
+// ============================================================
+
+/// A transcribe / describe whose job was cancelled — by the user's cancel
+/// button, or by every agent caller that shared it. Not a failure: a run logs
+/// it as a cancelled terminal row, never as an error.
+export class ComputeCancelledError extends Error {
+  constructor(readonly jobId: string) {
+    super("Cancelled");
+    this.name = "ComputeCancelledError";
+  }
+}
+
+/// The marker main answers in place of a cancelled job's payload, as the
+/// typed error the run catches.
+function throwIfCancelled<T>(result: T | ComputeCancelledPayload): T {
+  if (result !== null && typeof result === "object" && COMPUTE_CANCELLED_FIELD in result) {
+    throw new ComputeCancelledError((result as ComputeCancelledPayload)[COMPUTE_CANCELLED_FIELD].job_id);
+  }
+  return result as T;
+}
+
+/// Every running clip-compute job — the seed `computeJobsStore` mirrors.
+export const computeJobsSnapshot = (): Promise<ComputeJobsSnapshot> =>
+  invoke<ComputeJobsSnapshot>(COMPUTE_JOBS_SNAPSHOT_CHANNEL);
+
+/// Force-cancel one job for every caller, agent or human. False when it had
+/// already ended.
+export const cancelComputeJob = (jobId: string): Promise<boolean> =>
+  invoke<boolean>(COMPUTE_JOB_CANCEL_CHANNEL, { job_id: jobId });
+
+export function setPosition(layerId: string, position: PositionAnimation, geometryOnly = false): Promise<void> {
+  return invoke<void>('set_position', { layerId, position, geometryOnly });
+}
+export function translatePositionPath(layerId: string, dx: number, dy: number): Promise<void> {
+  return invoke<void>('translate_path', { layerId, dx, dy });
+}
+export function updatePathTransform(layerId: string, dx: number, dy: number, entries: [string, AnimTrack<number>][]): Promise<void> {
+  return invoke<void>('update_path_transform', { layerId, dx, dy, entries });
+}
+
+import type { ExportSettings } from "../render/exportSettings";
+import type { ModelsView, ModelUseRequest, ModelFamily } from "../../shared/inference-models";
+export const modelsUnselect = (family: ModelFamily): Promise<void> => invoke("models_unselect", { family });
+export const modelsClearDownloads = (id: string): Promise<void> => invoke("models_clear_downloads", { id });
+export const modelsList = (): Promise<ModelsView> => invoke("models_list");
+export const modelsUse = (request: ModelUseRequest): Promise<void> => invoke("models_use", { ...request });
+export const modelsCancel = (id: string): Promise<void> => invoke("models_cancel", { id });
+export const modelsInstallComponents = (id: string): Promise<void> => invoke("models_install_components", { id });
+export const modelsRemoveCustom = (id: string): Promise<void> => invoke("models_remove_custom", { id });
+import type { MotifManifest } from "../render/motifs/catalog";
+import type { DecodeRoute } from "../render/decodeRoute";
+import type { RecentEntry } from "../../shared/recents";
+export type { RecentEntry } from "../../shared/recents";
+import type { ReviewActivityView, ReviewActionArgs, ReviewActionResult, ReviewView, ReviewViewArgs, ReviewViewUnchanged } from "../../shared/review";
+export { REVIEW_CHANGED_EVENT } from "../../shared/review";
+import { SAVE_STATUS_CHANNEL, type SaveStatus } from "../../shared/save-status";
+export { SAVE_STATUS_EVENT, type SaveStatus } from "../../shared/save-status";
+export type {
+  ReviewActivityView,
+  ReviewActionArgs,
+  ReviewActionResult,
+  ReviewView,
+  ReviewViewArgs,
+} from "../../shared/review";
+import type {
+  AudioFxSnapshot,
+  EnsureExportAudioFxResult,
+} from "../../shared/audioEffects/status";
+export {
+  AUDIO_FX_STATUS_EVENT,
+  parseFxWaveformKey,
+} from "../../shared/audioEffects/status";
+export type {
+  AudioFxSnapshot,
+  AudioFxStatusEvent,
+  EnsureExportAudioFxResult,
+  LayerFxState,
+} from "../../shared/audioEffects/status";
+import type { Animated } from "../../shared/keyframe";
+
+/// One composition's timeline — the root and every Group share this shape
+/// (ADR 0052 §3). Mirrors main/state/summary.ts `CompositionSummary`.
+export interface CompositionSummary {
+  id: string;
+  /// The composition's own label; null on the root and on an unnamed Group
+  /// (the UI derives "Group N").
+  label: string | null;
+  /// The stored number behind the derived "Group N" — assigned at creation from
+  /// a monotonic project counter and never rewritten, so naming one Group
+  /// renumbers no other and clearing a label restores the original number.
+  /// Present on every composition, labelled or not; `0` on the root, which is
+  /// never shown as a Group. `lib/layerName.ts` reads it.
+  ordinal: number;
+  width: number;
+  height: number;
+  fps_num: number;
+  fps_den: number;
+  /// Composition length as an EXCLUSIVE boundary; timeline interval is
+  /// `[0, duration_us)`. NOT a frame anchor — see `t_end_us` on
+  /// `LayerSummary` for the long version. The playhead's upper bound
+  /// is `lastFrameAnchorUs(duration_us, fpsNum, fpsDen)`.
+  duration_us: number;
+  /// True when the user has explicitly set the composition duration via
+  /// `set_composition { duration_us }`. While pinned, layer edits no
+  /// longer mutate `duration_us` (except the `>= max(layer.t_end_us)`
+  /// overflow guard). `fit_composition_to_layers` clears it.
+  duration_pinned: boolean;
+  /// True when `set_composition { fps }` would be rejected — the timeline holds
+  /// a layer, or some history snapshot / checkpoint does (an unrecorded rate
+  /// change lands in all of them, so undo would otherwise resurrect layers
+  /// quantized to the old grid). The rate becomes settable again only on a
+  /// project whose history has never held a layer, i.e. after emptying the
+  /// timeline and reopening the project. History-scoped, so project-wide: the
+  /// same value on every composition.
+  fps_locked: boolean;
+  tracks: TrackSummary[];
+  markers: MarkerSummary[];
+  /// Transitions between same-track visual layers, composited by the
+  /// renderer's two-input transition node.
+  transitions: TransitionSummary[];
+  /// `docs/features.md#links`. Empty when no links exist. UI uses this to
+  /// render the tinted-border indicator and to resolve "what link is
+  /// this layer in?" for click-selects-whole-link behavior. A link's members
+  /// all live in THIS composition.
+  links: LinkSummary[];
+}
+
+export interface HistoryView {
+  cursor: number;
+  len: number;
+  can_undo: boolean;
+  can_redo: boolean;
+  /// `Some(reason)` while the agent holds the revert lock. Editor-mode
+  /// disables Undo/Redo with this as tooltip; agent-mode shows a badge.
+  lock_reason?: string | null;
+}
+
+// ── The FULL history view (`project_history_view`) ──────────────────────────
+// Mirrors main/state/history.ts's `HistoryView` / `HistoryEntrySummary` /
+// `EntityLabel` — the rows AND the checkpoints, everything the history panel
+// draws.
+//
+// Deliberately NOT named `HistoryView`: that name is taken above by the
+// summary-level shape (cursor / len / can_undo / can_redo / lock_reason) that
+// rides `ProjectSummary.history` and carries no rows at all. Two different
+// shapes serving two different surfaces off two different channels — the
+// `HistoryStack*` prefix here is what keeps a call site from importing one and
+// expecting the other.
+
+export type HistoryActor = { kind: "User" } | { kind: "Agent"; client: string };
+
+/// The entities an entry touched. Three variants, matching main's `EntityRef`.
+export type HistoryEntityRef =
+  | { kind: "Track"; id: string }
+  | { kind: "Layer"; id: string }
+  | { kind: "Marker"; id: string };
+
+/// A name for one `affected` ref. `text` is a stored entity name; the other arm
+/// is a DERIVED name — a clip's kind or a track's role/position — which only the
+/// UI can translate (`t(l.label_key, l.label_args ?? {})`).
+export type HistoryEntityLabel =
+  | { text: string }
+  | { label_key: string; label_args?: Record<string, string | number> };
+
+export interface HistoryStackEntry {
+  op_id: string;
+  actor: HistoryActor;
+  timestamp: string;
+  /// The English phrase main recorded. Kept verbatim for the MCP contract; the
+  /// panel renders `label_key` instead.
+  summary: string;
+  /// i18n key for `summary` (`history.*`), recorded next to it at commit time.
+  label_key: string;
+  /// Interpolation values for `label_key`; absent for the phrases taking none.
+  label_args?: Record<string, string | number>;
+  affected: HistoryEntityRef[];
+  /// Names for `affected` — PARALLEL to it (same length, same order), resolved
+  /// in main against the stored snapshot that still holds each ref.
+  entity_labels: HistoryEntityLabel[];
+}
+
+export interface HistoryCheckpointSummary {
+  id: string;
+  label: string;
+  actor: HistoryActor;
+  created_at: string;
+}
+
+export interface HistoryStackView {
+  ops: HistoryStackEntry[];
+  /// ABSOLUTE stack index of the entry whose state is current — stated in the
+  /// same space as `jumpTo`, NOT as an offset into `ops`.
+  cursor: number;
+  len: number;
+  /// Absolute stack index of `ops[0]` (= `len - ops.length`). `ops` is the last
+  /// N entries, so `ops[i]`'s absolute index is `window_start + i` — the only
+  /// index `projectJumpTo` accepts, and the one `cursor` is stated in. Today's
+  /// panel read asks for the whole cap and so always sees 0; deriving indices
+  /// from it anyway is what keeps that an optimisation rather than a load-bearing
+  /// assumption.
+  window_start: number;
+  checkpoints: HistoryCheckpointSummary[];
+  /// Entries dropped off the FRONT of the stack since it was seeded. Non-zero
+  /// means the top row is NOT the start of the project — eviction does not spare
+  /// the `Initial` entry, so nothing else on the wire says so.
+  evicted: number;
+  /// Set while an agent holds the revert lock; jump / undo / redo / restore all
+  /// reject with `HistoryLocked` until it clears.
+  lock_reason?: string;
+}
+
+export interface MediaSummary {
+  id: string;
+  label: string;
+  path: string;
+  kind: string;
+  duration_us: number | null;
+  /// Earliest container PTS that maps to source content time 0, when known.
+  start_pts_us?: number | null;
+  /// Raw ffprobe duration before subtracting any start offset, for diagnostics.
+  container_duration_us?: number | null;
+  width: number | null;
+  height: number | null;
+  size_bytes: number;
+  /// Verified content identity. Null while the initial hash is pending.
+  content_hash?: string | null;
+  /// False when path_abs doesn't resolve to a real file. UI surfaces a
+  /// "missing source" badge; project still opens; layers referencing the
+  /// missing item render placeholders.
+  available: boolean;
+  /// The file is there but holds other bytes than this item records (changed
+  /// outside WeftCut); `available` is false too, so it is treated as missing.
+  changed?: boolean;
+  /// Where preview/export decode from + proxy readiness. See decodeRoute.ts.
+  decode_route: DecodeRoute;
+  /// Source video codec ("h264"/"hevc"/"prores"/…), null for audio/image.
+  codec: string | null;
+  /// Source pixel format ("yuv420p"/"yuv420p10le"/…), null for audio/image.
+  pix_fmt: string | null;
+  /// ffprobe color tags (color_space/range/primaries/transfer) surfaced from the
+  /// source bitstream + container. Every decode lane reads them through
+  /// `resolveSourceColor`, which fills an absent one. Optional: older
+  /// summaries / test fixtures omit them.
+  color_matrix?: string | null;
+  color_range?: string | null;
+  color_primaries?: string | null;
+  color_transfer?: string | null;
+  video_start_pts_us?: number | null;
+  audio_start_pts_us?: number | null;
+  /// Absolute path of the canonical conformed PCM (VCONF, `jobs/conform.rs`)
+  /// once the conform job has produced it. The preview mixer Range-reads
+  /// this file; `null` means the audio layer is not yet playable. Optional:
+  /// older summaries / test fixtures omit it.
+  conform_path?: string | null;
+  /// Probed source channel count, null/absent when the media has no audio
+  /// stream or hasn't been probed yet. The waveform generator always
+  /// downmixes to stereo for storage, so this is the only reliable
+  /// mono/stereo signal — see TimelineWaveform's `mediaChannels` prop.
+  audio_channels?: number | null;
+}
+
+/// One effect in a layer's effect chain. `kind` is the join key into the
+/// TS effect catalog (`effectRegistry.ts`); Rust does not validate it.
+/// `params` mirrors `BTreeMap<String, Animated<f64>>` — each value is a
+/// raw `AnimTrack<number>` resolved per-frame by the renderer, exactly
+/// like animated fields on `VideoClipView`.
+export interface EffectView {
+  id: string;
+  kind: string;
+  enabled: boolean;
+  params: Record<string, AnimTrack<number>>;
+}
+
+/// Partial update for an effect — mirrors main's `EffectPatch`. Ordinary param
+/// edits (incl. keyframes) go through `updateLayerParamTrack` with key
+/// `effects[<id>].params[<key>]`; the UI reaches for `params` here only to UNSET
+/// one, which a `null` value does and the param-track path cannot express (it
+/// lazily creates a slot and never drops one).
+export interface EffectPatch {
+  enabled?: boolean;
+  params?: Record<string, AnimTrack<number> | null>;
+}
+
+export interface LayerSummary {
+  id: string;
+  label: string | null;
+  /// Inclusive start of the layer's display interval, in composition µs.
+  /// Snapped to the comp-frame grid by the actor on every mutation.
+  t_start_us: number;
+  /// EXCLUSIVE end of the layer's display interval, in composition µs.
+  /// The half-open interval is `[t_start_us, t_end_us)` — the layer is
+  /// active at composition time `t` iff `t_start_us ≤ t < t_end_us`.
+  ///
+  /// This is a *boundary*, NOT a frame anchor. For a layer covering the
+  /// entire 10 s 30 fps comp, `t_end_us = 10_000_000` (the boundary
+  /// after frame 299, not frame 299's own anchor at 9_966_667). The
+  /// playhead, which IS a frame anchor, can never reach `t_end_us` —
+  /// its upper bound is `lastFrameAnchorUs` in `frames.ts`. See
+  /// `docs/data-model.md` for the boundary-vs-anchor distinction.
+  t_end_us: number;
+  kind: string;
+  color_hint: string;
+  enabled: boolean;
+  locked: boolean;
+  params: LayerParamsView;
+  /// Ordered effect chain for this layer. Each entry is resolved per-frame
+  /// by the renderer using `params` as raw `AnimTrack<number>` tracks.
+  /// Empty when no effects are applied.
+  effects: EffectView[];
+}
+
+export type LayerParamsView =
+  | ({ kind: "VideoClip" } & VideoClipView)
+  | ({ kind: "ImageOverlay" } & ImageOverlayView)
+  | ({ kind: "Text" } & TextView)
+  | ({ kind: "Color" } & ColorView)
+  | ({ kind: "Audio" } & AudioView)
+  | ({ kind: "Motif" } & MotifView)
+  | ({ kind: "CompositionRef" } & CompositionRefView);
+
+/// A Group layer: its source is another composition (ADR 0052 §4) — the entry
+/// `ProjectSummary.compositions[composition_id]`. Drawn by one `CompositionNode`
+/// per placement, into a texture (`render/sprite/CompositionRefSprite.ts`).
+export interface CompositionRefView extends TimingFields {
+  composition_id: string;
+  /// The referenced composition's own label; null → derive "Group N".
+  composition_label: string | null;
+  /// Window into the referenced composition's time. No upper bound is
+  /// enforced: `src_out_us` may overhang its duration (ADR 0052 §6).
+  src_in_us: number;
+  src_out_us: number;
+  position?: PositionAnimation;
+  path_progress?: AnimTrack<number>;
+  x: AnimTrack<number>;
+  y: AnimTrack<number>;
+  scale_x: AnimTrack<number>;
+  scale_y: AnimTrack<number>;
+  scale_linked: boolean;
+  rotation_deg: AnimTrack<number>;
+  opacity: AnimTrack<number>;
+  anchor_x: AnimTrack<number>;
+  anchor_y: AnimTrack<number>;
+}
+
+export interface MotifView extends TimingFields {
+  motif_id: string;
+  position?: PositionAnimation;
+  path_progress?: AnimTrack<number>;
+  x: AnimTrack<number>;
+  y: AnimTrack<number>;
+  scale_x: AnimTrack<number>;
+  scale_y: AnimTrack<number>;
+  /// Uniform-scale intent: true ⇒ scale_x/scale_y are structural twins and the
+  /// UI edits them as one collapsed "Scale" (twin invariant lives main-side in
+  /// mutations/scaleLink.ts; any divergent write clears this in the same commit).
+  scale_linked: boolean;
+  rotation_deg: AnimTrack<number>;
+  opacity: AnimTrack<number>;
+  /// Transform pivot — see `VideoClipView.anchor_x`.
+  anchor_x: AnimTrack<number>;
+  anchor_y: AnimTrack<number>;
+  /// Window offset (µs) into the Motif's intrinsic content. Width = layer
+  /// width; src_out is derived. 0 = content frame 0.
+  src_in_us: number;
+  /// User-set props for this Motif instance, validated against the Motif
+  /// manifest's `props_schema`. Passed to the Motif's `motif.define({ setup,
+  /// frame })` lifecycle when the capture host renders it (see `docs/motifs.md`).
+  props: Record<string, unknown>;
+  /// Prop key → the picture a `media` prop names (content hash, and frame time
+  /// for a video); present only when some prop names a pool item. Part of the
+  /// frame cache key.
+  media_keys?: Record<string, string>;
+  /// What the layer is for (`shared/graphicRole.ts`); null = untagged. Main
+  /// always sends it; optional here because no renderer code reads it yet.
+  graphic_role?: string | null;
+}
+
+export interface VideoClipView extends TimingFields {
+  crop?: CropRect | null;
+  media_id: string;
+  media_label: string;
+  src_in_us: number;
+  src_out_us: number;
+  position?: PositionAnimation;
+  path_progress?: AnimTrack<number>;
+  x: AnimTrack<number>;
+  y: AnimTrack<number>;
+  scale_x: AnimTrack<number>;
+  scale_y: AnimTrack<number>;
+  scale_linked: boolean;
+  rotation_deg: AnimTrack<number>;
+  opacity: AnimTrack<number>;
+  /// Normalized transform pivot. Position is this anchor's location in
+  /// composition pixels for every visual kind (schema v4).
+  ///
+  /// Animatable like the rest of the transform, so every consumer must resolve
+  /// it at the layer-local time — `resolveView.ts` is that one point, and
+  /// `DEFAULT_ANCHOR` (anchorPivot.ts) is the one fallback.
+  anchor_x: AnimTrack<number>;
+  anchor_y: AnimTrack<number>;
+  speed: number;
+  flip_h: boolean;
+  flip_v: boolean;
+  fade_in_us: number;
+  fade_out_us: number;
+}
+
+export interface ImageOverlayView extends TimingFields {
+  media_id: string;
+  media_label: string;
+  position?: PositionAnimation;
+  path_progress?: AnimTrack<number>;
+  x: AnimTrack<number>;
+  y: AnimTrack<number>;
+  scale_x: AnimTrack<number>;
+  scale_y: AnimTrack<number>;
+  scale_linked: boolean;
+  rotation_deg: AnimTrack<number>;
+  opacity: AnimTrack<number>;
+  /// Transform pivot — see `VideoClipView.anchor_x`.
+  anchor_x: AnimTrack<number>;
+  anchor_y: AnimTrack<number>;
+  fade_in_us: number;
+  fade_out_us: number;
+  /// What the layer is for (`shared/graphicRole.ts`); null = untagged. Main
+  /// always sends it; optional here because no renderer code reads it yet.
+  graphic_role?: string | null;
+}
+
+export interface TextView {
+  content: string;
+  font_family: string;
+  font_size_px: number;
+  weight: number;
+  italic: boolean;
+  align: "Left" | "Center" | "Right";
+  /// Transform pivot — see `VideoClipView.anchor_x`. For Text this IS the Pixi
+  /// anchor (the content hangs off `x`/`y`), so animating it slides the glyphs.
+  anchor_x: AnimTrack<number>;
+  anchor_y: AnimTrack<number>;
+  color: AnimTrack<Rgba>;
+  position?: PositionAnimation;
+  path_progress?: AnimTrack<number>;
+  x: AnimTrack<number>;
+  y: AnimTrack<number>;
+  scale_x: AnimTrack<number>;
+  scale_y: AnimTrack<number>;
+  scale_linked: boolean;
+  rotation_deg: AnimTrack<number>;
+  opacity: AnimTrack<number>;
+  outline: { color: Rgba; width: number } | null;
+  shadow: { color: Rgba; offset_x: number; offset_y: number; blur: number } | null;
+  /// Layout box in composition px, LOCAL (pre-`scale`). Which fields are set IS
+  /// the resize mode: (null, null) auto width, (set, null) auto height, (set,
+  /// set) fixed. Plain scalars, never `AnimTrack` — a keyframed box would
+  /// re-measure and rebuild the glyph atlas every frame (ADR 0049).
+  box_w: number | null;
+  box_h: number | null;
+  /// Entrance and exit presets (`shared/textAnimation.ts`); absent on views
+  /// built before they played.
+  intro?: string | null;
+  outro?: string | null;
+  /// The text block's placement INSIDE the box — orthogonal to `anchor_y`,
+  /// which places the box against `x`/`y`.
+  valign: "Top" | "Middle" | "Bottom";
+  /// Line leading; 0 = auto (the font's own metrics).
+  line_height: number;
+  letter_spacing: number;
+  /// What the layer is for (`shared/graphicRole.ts`); null = untagged. Main
+  /// always sends it; optional here because no renderer code reads it yet.
+  graphic_role?: string | null;
+}
+
+export interface ColorView {
+  color: AnimTrack<Rgba>;
+  width: number;
+  height: number;
+}
+
+export interface AudioView extends TimingFields {
+  media_id: string;
+  media_label: string;
+  src_in_us: number;
+  src_out_us: number;
+  gain_db: AnimTrack<number>;
+  pan: AnimTrack<number>;
+  fade_in_us: number;
+  fade_out_us: number;
+  mute: boolean;
+  role: AudioRole;
+}
+
+/// Audio role stamp (`docs/audio.md`). Serialized from the Rust role enum as
+/// kebab-case. Every audio layer carries exactly one; the four canonical roles
+/// also back the project-level role mixer (`ProjectSummary.audio_roles`).
+export type AudioRole = "dialogue" | "music" | "sfx" | "voiceover";
+
+/// Canonical role order — the order `ProjectSummary.audio_roles` is built in
+/// (`src/main/state/summary.ts`), so a role mixer can render rows index-aligned
+/// with it.
+export const AUDIO_ROLES: AudioRole[] = ["dialogue", "music", "sfx", "voiceover"];
+
+export interface RoleMixView {
+  role: AudioRole;
+  gain_db: number;
+  muted: boolean;
+  solo: boolean;
+}
+
+/// A/B-roll role stamp (`docs/data-model.md`). Serialized from the Rust
+/// `TrackRole` enum as kebab-case. Null for additional / legacy tracks.
+/// Roles: a-roll, b-roll, audio-a, audio-b, caption.
+export type TrackRole = "a-roll" | "b-roll" | "audio-a" | "audio-b" | "caption";
+
+export interface TrackSummary {
+  id: string;
+  /// Tracks are kind-agnostic on the backend; this is a derived "dominant
+  /// layer class" label (Video / Audio / Subtitle) that the timeline CSS and
+  /// the drag-drop checks read.
+  kind: string;
+  label: string | null;
+  enabled: boolean;
+  locked: boolean;
+  /// Track-level audio mute — audio layers silent, video unaffected.
+  muted: boolean;
+  /// Track-level solo — when any track is soloed, only soloed tracks
+  /// are audible (mute wins over solo).
+  solo: boolean;
+  /// `null` for tracks created after the reserved 4 (additional video, music,
+  /// SFX, captions, voiceover, etc.) and for legacy projects. AB display mode
+  /// hides any track where `role === null`; All Tracks ignores the field.
+  role: TrackRole | null;
+  /// True for every track outside the reserved skeleton, which is exactly
+  /// the set cleanup may remove: an unlocked one disappears the moment its
+  /// last layer leaves it (docs/data-model.md#track). Equivalent to
+  /// `role === null` — a track carrying a role is never a cleanup candidate.
+  transient: boolean;
+  layers: LayerSummary[];
+}
+
+export interface ProjectSummary {
+  project_id: string;
+  name: string;
+  /// `compositions[root_id]` is what export renders and what a fresh session's
+  /// timeline Panel opens on (`state/compositionAnchorStore.ts`).
+  root_id: string;
+  compositions: Record<string, CompositionSummary>;
+  /// Counted over EVERY composition, not the focused one.
+  track_count: number;
+  layer_count: number;
+  history: HistoryView;
+  media: MediaSummary[];
+  /// `docs/audio.md`. Always exactly 4 entries in canonical role order
+  /// (dialogue, music, sfx, voiceover) — the project-level role mixer.
+  audio_roles: RoleMixView[];
+}
+
+export interface LinkSummary {
+  id: string;
+  layer_ids: string[];
+}
+
+/// Segment easing as a value (`Interpolation`) and the canonical preset table,
+/// single-sourced with main under src/shared/easing.ts.
+export type { Interpolation } from "../../shared/easing";
+
+/// The keyframe record — per-key tangents, segment class on the left key,
+/// track-level `extrapolate` — single-sourced with main in
+/// src/shared/keyframe.ts (the Rust twin is native/src/state/animated.rs).
+/// `AnimTrack<T>` is the renderer's name for `Animated<T>`.
+export type {
+  Continuity,
+  Extrapolate,
+  Keyframe,
+  Segment,
+  Tangent,
+  TangentMode,
+} from "../../shared/keyframe";
+export type AnimTrack<T> = Animated<T>;
+
+/// Static read of a track — the editing-surface view of "the value"
+/// (Static → value; Keyframed → first keyframe, else fallback).
+/// UI panels read through this; the RENDER path must use
+/// `render/animated.ts`'s time-aware `resolveAnimated` instead.
+export function trackStatic<T>(track: AnimTrack<T>, fallback: T): T {
+  if (track.mode === "Static") return track.value;
+  return track.value.length > 0 ? track.value[0]!.value : fallback;
+}
+export interface MarkerSummary {
+  id: string;
+  t_us: number;
+  end_t_us: number | null;
+  /// The short name — marker lane text and the `Ctrl+K` result row.
+  label: string;
+  /// The long text; the marker Panel's field and nothing else's.
+  note: string;
+  color_hint: string;
+  /// The layer this marker follows, or null when it is FREE. An id, not a
+  /// nested layer view — `tracks` already carries the layer.
+  anchor_layer: string | null;
+  /// The instant the anchor names in that layer's SOURCE domain, null when the
+  /// marker is FREE. The marker Panel's hibernating section shows it, because a
+  /// hibernating marker's frozen `t_us` names a moment nothing holds any more
+  /// and this is the only position it has left. Unrecoverable in the renderer —
+  /// the window `t_us` was derived through has moved.
+  anchor_src_us: number | null;
+  /// Anchored at source material its layer no longer shows, so it is kept but
+  /// not painted. Always false for a free marker. Derived per projection
+  /// (`markerHibernating` in main/state/summary.ts), never stored.
+  hibernating: boolean;
+}
+
+/// The tie a marker carries, as the marker channels take it: a layer of the
+/// marker's own composition plus an instant in that layer's SOURCE domain.
+/// Mirrors main/state/model.ts `MarkerAnchor`, field names included — it is an
+/// argument travelling INTO the actor, not a projection coming back, so it
+/// keeps the model's spelling rather than `MarkerSummary`'s flattened
+/// `anchor_layer`.
+export interface MarkerAnchorArg {
+  layer: string;
+  src_us: number;
+  src_fraction?: import("../../shared/timeMapping").ExactTime;
+}
+
+/// Motion direction, not reveal side — glossary semantics live with the
+/// serde twin (`native/src/state/transition.rs`).
+export type TransitionDirection = "left" | "right" | "up" | "down";
+
+export type TransitionKindView =
+  | { kind: "Crossfade" }
+  | { kind: "Wipe"; direction: TransitionDirection }
+  | { kind: "Slide"; direction: TransitionDirection };
+
+/// Wire mirror of the model's `Transition` (summary.ts TransitionView). The
+/// transition occupies the incoming layer's first `duration_us` µs — the
+/// authorized overlap with `from_layer`. `extended_us` is the borrowed share
+/// of that overlap (how much outgoing tail media the transition consumed;
+/// 0 = pure placement) — inverse ops and the chip's right edge route by it
+/// (ADR 0048).
+export interface TransitionSummary {
+  id: string;
+  from_layer: string;
+  to_layer: string;
+  duration_us: number;
+  kind: TransitionKindView;
+  extended_us: number;
+}
+
+export interface LayerPatch {
+  label?: string | null;
+  enabled?: boolean;
+  locked?: boolean;
+}
+
+/** Mirrors `Rgba` in `state/color.rs`. r/g/b/a all 0-255. */
+export interface Rgba {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+export interface TextPatch {
+  content?: string;
+  font_family?: string;
+  font_size_px?: number;
+  color?: Rgba;
+  x?: number;
+  y?: number;
+  opacity?: number;
+  align?: TextView["align"];
+  valign?: TextView["valign"];
+  /// On the box pair alone, `null` is a VALUE — "back to auto" — and absent is
+  /// "don't touch". The mutation layer refuses any patch that would leave
+  /// `(box_w: null, box_h: set)`, so leaving Fixed means sending both fields in
+  /// one patch, not `box_w: null` by itself (ADR 0049).
+  box_w?: number | null;
+  box_h?: number | null;
+  line_height?: number;
+  letter_spacing?: number;
+  /// Width 0 removes the outline (the mutation stores `null`). A colour needs
+  /// an outline to land on: with none stored, send `outline_width > 0` in the
+  /// same patch or the mutation refuses.
+  outline_width?: number;
+  outline_color?: Rgba;
+}
+
+export interface VideoClipPatch {
+  crop?: CropRect | null;
+  src_in_us?: number;
+  src_out_us?: number;
+  x?: number;
+  y?: number;
+  scale_x?: number;
+  scale_y?: number;
+  opacity?: number;
+  flip_h?: boolean;
+  flip_v?: boolean;
+  fade_in_us?: number;
+  fade_out_us?: number;
+}
+
+export interface ImageOverlayPatch {
+  x?: number;
+  y?: number;
+  scale_x?: number;
+  scale_y?: number;
+  opacity?: number;
+  fade_in_us?: number;
+  fade_out_us?: number;
+}
+
+export interface MotifPatch {
+  x?: number;
+  y?: number;
+  scale_x?: number;
+  scale_y?: number;
+  opacity?: number;
+  src_in_us?: number;
+  motif_id?: string;
+  /// Props to merge FIELD-WISE into the layer's existing `props` map — each
+  /// key present here overwrites that key; absent keys are left intact. The
+  /// backend merges (never replaces the whole map) so a stale debounced commit
+  /// can't clobber a concurrent edit. Values are passed verbatim; the property
+  /// panel types them per the motif's `props_schema` (`number` / hex
+  /// `string` / `string`), so no further validation happens on this path.
+  props?: Record<string, unknown>;
+}
+
+export interface ColorPatch {
+  color?: Rgba;
+  width?: number;
+  height?: number;
+}
+
+export interface AudioPatch {
+  src_in_us?: number;
+  src_out_us?: number;
+  gain_db?: number;
+  pan?: number;
+  fade_in_us?: number;
+  fade_out_us?: number;
+  mute?: boolean;
+  role?: AudioRole;
+}
+
+/// Tagged union mirroring `LayerParamsPatch` in
+/// `src/main/state/mutations/params.ts`. The discriminant in `kind` must match
+/// the layer's current LayerParams kind; mismatches fail with
+/// `LayerParamsKindMismatch`.
+export type LayerParamsPatch =
+  | ({ kind: "Text" } & TextPatch)
+  | ({ kind: "VideoClip" } & VideoClipPatch)
+  | ({ kind: "ImageOverlay" } & ImageOverlayPatch)
+  | ({ kind: "Motif" } & MotifPatch)
+  | ({ kind: "Color" } & ColorPatch)
+  | ({ kind: "Audio" } & AudioPatch);
+
+export async function ping(): Promise<string> {
+  return invoke<string>("ping");
+}
+
+// Process-tree resource snapshot from main (app.getAppMetrics()) — re-exported
+// from the bridge so `../ipc` stays the import site.
+export { getSystemStats, type SystemStats } from "@/bridge/metrics";
+
+// Live HW-decode session budget from main. Same re-export shape as the metrics
+// snapshot above, and for the same reason: the PerfHUD reads it from "../ipc".
+export { getPreviewGpuBudget, type PreviewGpuBudgetSnapshot } from "@/bridge/previewGpu";
+
+export async function projectSummary(traceId?: string): Promise<ProjectSummary> {
+  return invoke<ProjectSummary>("project_summary", traceId ? { __debugEditTraceId: traceId } : undefined);
+}
+
+/// Tracks are kind-agnostic — the new track accepts any layer kind.
+export async function addTrack(): Promise<string> {
+  return invoke<string>("add_track");
+}
+
+export async function addMediaLayer(
+  trackId: string,
+  mediaId: string,
+  tStartUs: number,
+): Promise<string> {
+  return invoke<string>("add_media_layer", {
+    trackId,
+    mediaId,
+    tStartUs,
+  });
+}
+
+export async function projectUndo(): Promise<void> {
+  return invoke<void>("project_undo");
+}
+
+export async function projectRedo(): Promise<void> {
+  return invoke<void>("project_redo");
+}
+
+export async function projectSave(): Promise<void> {
+  return invoke<void>("project_save");
+}
+
+/// Whether project.json is reaching disk — the seed `saveStatusStore` mirrors.
+export const projectSaveStatus = (): Promise<SaveStatus> => invoke<SaveStatus>(SAVE_STATUS_CHANNEL);
+
+export async function projectSaveAs(path: string): Promise<void> {
+  return invoke<void>("project_save_as", { path });
+}
+
+export async function projectOpen(path: string): Promise<void> {
+  return invoke<void>("project_open", { path });
+}
+
+/// Save the open project and tell the backend nothing is open any more, so an
+/// agent cannot keep writing into the project the user just left.
+export async function projectClose(): Promise<void> {
+  return invoke<void>("project_close");
+}
+
+// ============================================================
+// Workspace lifecycle (docs/data-model.md)
+// ============================================================
+
+export interface CanvasPreset {
+  width: number;
+  height: number;
+  fpsNum: number;
+  fpsDen: number;
+}
+
+/// Create a fresh workspace at `<parentFolder>/<name>/` with the given
+/// canvas params, replace the actor's state, and push to recents.
+/// Returns the absolute path of the new workspace folder.
+export async function projectNewWorkspace(args: {
+  parentFolder: string;
+  name: string;
+  canvas: CanvasPreset;
+}): Promise<string> {
+  return invoke<string>("project_new_workspace", {
+    parentFolder: args.parentFolder,
+    name: args.name,
+    width: args.canvas.width,
+    height: args.canvas.height,
+    fpsNum: args.canvas.fpsNum,
+    fpsDen: args.canvas.fpsDen,
+  });
+}
+
+export async function recentsList(): Promise<RecentEntry[]> {
+  return invoke<RecentEntry[]>("recents_list");
+}
+
+export async function recentsRemove(path: string): Promise<void> {
+  return invoke<void>("recents_remove", { path });
+}
+
+export async function recentsMostRecent(): Promise<RecentEntry | null> {
+  return invoke<RecentEntry | null>("recents_most_recent");
+}
+
+/// Parent folder of the last project the user created via "+ New project".
+/// `null` on first launch — the UI falls back to the OS Documents
+/// directory via `documentDir` (src/renderer/bridge/path).
+export async function recentsLastNewProjectParent(): Promise<string | null> {
+  return invoke<string | null>("recents_last_new_project_parent");
+}
+
+export async function recentsGetReopenOnLaunch(): Promise<boolean> {
+  return invoke<boolean>("recents_get_reopen_on_launch");
+}
+
+export async function recentsSetReopenOnLaunch(value: boolean): Promise<void> {
+  return invoke<void>("recents_set_reopen_on_launch", { value });
+}
+
+// ============================================================
+// Keyboard-shortcut overrides
+// ============================================================
+//
+// Per-user app-level overrides for the static defaults declared in
+// `shortcuts/defs.ts`. Empty / missing entries inherit the default.
+// An empty `keys` array means "explicitly unbound" — distinct from
+// "use the default."
+//
+// Single-sourced in src/shared/keybindings.ts; re-export convention in the file header.
+import type { KeybindingsMap } from "../../shared/keybindings";
+export type { KeybindingsMap };
+
+export async function keybindingsGet(): Promise<KeybindingsMap> {
+  return invoke<KeybindingsMap>("keybindings_get");
+}
+
+export async function keybindingsSet(
+  action: string,
+  keys: string[],
+): Promise<void> {
+  return invoke<void>("keybindings_set", { action, keys });
+}
+
+export async function keybindingsResetAll(): Promise<void> {
+  return invoke<void>("keybindings_reset_all");
+}
+
+export async function keybindingsExport(dest: string): Promise<void> {
+  return invoke<void>("keybindings_export", { dest });
+}
+
+export async function keybindingsImport(src: string): Promise<KeybindingsMap> {
+  return invoke<KeybindingsMap>("keybindings_import", { src });
+}
+
+// ============================================================
+// Per-workspace view state: the timeline tab intent, each tab's zoom and
+// scroll, and the project's track heights. Lives at `<workspace>/view.json`.
+// `renderer/state/viewState.ts` is the renderer's only caller — one read per
+// project, one debounced write — because several timeline Panels share this
+// one document. Pre-workspace, get returns defaults and set silently no-ops.
+// ============================================================
+
+// Single-sourced in src/shared/view-state.ts; re-export convention in the file header.
+import type { ViewState } from "../../shared/view-state";
+export type { ViewState };
+
+export async function viewStateGet(): Promise<ViewState> {
+  return invoke<ViewState>("view_state_get");
+}
+
+export async function viewStateSet(state: ViewState): Promise<void> {
+  return invoke<void>("view_state_set", { state });
+}
+
+export async function exportSettingsGet(): Promise<ExportSettings | null> {
+  const v = await invoke<ExportSettings | null>("export_settings_get");
+  return v ?? null;
+}
+
+export async function exportSettingsSet(
+  settings: ExportSettings,
+): Promise<void> {
+  return invoke<void>("export_settings_set", { settings });
+}
+
+/// Absolute path of the current workspace (project) directory, or null when no
+/// project is open. Used to default the export output location.
+export async function workspaceDir(): Promise<string | null> {
+  const v = await invoke<string | null>("workspace_dir");
+  return v ?? null;
+}
+
+// ============================================================
+// App-level settings (A/B-roll redesign, `docs/data-model.md`).
+// Strict app-level scope: same value across every project. The pill /
+// View menu / `T` shortcut all funnel through `appSettingsSet`. The
+// backend emits `app_settings:changed` on every successful write so
+// subscribers re-render without an extra round-trip.
+// ============================================================
+
+// Single-sourced in src/shared/app-settings.ts (persistence owner:
+// src/main/app-settings.ts); re-export convention in the file header.
+import type {
+  DisplayMode,
+  MediaPoolLayout,
+  TimelineWheelAxis,
+  AppSettings,
+  AppSettingsPatch,
+} from "../../shared/app-settings";
+export type {
+  DisplayMode,
+  MediaPoolLayout,
+  TimelineWheelAxis,
+  AppSettings,
+  AppSettingsPatch,
+};
+
+export async function appSettingsGet(): Promise<AppSettings> {
+  return invoke<AppSettings>("app_settings_get");
+}
+
+export async function appSettingsSet(
+  patch: AppSettingsPatch,
+): Promise<AppSettings> {
+  return invoke<AppSettings>("app_settings_set", { patch });
+}
+
+export const APP_SETTINGS_EVENTS = {
+  changed: "app_settings:changed",
+} as const;
+
+// ============================================================
+// App-level Workspace document (Dock arrangement + named profiles).
+// Lives at `<userData>/workspaces.json`, owned by main. The renderer reads it
+// once on startup to restore the layout and writes the active profile's current
+// arrangement on every layout change; main debounces the disk write and flushes
+// on quit. The layout slots are opaque here — the DockWorkspace adapter owns the
+// schema. The named-profile operations (switch/save/save-as/rename/delete)
+// commit immediately and return the resulting document.
+// ============================================================
+
+// Single-sourced in src/shared/workspace.ts; re-export convention in the file header.
+import type { WorkspaceDocument } from "../../shared/workspace";
+export type { WorkspaceDocument };
+
+export async function workspaceGet(): Promise<WorkspaceDocument> {
+  return invoke<WorkspaceDocument>("workspace_get");
+}
+
+/// Autosave the ACTIVE profile's current Dock arrangement (opaque). Debounced +
+/// flushed on quit in main.
+export async function workspaceSetCurrent(current: unknown): Promise<void> {
+  return invoke<void>("workspace_set_current", { current });
+}
+
+/// Switch the active Workspace profile. Flushes the outgoing profile's buffered
+/// current first, then activates `id`. Returns the resulting document.
+export async function workspaceSetActive(id: string): Promise<WorkspaceDocument> {
+  return invoke<WorkspaceDocument>("workspace_set_active", { id });
+}
+
+/// Save Workspace: promote the active profile's current layout to its saved reset
+/// baseline. No-op on the immutable built-in Editing profile.
+export async function workspaceSaveBaseline(): Promise<WorkspaceDocument> {
+  return invoke<WorkspaceDocument>("workspace_save_baseline");
+}
+
+/// Save Workspace As: create a new custom profile from the current arrangement
+/// (seeds both its current layout and its reset baseline) and activate it.
+export async function workspaceCreateProfile(
+  name: string,
+  current: unknown,
+): Promise<WorkspaceDocument> {
+  return invoke<WorkspaceDocument>("workspace_create_profile", { name, current });
+}
+
+/// Rename a custom profile. No-op on the built-in Editing profile.
+export async function workspaceRenameProfile(
+  id: string,
+  name: string,
+): Promise<WorkspaceDocument> {
+  return invoke<WorkspaceDocument>("workspace_rename_profile", { id, name });
+}
+
+/// Delete a custom profile; if it was active, Editing becomes active. No-op on
+/// the built-in Editing profile.
+export async function workspaceDeleteProfile(id: string): Promise<WorkspaceDocument> {
+  return invoke<WorkspaceDocument>("workspace_delete_profile", { id });
+}
+
+// ── History panel: one read + three actions ─────────────────────────────────
+
+/// Pull the WHOLE edit stack (rows + checkpoints). A read: it never records, and
+/// never dirties the project. Main serves `historyView(cap)` — no limit arg
+/// crosses the wire, so the panel cannot ask for a window main doesn't intend.
+export async function projectHistoryView(): Promise<HistoryStackView> {
+  return invoke<HistoryStackView>("project_history_view");
+}
+
+/// Move the history cursor to absolute stack index `index` — click-a-row.
+/// Cursor-only: records no entry, so the next edit truncates the tail from
+/// there. Rejects with `HistoryLocked` while an agent holds the revert lock, and
+/// `InvalidArgument` for an index outside `[0, len)`.
+export async function projectJumpTo(index: number): Promise<void> {
+  return invoke<void>("project_jump_to", { index });
+}
+
+/// Create a named checkpoint at the current state, stamped with the `User`
+/// actor. Returns its id. Session-only — checkpoints are not persisted.
+export async function projectCreateCheckpoint(label: string): Promise<string> {
+  return invoke<string>("project_create_checkpoint", { label });
+}
+
+/// Delete a checkpoint (and release the full snapshot it pins). Rejects with
+/// `CheckpointNotFound` if it is already gone. Changes no project state, so it
+/// emits no `project:changed` — the caller refetches the view itself.
+export async function projectDeleteCheckpoint(checkpointId: string): Promise<void> {
+  return invoke<void>("project_delete_checkpoint", { checkpointId });
+}
+
+export async function projectRestoreCheckpoint(checkpointId: string): Promise<void> {
+  return invoke<void>("project_restore_checkpoint", { checkpointId });
+}
+
+// ── Review (ADR 0115): two reads + two approvals ─────────────────────────────
+
+/// The Review baseline against the current project: unreviewed (agent-touched)
+/// changes, user-only changes and Group decorations. Main computes it only
+/// when asked, memoized per baseline and project revision. Refetch on
+/// `REVIEW_CHANGED_EVENT` and on `project:changed`. The user-only list comes
+/// only with `include_user`; `user_count` always does. With `held_content`,
+/// lists still the held ones answer as `ReviewViewUnchanged`.
+export async function reviewView(args: ReviewViewArgs = {}): Promise<ReviewView | ReviewViewUnchanged> {
+  return invoke<ReviewView | ReviewViewUnchanged>("review_view", { ...args });
+}
+
+/// What one agent call did: the history ops of an activity row, each diffed
+/// against its predecessor snapshot (adjacent ops folded). Independent of the
+/// Review baseline and the undo cursor. `available: false` (no changes) once
+/// any op has left the history window.
+export async function reviewActivityView(historyIds: readonly string[]): Promise<ReviewActivityView> {
+  return invoke<ReviewActivityView>("review_activity_view", { history_ids: [...historyIds] });
+}
+
+/// Approve everything: the baseline becomes the current state. Changes nothing
+/// in the project, records nothing, and is allowed under the history lock.
+/// Applied only while `version` (the view the user acted on) is still current;
+/// answers with whether it was, and the fresh view.
+export async function reviewApproveAll(args: ReviewActionArgs): Promise<ReviewActionResult> {
+  return invoke<ReviewActionResult>("review_approve_all", { ...args });
+}
+
+/// Revert everything: the baseline is restored as one recorded, undoable
+/// commit — the user's own differences with the agent's. Rejects under the
+/// history lock. Applied only while `version` is still the current view;
+/// answers with whether it was, and the fresh view.
+export async function reviewRevertAll(args: ReviewActionArgs): Promise<ReviewActionResult> {
+  return invoke<ReviewActionResult>("review_revert_all", { ...args });
+}
+
+// ============================================================
+// Work-session controls. Layout selection belongs to the renderer store.
+// ============================================================
+
+/** Ends work locally; view selection is renderer-owned. */
+export async function agentSessionEnd(): Promise<void> {
+  return invoke<void>("agent_session_end");
+}
+
+// ── Tacks (ADR 0115): the user's actions from the agent panel ───────────────
+// Served by main's TackStore beside agent activity, like the MCP tack verbs:
+// the change arrives through the activity delta, nothing is recorded, and the
+// history lock does not apply. Converting a tack is `addMarkerIn` (an ordinary
+// recorded marker) followed by `agentTacksDelete`.
+
+/// Resolve, dismiss or reopen tacks. Every id must still exist, or none changes.
+export async function agentTacksSetStatus(tackIds: readonly string[], status: TackStatus): Promise<void> {
+  return invoke<void>(TACK_SET_STATUS_CHANNEL, { tack_ids: [...tackIds], status });
+}
+
+/// Clear tacks: the listed ids, one work session's (`null`: those created
+/// outside any session), or every tack with one of the given statuses.
+export async function agentTacksDelete(selector: TackDeleteSelector): Promise<{ deleted_tack_ids: string[] }> {
+  return invoke<{ deleted_tack_ids: string[] }>(TACK_DELETE_CHANNEL, { ...selector });
+}
+
+// ============================================================
+// Background import worker (docs/data-model.md)
+// ============================================================
+
+export type ImportStatus =
+  | { kind: "Pending" }
+  | { kind: "Copying" }
+  | { kind: "Completed" }
+  | { kind: "Failed"; detail: string }
+  | { kind: "Cancelled" };
+
+export interface ImportEntry {
+  media_id: string;
+  source: string;
+  destination_rel: string | null;
+  status: ImportStatus;
+}
+
+export const IMPORT_EVENTS = {
+  queue: "import:queue",
+  started: "import:started",
+  complete: "import:complete",
+  error: "import:error",
+} as const;
+
+/// Per-media derivative job events. Emitted by `jobs/{proxy,thumbnails,
+/// waveform}.rs` so the UI can react to background generation finishing.
+/// started/complete/error drive an in-flight count for the small
+/// "Generating derivatives…" indicator near the project bar.
+export const MEDIA_JOB_EVENTS = {
+  started: "media:job_started",
+  complete: "media:job_complete",
+  error: "media:job_error",
+} as const;
+
+export interface MediaJobEvent {
+  media_id: string;
+  kind: string;
+}
+
+export async function importQueueList(): Promise<ImportEntry[]> {
+  return invoke<ImportEntry[]>("import_queue_list");
+}
+
+export async function importCancel(mediaId: string): Promise<boolean> {
+  return invoke<boolean>("import_cancel", { mediaId });
+}
+
+export async function importMedia(path: string): Promise<string> {
+  return invoke<string>("import_media", { path });
+}
+
+/// Remove one item from the project media pool. The guarded path rejects with
+/// `MediaInUse { referenced_by }`; callers may then offer an explicit
+/// force-confirmation, which also removes those referencing timeline layers.
+/// Neither path deletes the source file from disk.
+export async function removeMedia(
+  mediaId: string,
+  force = false,
+): Promise<void> {
+  return invoke<void>("remove_media", { mediaId, force });
+}
+
+/// Audio encode parameters. `sampleRate`/`channels` are null to follow the
+/// composition. Mirrors Rust `AudioEncodeSpec` (serde camelCase).
+export interface AudioExportSpec {
+  codec: "aac" | "opus";
+  bitrate: number;
+  sampleRate: number | null;
+  channels: number | null;
+}
+
+/// Audio-only export at `outputPath` (extension picks the muxer: .m4a for AAC,
+/// .mka for Opus). `range` trims the audio to the export window (null = whole
+/// project). The mix borrows its memory from the export's admitted plan, named
+/// by `finalizationToken` (`admitExportResources`); it never claims fresh
+/// resources. Awaitable; emits no events.
+export async function exportProjectAudioOnly(
+  outputPath: string,
+  audio: AudioExportSpec,
+  range: { startUs: number; endUs: number } | null,
+  finalizationToken: string,
+): Promise<boolean> {
+  return invoke<boolean>("export_project_audio_only", {
+    outputPath,
+    audio,
+    startUs: range?.startUs ?? null,
+    endUs: range?.endUs ?? null,
+    finalizationToken,
+  });
+}
+
+/// The mux tail started or stopped waiting for a CPU slot (its plan already
+/// holds the memory). `holders` is what occupies the CPU.
+export const EXPORT_MUX_WAIT = "export:mux_wait";
+export type ExportMuxWait = { waiting: true; holders: ResourceHolder[] } | { waiting: false };
+
+/// Mux `video` + `audio` into `output` — always a stream-copy. Every export
+/// path (WebCodecs direct-encode, or the native-encode video sink) already
+/// writes `video` in its final target codec.
+export async function muxExport(
+  videoPath: string,
+  audioPath: string,
+  outputPath: string,
+  finalization: { token: string; audioRequired: boolean; stagingOutput?: boolean },
+): Promise<void> {
+  return invoke<void>("mux_export", {
+    videoPath,
+    audioPath,
+    outputPath,
+    finalizationToken: finalization.token,
+    audioRequired: finalization.audioRequired,
+    stagingOutput: finalization.stagingOutput,
+  });
+}
+
+export async function updateLayer(layerId: string, patch: LayerPatch): Promise<void> {
+  return invoke<void>("update_layer", { layerId, patch });
+}
+
+export interface TrackFlagsPatch {
+  enabled?: boolean;
+  muted?: boolean;
+  solo?: boolean;
+  locked?: boolean;
+}
+
+/// Unrecorded toggle path: eye/M/S/lock changes never enter undo history; the
+/// actor patches every history snapshot instead.
+export async function updateTrackFlags(
+  trackId: string,
+  patch: TrackFlagsPatch,
+): Promise<void> {
+  return invoke<void>("update_track_flags", { trackId, patch });
+}
+
+/// Name a lane. RECORDED (unlike the flags above) — a name is content, so
+/// Ctrl-Z reverts it. `null` (or a blank string, which the actor folds to null)
+/// restores the derived name (docs/data-model.md#track).
+export async function renameTrack(
+  trackId: string,
+  label: string | null,
+): Promise<void> {
+  return invoke<void>("rename_track", { trackId, label });
+}
+
+/// Delete a lane and all its clips in one recorded command / undo entry.
+export async function deleteTrack(trackId: string): Promise<void> {
+  return invoke<void>("delete_track", { trackId, force: true });
+}
+
+/** Move the entire track; one command, one history entry. */
+export async function moveTrack(trackId: string, newPosition: number): Promise<void> {
+  return invoke<void>("move_track", { trackId, newPosition });
+}
+
+/// Rename a marker. RECORDED — but renaming to the unchanged label is an
+/// actor-level no-op: ok result, no history entry.
+export async function renameMarker(
+  markerId: string,
+  label: string,
+): Promise<void> {
+  return invoke<void>("update_marker", { markerId, patch: { label } });
+}
+
+/// Rewrite a marker's long text. RECORDED, one entry — the marker Panel's note
+/// field commits through here on blur/Enter, never per keystroke.
+export async function setMarkerNote(
+  markerId: string,
+  note: string,
+): Promise<void> {
+  return invoke<void>("update_marker", { markerId, patch: { note } });
+}
+
+/// Recolour a marker. RECORDED, one entry.
+///
+/// Alpha is the caller's to supply, and the marker Panel supplies 255: the wire
+/// carries the colour as `#rrggbb` (`markerColorHint`), so a swatch edit has no
+/// alpha to preserve and an opaque write matches what every marker surface
+/// paints.
+export async function setMarkerColor(
+  markerId: string,
+  color: Rgba,
+): Promise<void> {
+  return invoke<void>("update_marker", { markerId, patch: { color } });
+}
+
+/// Move a marker to `tUs` — the marker lane's drag, as ONE commit. RECORDED, so
+/// one undo puts the mark back where it was.
+///
+/// On an ANCHORED marker `t_us` names the time the mark should READ, and the
+/// actor moves the anchor to make it read that; the marker keeps following its
+/// clip from the new offset. Refused when the time falls outside the anchoring
+/// clip's half-open span — `markerDragBoundsUs` (timeline/markerAtFrame) answers
+/// that at the gesture, so a surface that clamps with it never reaches the
+/// refusal.
+///
+/// `endTUs` is a region's new end, and only a FREE region has one to send: an
+/// anchored marker's end is carried by its own anchor (the commit's reconcile
+/// shifts it by the same frame delta), so passing one there would move it twice
+/// and the actor refuses the pair outright.
+export async function moveMarker(
+  markerId: string,
+  tUs: number,
+  endTUs: number | null = null,
+): Promise<void> {
+  return invoke<void>("update_marker", {
+    markerId,
+    patch: endTUs === null ? { t_us: tUs } : { t_us: tUs, end_t_us: endTUs },
+  });
+}
+
+/// Remove a marker. RECORDED; deletion is one undo away, so no confirm dialog
+/// stands in front of it.
+export async function removeMarker(markerId: string): Promise<void> {
+  return invoke<void>("remove_marker", { markerId });
+}
+
+/// Tie a marker to a clip in its own composition. From here on the marker's
+/// time is derived from that clip's source window every commit, so it follows
+/// moves, trims and splits, and goes with the clip if the clip is deleted.
+/// RECORDED.
+///
+/// Refused when the clip is in another composition, carries no source window,
+/// or does not cover the marker's own time — `markerAnchorFor`
+/// (timeline/markerAtFrame) answers all three at the gesture, so a surface that
+/// consults it never reaches the refusal.
+export async function attachMarker(
+  markerId: string,
+  layerId: string,
+): Promise<void> {
+  return invoke<void>("attach_marker", { markerId, layerId });
+}
+
+/// Cut a marker loose from its clip; it stays on the frame it currently sits
+/// on and simply stops following. RECORDED. The one exit from hibernation.
+export async function detachMarker(markerId: string): Promise<void> {
+  return invoke<void>("detach_marker", { markerId });
+}
+
+export async function updateLayerParams(
+  layerId: string,
+  patch: LayerParamsPatch,
+): Promise<void> {
+  return invoke<void>("update_layer_params", { layerId, patch });
+}
+
+/// Append a catalog effect (`kind`) to a layer's chain; returns the new effect id.
+export async function addEffect(layerId: string, kind: string): Promise<string> {
+  return invoke<string>("add_effect", { layerId, kind });
+}
+
+/// Patch an effect (enabled flag and/or scalar params).
+export async function updateEffect(
+  layerId: string,
+  effectId: string,
+  patch: EffectPatch,
+): Promise<void> {
+  return invoke<void>("update_effect", { layerId, effectId, patch });
+}
+
+/// Reorder an effect within its layer's chain (0 = applied first).
+export async function moveEffect(layerId: string, effectId: string, newIndex: number): Promise<void> {
+  return invoke<void>("move_effect", { layerId, effectId, newIndex });
+}
+
+/// Remove an effect from a layer's chain by id.
+export async function removeEffect(layerId: string, effectId: string): Promise<void> {
+  return invoke<void>("remove_effect", { layerId, effectId });
+}
+
+/// Set the project-level gain (dB) for one audio role. Unlike the flag
+/// mutators, role-gain edits are RECORDED (undoable) — the actor commits each
+/// one, so a debounced edit can produce one undo entry per pause.
+export async function setRoleGain(role: AudioRole, gainDb: number): Promise<void> {
+  return invoke<void>("set_role_gain", { role, gainDb });
+}
+
+/// Mute/solo one audio role at the project level. `muted`/`solo` are partial —
+/// omit a field to leave it unchanged. UNRECORDED: like the track-flag
+/// mutators, these never enter undo history (the actor patches every history
+/// snapshot instead).
+export async function updateRoleFlags(
+  role: AudioRole,
+  patch: { muted?: boolean; solo?: boolean },
+): Promise<void> {
+  return invoke<void>("update_role_flags", { role, patch });
+}
+
+/// Write a whole keyframe track to a named animatable param on a layer.
+/// `paramKey` is one of the layer kind's animatable fields
+/// (x/y/scale_x/scale_y/rotation_deg/anchor_x/anchor_y/opacity for visual kinds;
+/// gain_db/pan for audio; `color` on Text and Color). The track's value type
+/// follows the key — `color` carries `Rgba`, everything else a number — and the
+/// actor's lens for that key decides, not this signature. The actor normalizes
+/// (snap/sort/dedupe) and records the edit (one undo step).
+export async function updateLayerParamTrack(
+  layerId: string,
+  paramKey: string,
+  track: AnimTrack<number | Rgba>,
+): Promise<void> {
+  return invoke<void>("update_layer_param_track", { layerId, paramKey, track });
+}
+
+/// Batch form — write several param tracks on one layer as a single undo step
+/// (used by multi-keyframe gestures like dragging a cross-property selection,
+/// and by the linked-scale fan-out: scale_x + a twin scale_y in one commit).
+export async function updateLayerParamTracks(
+  layerId: string,
+  entries: [string, AnimTrack<number | Rgba>][],
+): Promise<void> {
+  return invoke<void>("update_layer_param_tracks", { layerId, entries });
+}
+
+/// Cross-layer batch form — every entry names its own layer, and the whole set
+/// lands as ONE undo step no matter how many layers it spans. A batch confined
+/// to a single layer belongs in `updateLayerParamTracks` above. An entry's
+/// value type follows its `paramKey` (`color` carries `Rgba`, everything else
+/// a number); the actor's lens for that key decides, not this signature.
+export async function updateParamTracksMulti(
+  entries: [layerId: string, paramKey: string, track: AnimTrack<number | Rgba>][],
+): Promise<void> {
+  return invoke<void>("update_param_tracks_multi", { entries });
+}
+
+/// Toggle a layer's uniform-scale link. `true` is the destructive direction:
+/// the actor snaps scale_y to a whole-track copy of scale_x (keyframes
+/// included) in the same commit — undo restores both the track and the flag.
+export async function setScaleLinked(layerId: string, linked: boolean): Promise<void> {
+  return invoke<void>("set_scale_linked", { layerId, linked });
+}
+
+/// Move an explicit drag set atomically; destinations preserve its lane arrangement.
+export async function moveLayers(
+  placements: { layerId: string; trackId: string }[],
+  anchorLayerId: string,
+  anchorTStartUs: number,
+): Promise<void> {
+  return invoke<void>("move_layers", { placements, anchorLayerId, anchorTStartUs });
+}
+
+export async function moveLayer(
+  layerId: string,
+  newTrackId: string,
+  newTStartUs: number,
+  escapeLink = false,
+): Promise<void> {
+  return invoke<void>("move_layer", {
+    layerId,
+    newTrackId,
+    newTStartUs,
+    escapeLink,
+  });
+}
+
+/// Raise layers onto one fresh lane at the top of the z-stack
+/// (docs/features.md#track-placement). One commit: the lane appears, every
+/// listed layer moves onto it, and every lane the raise emptied goes with it,
+/// so one undo restores all of them. Returns the new track's id.
+///
+/// `anchor` is the drop strip's landing — its layer's head goes to `tStartUs`
+/// and every other member holds its phase. Omit it to keep every time verbatim,
+/// which is the *Move to a new track* command's shape: a menu has no ghost, so
+/// it may not name a time the user never saw. One object rather than two loose
+/// arguments because half a landing is not a request.
+export async function moveLayersToNewTrack(
+  layerIds: string[],
+  anchor?: { layerId: string; tStartUs: number } | null,
+): Promise<string> {
+  return invoke<string>("move_layers_to_new_track", {
+    layerIds,
+    anchorLayerId: anchor?.layerId ?? null,
+    anchorTStartUs: anchor?.tStartUs ?? null,
+  });
+}
+
+/// Restack a visual layer above/below a stable layer or track reference
+/// (docs/features.md#track-placement) — the Playhead Panel's drop gesture. One
+/// undoable step; degradation and no-op semantics live on the mutation
+/// (main/state/mutations/restack.ts).
+export async function restackLayer(
+  layerId: string,
+  anchor: import("../../shared/restack").RestackAnchor,
+  position: "above" | "below",
+): Promise<void> {
+  return invoke<void>("restack_layer", { layerId,
+    ...(anchor.kind === "track" ? { anchorTrackId: anchor.id } : { anchorLayerId: anchor.id }), position });
+}
+
+/** `docs/features.md#links` — link-aware trim. `edge` is `"in"` or `"out"`. */
+export async function trimLayer(
+  layerId: string,
+  edge: "in" | "out",
+  newTUs: number,
+  escapeLink = false,
+): Promise<void> {
+  return invoke<void>("trim_layer", {
+    layerId,
+    edge,
+    newTUs,
+    escapeLink,
+  });
+}
+
+export async function splitLayerLinked(
+  layerId: string,
+  atTUs: number,
+  escapeLink = false,
+): Promise<[string, string]> {
+  return invoke<[string, string]>("split_layer_linked", {
+    layerId,
+    atTUs,
+    escapeLink,
+  });
+}
+
+/** `docs/features.md#links` — bundle ≥2 layer ids into a link. */
+export async function linksCreate(
+  layerIds: string[],
+  reassign = false,
+): Promise<string> {
+  return invoke<string>("links_create", { layerIds, reassign });
+}
+
+export async function linksDissolve(linkId: string): Promise<void> {
+  return invoke<void>("links_dissolve", { linkId });
+}
+
+/// `docs/features.md#groups` — pre-compose: the selection (≥ 1 layer, one
+/// composition) becomes a new composition placed back as one Group layer at the
+/// set's earliest start. Refuses whole on any locked member or track. Returns
+/// the new composition's id and the Group layer's id; one undo restores all.
+export async function groupsCreate(
+  layerIds: string[],
+  label: string | null = null,
+): Promise<{ composition_id: string; layer_id: string }> {
+  return invoke<{ composition_id: string; layer_id: string }>("groups_create", {
+    layerIds,
+    label,
+  });
+}
+
+/// Expand a PLAIN Group layer (identity transform, opacity 1, no effects) back
+/// into its members in place; refuses with `GroupNotPlain { reason }` otherwise.
+/// The composition goes with it when nothing else references it.
+export async function groupsUngroup(layerId: string): Promise<void> {
+  return invoke<void>("groups_ungroup", { layerId });
+}
+
+/// Move existing layers INTO the composition a Group layer references — the
+/// crossing addressed by pointing at a Group clip, where the
+/// `move_layers_to_composition` op is the one addressed by naming a destination
+/// and a landing time.
+/// Members land at `t_start_us - group.t_start_us + group.src_in_us`, so they
+/// keep the screen position they had. Refuses whole, before any write, on: a
+/// set spanning two compositions, a Group clip that is not in the members'
+/// composition, a locked member or lane, a member that would land before
+/// composition time 0, and a member whose own composition already reaches the
+/// destination (`CompositionCycle`). The Group's window is never rewritten, so
+/// a destination that grows shows as overhang (ADR 0052 §6).
+export async function groupsAddMembers(
+  layerIds: string[],
+  groupLayerId: string,
+): Promise<void> {
+  return invoke<void>("groups_add_members", { layerIds, groupLayerId });
+}
+
+/// Move layers into a composition named DIRECTLY, at a landing time the caller
+/// resolves — the crossing `groupsAddMembers` reaches by pointing at a Group
+/// clip instead, and delegates to.
+/// `anchorLayerId` is the member `anchorTStartUs` positions; every other member
+/// keeps its phase relative to it, which is what carries a transition between
+/// two moved members across. `toTrackId` is the caller's lane opinion: `null`
+/// bounces to a free lane (a menu has no ghost to make a lie of), a lane id
+/// refuses an occupied or locked one, `"spawn"` mints a fresh one.
+/// Both endpoints re-snap on the DESTINATION's grid, so two compositions at
+/// different rates do not round trip (ADR 0037, ADR 0038). Refuses whole,
+/// before any write, on: a set spanning two compositions, a destination that is
+/// the set's own composition, a locked member or lane, a member landing before
+/// composition time 0, and a member whose own composition already reaches the
+/// destination (`CompositionCycle`). The ROOT is an ordinary destination.
+export async function moveLayersToComposition(
+  layerIds: string[],
+  toCompositionId: string,
+  anchorLayerId: string,
+  anchorTStartUs: number,
+  toTrackId: string | "spawn" | null = null,
+): Promise<void> {
+  return invoke<void>("move_layers_to_composition", {
+    layerIds,
+    toCompositionId,
+    anchorLayerId,
+    anchorTStartUs,
+    toTrackId,
+  });
+}
+
+/// Set or clear (`null` / blank) a Group's composition name. The root refuses.
+export async function groupsRename(
+  compositionId: string,
+  label: string | null,
+): Promise<void> {
+  return invoke<void>("groups_rename", { compositionId, label });
+}
+
+/// Delete an orphan composition (no Group layer references it); refuses with
+/// `CompositionInUse` otherwise, and refuses the root.
+export async function compositionsDelete(compositionId: string): Promise<void> {
+  return invoke<void>("compositions_delete", { compositionId });
+}
+
+/// Lift an Audio layer onto a freshly-created track inserted directly below its
+/// source in the z-stack, so the new row reads one row down the screen. Link
+/// membership survives. Returns the new track's id. UI consequence: the combined
+/// row collapses to V-only on the source row; the new row below shows the
+/// waveform on its own (J/L-cut friendly).
+///
+/// The lifted track is `transient` like every role-less track, so emptying it
+/// later removes it — and lifting can now empty the SOURCE row, which the same
+/// rule then removes (docs/data-model.md#track). It is also the one track that
+/// keeps a stored label, when the source had a name worth recording.
+export async function separateAudioToNewTrack(
+  layerId: string,
+): Promise<string> {
+  return invoke<string>("separate_audio_to_new_track", { layerId });
+}
+
+export async function pasteLayer(
+  layerId: string,
+  tStartUs: number,
+  targetTrackId?: string,
+): Promise<string> {
+  return invoke<string>(
+    "paste_layer",
+    targetTrackId === undefined
+      ? { layerId, tStartUs }
+      : { layerId, tStartUs, targetTrackId },
+  );
+}
+
+/// The whole-link duplicate: every layer in `layerIds` is cloned as ONE undo
+/// step. `layerIds[0]` is the seed — `tStartUs` is its clone's start, and every
+/// other clone shifts by the same delta on its own lattice (a slipped audio
+/// member keeps its offset). `targetTrackId` re-lanes the seed's clone only;
+/// the rest land on their sources' tracks. All-or-nothing: a locked or occupied
+/// destination for any member rejects the batch and nothing is created. Two or
+/// more clones are linked to each other, never to their sources. Returns
+/// source → clone pairs in input order. A single-layer copy with automatic lane
+/// placement stays on `pasteLayer`.
+export async function pasteLayers(
+  layerIds: string[],
+  tStartUs: number,
+  targetTrackId: string | null = null,
+): Promise<{ clones: { source: string; clone: string }[] }> {
+  return invoke<{ clones: { source: string; clone: string }[] }>(
+    "paste_layers",
+    { layerIds, tStartUs, targetTrackId },
+  );
+}
+
+/// Set `enabled` on exactly these layers in ONE undo step. The caller resolves
+/// the set — a link's members when the toggle fans out, the clicked layer alone
+/// when escaped; the op never expands it. A layer's own lock does not block the
+/// toggle; a locked track rejects the whole batch. One layer: `updateLayer`.
+export async function setLayersEnabled(
+  layerIds: string[],
+  enabled: boolean,
+): Promise<void> {
+  return invoke<void>("set_layers_enabled", { layerIds, enabled });
+}
+
+/// The SELECTION's delete: every layer in `layerIds` goes, and the whole set
+/// lands as ONE undo step however many tracks it spans — a marquee sweep, a
+/// Shift+click set and Select All all arrive here, as does a set of one. An
+/// empty set is a no-op that records nothing.
+///
+/// Takes the selection VERBATIM: delete is local at the op level (a link is
+/// never fanned out — docs/features.md § Links), because the selection already
+/// carries the whole link; clicking one member selects all of them.
+export async function deleteLayers(layerIds: string[]): Promise<void> {
+  return invoke<void>("delete_layers", { layerIds });
+}
+
+/// `deleteLayers` that also CLOSES what the set vacated: every layer downstream
+/// of the freed span, on every track of that composition, moves left, and the
+/// film gets shorter. Takes the selection verbatim for the same reason
+/// `deleteLayers` does, and lands as ONE undo step
+/// (docs/features.md#ripple-delete).
+///
+/// Refuses rather than making room — a layer starting inside the span, a
+/// landing that would collide, a link with members on both sides, a locked
+/// layer or lane that would have to move. `renderer/ripple/plan.ts` predicts all
+/// four off the mirror so the gesture can be greyed with the reason before it is
+/// sent; the actor enforces them, and its refusal is the authority.
+export async function rippleDeleteLayers(layerIds: string[]): Promise<void> {
+  return invoke<void>("ripple_delete_layers", { layerIds });
+}
+
+/// Close a selected gap (docs/features.md#ripple-delete): the empty span
+/// `[startUs, endUs)` on `trackId` goes, and every layer of the composition
+/// starting at or after it moves left by its length — `rippleDeleteLayers`'
+/// closing with nothing deleted, as ONE undo step. Both edges travel so the
+/// actor closes exactly the span the timeline highlighted; a span that is no
+/// longer a gap when the actor reads it is refused (`GapNotFound`) rather than
+/// re-measured, and the ripple's own refusals apply as they do to a deletion.
+export async function rippleDeleteGap(args: {
+  trackId: string;
+  startUs: number;
+  endUs: number;
+}): Promise<void> {
+  return invoke<void>("ripple_delete_gap", args);
+}
+
+// ============================================================
+// Transitions (spec § Command surface — three recorded, undoable ops)
+// ============================================================
+
+/// Add a transition at a hard cut between same-track adjacent visual layers.
+/// Overlap placement (the backend default — this wrapper sends no placement):
+/// the incoming layer moves left by the frame-rounded `durationUs`, trimmed
+/// ranges preserved, no tail borrowed (ADR 0048). Crossfade must OMIT
+/// `direction`; Wipe/Slide must carry one — the backend rejects the other
+/// pairing. Throws structured refusals (shared link, t = 0 crossing,
+/// duration over a participant's length) — surface them, never clamp.
+export async function addTransition(args: {
+  fromLayerId: string;
+  toLayerId: string;
+  durationUs: number;
+  kind: TransitionKindView["kind"];
+  direction?: TransitionDirection;
+}): Promise<string> {
+  return invoke<string>("add_transition", {
+    fromLayerId: args.fromLayerId,
+    toLayerId: args.toLayerId,
+    durationUs: args.durationUs,
+    kind: args.kind,
+    ...(args.direction !== undefined ? { direction: args.direction } : {}),
+  });
+}
+
+/// Patch duration, kind+direction, and/or the borrowed-tail target in ONE
+/// recorded commit (one undo step). Direction rides inside kind — sending
+/// direction without kind is rejected, so kind changes to Wipe/Slide must
+/// include a direction. Omitting `extendedUs` keeps the routing
+/// sanctity-preferring (ADR 0048): growth moves the incoming layer left and
+/// never borrows; shrink returns borrowed tail first. Only an explicit
+/// `extendedUs` (the chip's right edge) grows the borrow — and only an
+/// explicit NEGATIVE one trims the outgoing layer's real tail past its
+/// sacred exit frame (the right edge dragged left past S, spec D6).
+export async function updateTransition(args: {
+  transitionId: string;
+  durationUs?: number;
+  kind?: TransitionKindView["kind"];
+  direction?: TransitionDirection;
+  extendedUs?: number;
+}): Promise<void> {
+  return invoke<void>("update_transition", {
+    transitionId: args.transitionId,
+    ...(args.durationUs !== undefined ? { durationUs: args.durationUs } : {}),
+    ...(args.kind !== undefined ? { kind: args.kind } : {}),
+    ...(args.direction !== undefined ? { direction: args.direction } : {}),
+    ...(args.extendedUs !== undefined ? { extendedUs: args.extendedUs } : {}),
+  });
+}
+
+/// Remove by id; routed restore (ADR 0048): the outgoing layer shrinks back
+/// by the transition's `extended_us` and the incoming layer moves right by
+/// the remainder (siblings following), restoring the hard cut. Can refuse
+/// with TransitionRestoreCollision when the restore destination is occupied.
+/// Recorded (undoable).
+export async function removeTransition(transitionId: string): Promise<void> {
+  return invoke<void>("remove_transition", { transitionId });
+}
+
+export interface CompositionPatchPartial {
+  width?: number;
+  height?: number;
+  fps?: { num: number; den: number };
+  duration_us?: number;
+  sample_rate?: number;
+  channels?: number;
+}
+
+/// The Shots Panel's per-project review parameters — the score a candidate must
+/// exceed to become a boundary, and the shortest span the reduce keeps. Mirrors
+/// main `ShotReviewSettings`; both are wire fields of `reduceShotReport`.
+///
+/// `sensitivity` reads backwards (a higher value yields FEWER cuts) and reaches
+/// no label: the human control is a line over the candidate scores, and its
+/// meaning is its position. The name survives here and on disk only.
+export interface ShotReviewSettings {
+  sensitivity: number;
+  min_shot_us: number;
+}
+
+/// The Pauses section's per-project detection parameters — the threshold a peak
+/// must stay under, the shortest pause surfaced, and what each side of one
+/// keeps when it is removed. Mirrors Rust `PauseReviewSettings`.
+///
+/// Per PROJECT and not global (spec Decision 14): one recording session is one
+/// project, and two sessions do not share a noise floor. `threshold_amp` is an
+/// amplitude in [0, 1] because that is what the detector takes; the section's
+/// slider is in dB and converts.
+export interface PauseReviewSettings {
+  threshold_amp: number;
+  min_pause_us: number;
+  pad_us: number;
+}
+
+/// Per-project behavior settings (`Project.settings`). Only the fields
+/// the UI consumes are typed; the Rust struct carries more.
+export interface ProjectSettingsView {
+  correction_script?: string;
+  prefer_proxies: boolean;
+  proxy_overrides: Record<string, boolean>;
+  /// `null` on a project nobody has tuned — read as "whatever the detector
+  /// defaults to", which is what keeps every threshold literal in Rust.
+  shot_review: ShotReviewSettings | null;
+  /// `null` on a project nobody has tuned, on `shot_review`'s rule.
+  pause_review: PauseReviewSettings | null;
+}
+
+export interface ProjectSettingsPatch {
+  correction_script?: string;
+  prefer_proxies?: boolean;
+  proxy_override?: { media_id: string; value: boolean | null };
+  /// `null` clears the tuning and restores the detection defaults. Refused
+  /// whole if `sensitivity` is outside [0, 1] or `min_shot_us` is not a
+  /// positive whole number — the bounds `reduceShotReport` itself enforces.
+  shot_review?: ShotReviewSettings | null;
+  /// `null` clears the tuning and restores the detection defaults — what the
+  /// section's *Reset to defaults* sends. Refused whole if `threshold_amp` is
+  /// outside [0, 1], `min_pause_us` is not positive, `pad_us` is negative, or
+  /// `2 × pad_us ≥ min_pause_us` — the constraint that makes a core exist.
+  pause_review?: PauseReviewSettings | null;
+}
+
+export async function getProjectSettings(): Promise<ProjectSettingsView> {
+  return invoke<ProjectSettingsView>("get_project_settings");
+}
+
+/// Preference-shaped, not editing-shaped: applied to every history
+/// snapshot and not recorded, so undo never flips a settings toggle.
+export async function updateProjectSettings(
+  patch: ProjectSettingsPatch,
+): Promise<void> {
+  return invoke<void>("update_project_settings", { patch });
+}
+
+export interface McpInfoView {
+  bind: string;
+  url: string;
+  bearer_token: string;
+  /// The `weftcut` binary in <userData>/cli/, which a stdio client config
+  /// runs as `<cli_path> mcp`. Null in an unpackaged run before `npm run
+  /// build:cli` has built one; the panel then offers HTTP-direct first.
+  cli_path: string | null;
+  /// State of the <userData>/skills refresh — the app's own copy, which the
+  /// user copies into their agent client's skills directory. It says nothing
+  /// about that client's copy, which the app cannot see. Anything but `current` is a
+  /// condition the panel reports; main/mcp/skillsInstall.ts says what each
+  /// fault means and why none of them is a reason to hide the section.
+  skills: SkillsInstallView;
+}
+
+/// Why the advertised skill folder is not the one this app version ships.
+/// `not_built` is the only benign member — a dev tree before `build:skills`.
+export type SkillsFault =
+  | "not_built"
+  | "bundle_missing"
+  | "incomplete"
+  | "copy_failed";
+
+export type SkillsInstallView =
+  | { state: "current"; dir: string }
+  | { state: "stale"; dir: string; fault: SkillsFault }
+  | { state: "unavailable"; dir: null; fault: SkillsFault };
+
+/// Returns the live MCP server connection details, or `null` if the server is
+/// still starting. Used by the Settings "Agent" tab.
+///
+/// This and `resetMcpToken` go through main-process handlers — named
+/// `window.api.mcp` APIs, not `invoke` commands.
+export async function getMcpInfo(): Promise<McpInfoView | null> {
+  return (await window.api.mcp.getInfo()) as McpInfoView | null;
+}
+
+/// Regenerate the bearer token. The server stays bound on the same port —
+/// only the token rotates. Persists to `mcp_auth.json` so the next launch
+/// reuses the new token. Returns the fresh token so the panel can update
+/// without a follow-up `getMcpInfo` call.
+export async function resetMcpToken(): Promise<string> {
+  return (await window.api.mcp.resetToken()) as string;
+}
+
+/// Re-run the startup refresh of `<userData>/skills` and return what it found.
+/// The recovery behind the Agent tab's "try again": every fault a packaged user
+/// can hit is one something outside WeftCut can clear, so re-checking must not
+/// cost an app restart.
+export async function reinstallSkills(): Promise<SkillsInstallView> {
+  return (await window.api.mcp.reinstallSkills()) as SkillsInstallView;
+}
+
+// ============================================================
+// Video understanding — the describe run's parameters, which Settings → Video
+// understanding edits beside the model picker (the models_* channels). Both
+// channels are intercepted in Electron main. VlmDescribeFocus is single-sourced
+// in src/shared/vlm-config.ts because it is both a persisted setting and a
+// `describe_clip` wire tag, and two spellings of it would drift.
+// ============================================================
+
+import type { VlmDescribeFocus, VlmDescribeSettings } from "../../shared/vlm-config";
+export type { VlmDescribeFocus, VlmDescribeSettings };
+
+export async function vlmDescribeGet(): Promise<VlmDescribeSettings> {
+  return invoke<VlmDescribeSettings>("vlm_describe_get");
+}
+
+/// Persist the sampling rate and/or the prompt focus every describe gesture
+/// uses. Either may be omitted; main clamps the rate to the legal range.
+export async function vlmDescribeSet(patch: Partial<VlmDescribeSettings>): Promise<void> {
+  return invoke<void>("vlm_describe_set", {
+    ...(patch.fps === undefined ? {} : { fps: patch.fps }),
+    ...(patch.focus === undefined ? {} : { focus: patch.focus }),
+  });
+}
+
+export interface WaveformLevels {
+  channels: number;
+  /// Exact effective density of each LOD. This is intentionally a floating
+  /// point value (`sampleRate / framesPerPeak`), not a rounded display value:
+  /// source-time-to-peak indexing depends on preserving the fractional part.
+  levels: Array<{ level: number; peaksPerSecond: number; peakCount: number }>;
+}
+
+/// Header-only read of the media's peaks LOD table. Rejects "not_ready" until
+/// the waveform job has produced the peaks file — and likewise when
+/// `waveformKey` names a baked sibling main can no longer resolve, which is
+/// what lets a caller degrade to the raw waveform instead of drawing another
+/// clip's peaks. See `waveformKey` on `getWaveformTile`.
+export async function getWaveformLevels(
+  mediaId: string,
+  waveformKey?: string,
+): Promise<WaveformLevels> {
+  return invoke<WaveformLevels>("get_waveform_levels", {
+    mediaId,
+    ...(waveformKey === undefined ? {} : { waveformKey }),
+  });
+}
+
+export interface WaveformTile {
+  /// Exact effective density for this LOD; see `WaveformLevels`.
+  peaksPerSecond: number;
+  /// Parallel arrays; min/max are normalized samples in [-1, 1], rms in [0, 1].
+  min: number[];
+  max: number[];
+  rms: number[];
+}
+
+/// Read `count` (min,max,rms) windows for one channel of one LOD level, starting at
+/// `startPeak`. The range is clamped to the level's peak count backend-side.
+///
+/// `waveformKey` selects WHICH of the media's peaks files is read: omitted (or
+/// any value that isn't an `fx:` key) reads the raw conform's own, an `fx:` key
+/// reads the baked effect-chain sibling it names (`shared/audioEffects/status.ts`
+/// `fxWaveformKey`). `mediaId` is still required either way — main resolves the
+/// media item and only overrides the path.
+export async function getWaveformTile(
+  mediaId: string,
+  level: number,
+  channel: number,
+  startPeak: number,
+  count: number,
+  waveformKey?: string,
+): Promise<WaveformTile> {
+  return invoke<WaveformTile>("get_waveform_tile", {
+    mediaId, level, channel, startPeak, count,
+    ...(waveformKey === undefined ? {} : { waveformKey }),
+  });
+}
+
+export interface FilmstripTile {
+  /// Absolute path of the cached tile JPG; load via convertFileSrc.
+  path: string;
+  /// Metadata-derived (informative); layout should trust the ImageBitmap.
+  widthPx: number;
+  heightPx: number;
+}
+
+/// Extract-on-demand filmstrip tile at time-grid key (lod, index). Rejects
+/// "not_ready" while a Proxied source has no landed proxy (proxy-wait rule).
+export async function getFilmstripTile(
+  mediaId: string,
+  lod: number,
+  index: number,
+): Promise<FilmstripTile> {
+  return invoke<FilmstripTile>("get_filmstrip_tile", { mediaId, lod, index });
+}
+
+/// Returns a `data:image/jpeg;base64,...` URL for the middle thumbnail of a
+/// video media item. Rejects with "not_ready" if the thumbnails job is still
+/// running.
+export async function getMediaThumbnail(mediaId: string): Promise<string> {
+  return invoke<string>("get_media_thumbnail", { mediaId });
+}
+
+/// One frame of a source at `tUs` (source-absolute microseconds) as a `data:`
+/// URL, ready for an `img` src. Served through the same
+/// `media://{id}/frame/{src_us}` resource an agent reads, so the extraction is
+/// cached per `(source, t_us)` and re-showing a frame is a cache read rather
+/// than a second decode.
+///
+/// Unlike `getMediaThumbnail` this is an ON-DEMAND extract at a time the caller
+/// chooses, not a pick from the evenly-spaced thumbnail set — which is why a
+/// shot's cover frame cannot be served by the pool thumbnail.
+export async function getMediaFrame(
+  mediaId: string,
+  tUs: number,
+): Promise<string> {
+  return invoke<string>("get_media_frame", { media_id: mediaId, t_us: tUs });
+}
+
+/// Ask the backend to generate the full export proxy for a media item
+/// (decode-failure recovery / per-clip generate). Idempotent on the backend.
+export async function ensureFullProxy(mediaId: string): Promise<void> {
+  await invoke("ensure_full_proxy", { mediaId });
+}
+
+/// Ask the backend to build the 720p quick preview proxy for a media on
+/// demand (per-clip "Use proxy" / Unsupported-card recovery). Idempotent;
+/// no-op on Bypass or when the quick proxy already exists.
+export async function generateQuickProxy(mediaId: string): Promise<void> {
+  await invoke("generate_quick_proxy", { mediaId });
+}
+
+/// Drive-by "Analyze shots" for a media-pool item: warm the deterministic shot
+/// report (VSHOT cache, shared with the agent's `analyze_clip` /
+/// `auto_split_by_shot`) and return the detected shot count. The main-side
+/// `analyze_shots` handler resolves the MediaItem and runs the whole-source
+/// analysis through the shot napi. Best-effort — errors are logged and return
+/// `null`, so a click never crashes the pool.
+export async function analyzeShots(mediaId: string): Promise<number | null> {
+  try {
+    const r = await invoke<{ shots: number }>("analyze_shots", { mediaId });
+    return r?.shots ?? null;
+  } catch (err) {
+    console.warn("[media-pool] analyze_shots failed", err);
+    return null;
+  }
+}
+
+/// "Mark shot cuts" for one VideoClip layer: materialize its detected shot
+/// boundaries as timeline markers in ONE coalesced commit (a single undo step).
+/// Reads the same VSHOT-cached report `analyzeShots` warms and the agent's
+/// `auto_split_by_shot` splits on, so the markers land on exactly the frames
+/// that tool would cut. Returns the number of markers added — `0` when the clip
+/// has no interior cut.
+///
+/// Unlike `analyzeShots` this THROWS on failure rather than logging: it is a
+/// write, and a silently-swallowed write would leave the timeline looking
+/// unchanged with no reason given. The caller reports it.
+export async function dropShotMarkers(layerId: string): Promise<number> {
+  const r = await invoke<{ markers: number }>("drop_shot_markers", { layerId });
+  return r?.markers ?? 0;
+}
+
+/// A per-shot event flag. Mirrors Rust `ShotFlag` (serde lowercase).
+export type ShotFlag = "black" | "freeze" | "fade";
+
+/// One candidate cut: the source-absolute time a new shot could begin, plus the
+/// raw detector confidence. Mirrors Rust `Cut`, named here for the field it
+/// arrives in (`ShotReport.cut_scores`) because a bare `Cut` in an editor reads
+/// as an edit operation rather than as a measurement.
+///
+/// A candidate, not a decision: which of these become boundaries is what a
+/// threshold decides.
+export interface CutScore {
+  t_us: number;
+  score: number;
+}
+
+/// One shot — the span between two accepted boundaries. Mirrors Rust `Shot`.
+///
+/// `brightness` / `motion` / `sharpness` are absent unless the scan that
+/// produced this span also sampled frames, and `flags` is empty on the same
+/// condition. A span the reduce merged or truncated is a DIFFERENT shot from any
+/// the scan measured, so its numbers are absent rather than inherited from a
+/// neighbour — absent must render as absent, never as zero.
+export interface Shot {
+  index: number;
+  t_start_us: number;
+  t_end_us: number;
+  /// A representative cover-frame time (the span midpoint), the argument
+  /// `getMediaFrame` takes for this shot's still.
+  keyframe_t_us: number;
+  brightness?: number | null;
+  motion?: number | null;
+  sharpness?: number | null;
+  flags: ShotFlag[];
+}
+
+/// The shot list plus the raw candidate signal, both clipped to the analyzed
+/// window. Mirrors Rust `ShotReport`. Times are SOURCE-absolute: a report
+/// belongs to a source, while every apply step belongs to a layer.
+export interface ShotReport {
+  shots: Shot[];
+  cut_scores: CutScore[];
+}
+
+/// The threshold the floor scan runs at — the lowest a threshold control can
+/// offer, because nothing below it was ever emitted.
+export async function shotFloorSensitivity(): Promise<number> {
+  return invoke<number>("shot_floor_sensitivity");
+}
+
+/// The detection defaults every omitted parameter resolves to, as Rust states
+/// them. A review surface seeds its threshold from here rather than from a
+/// literal of its own: a literal would be free to drift from the value the
+/// zero-argument apply and the agent's `analyze_clip` both use, and the rows
+/// the user reviewed would then name different cuts from the ones an apply
+/// makes.
+///
+/// `min_shot_us` is output granularity, not accuracy — `build_shots` only drops
+/// boundaries closer together than it — so the two numbers fix different errors
+/// and no control should present them alike.
+export interface ShotDefaultOpts {
+  sensitivity: number;
+  min_shot_us: number;
+}
+
+export async function shotDefaultOpts(): Promise<ShotDefaultOpts> {
+  return invoke<ShotDefaultOpts>("shot_default_opts");
+}
+
+/// The whole-source floor scan for one media. EXPENSIVE the first time (a full
+/// decode pass) and a cache hit afterwards, so call it behind a deliberate
+/// action, never on selection — ask `shotFloorReportCached` first.
+export async function analyzeShotsFloor(mediaId: string): Promise<ShotReport> {
+  return invoke<ShotReport>("analyze_shots_floor", { media_id: mediaId });
+}
+
+/// Whether a source's floor scan is already on disk. A probe: it stats the
+/// cached report and never starts a scan, which is what makes it safe on every
+/// selection change.
+export async function shotFloorReportCached(
+  mediaId: string,
+): Promise<boolean> {
+  return invoke<boolean>("shot_floor_report_cached", { media_id: mediaId });
+}
+
+/// Re-derive a shot list from an already-scanned report at a threshold and
+/// minimum shot length, viewed through `[inUs, outUs]`. Pure and cheap — no
+/// decode, no file touched — so a threshold can be dragged live.
+///
+/// `sensitivity` reads backwards on purpose: it is a THRESHOLD, so a higher
+/// value yields FEWER cuts. It survives as a field name only; a control shows
+/// the line's position over the candidates it crosses.
+///
+/// A value below `shotFloorSensitivity()` cannot invent candidates the scan
+/// never emitted — the answer is simply the scan's own set.
+export async function reduceShotReport(
+  report: ShotReport,
+  params: {
+    sensitivity: number;
+    minShotUs: number;
+    inUs: number;
+    outUs: number;
+  },
+): Promise<ShotReport> {
+  return invoke<ShotReport>("reduce_shot_report", {
+    report,
+    sensitivity: params.sensitivity,
+    min_shot_us: params.minShotUs,
+    in_us: params.inUs,
+    out_us: params.outUs,
+  });
+}
+
+/// One measured span: the same four measurements a `Shot` carries, keyed by the
+/// span they were taken over. Mirrors Rust `SpanStats`.
+///
+/// Not optional here, unlike on `Shot`: a span either has a measurement or has
+/// no entry at all, because the three frames that answer one question answer
+/// all four.
+export interface SpanStats {
+  t_start_us: number;
+  t_end_us: number;
+  brightness: number;
+  motion: number;
+  sharpness: number;
+  flags: ShotFlag[];
+}
+
+/// Measure the given spans of one source and answer for all of them, in request
+/// order.
+///
+/// EXPENSIVE per span nothing has measured yet — three ffmpeg extracts each —
+/// and a cache hit per span something has, so the cost of a call is the number
+/// of spans a threshold move actually reshaped. Only a deliberate press may
+/// reach it: the floor scan is timing-only by design (ADR 0057), and an
+/// automatic pass over every reduce would re-couple the cost of a review to the
+/// threshold, which is the property that split exists to remove.
+///
+/// A span is matched EXACTLY. Times are source-absolute, `t_end_us` exclusive,
+/// and a span outside `[0, duration]` is refused by index rather than clamped.
+export async function attachShotStats(
+  mediaId: string,
+  spans: { t_start_us: number; t_end_us: number }[],
+): Promise<SpanStats[]> {
+  return invoke<SpanStats[]>("attach_shot_stats", {
+    media_id: mediaId,
+    spans,
+  });
+}
+
+/// Apply shot boundaries to one VideoClip layer. Snake_case because these are
+/// the hybrid arm's own argument names and it reads them straight off the
+/// forwarded object.
+///
+/// `cuts_src_us` is the reviewed list — source-absolute microseconds, strictly
+/// ascending, each strictly inside the clip's source window. Omit it and the
+/// detector supplies the boundaries at `sensitivity` / `min_shot_us`, each
+/// falling back to the detection default; that is the path a zero-argument
+/// entry takes. A malformed list is refused whole (structured `InvalidArgument`
+/// on `cuts_src_us`, naming the offending index) and nothing is written.
+///
+/// `mode` picks the verb over that one list: `split` cuts at every boundary,
+/// `mark` writes an anchored marker at each instead, and `discard` splits and
+/// then deletes the segments the reviewer unchecked — all three in one commit,
+/// one undo entry.
+export interface ApplyShotCutsArgs {
+  layer_id: string;
+  mode: "split" | "mark" | "discard";
+  cuts_src_us?: number[];
+  sensitivity?: number;
+  min_shot_us?: number;
+  /// Delete any resulting segment shorter than this within the SAME commit.
+  /// Split-only — a marker has no length to be short.
+  drop_short_us?: number;
+  /// Which segments `discard` deletes: 0-based indices in timeline order over
+  /// the `cuts + 1` segments the split produces, numbered BEFORE any
+  /// `drop_short_us` pruning so a row can be named off the cut list alone.
+  /// Read only in `discard` mode, where it is required — absent or empty is
+  /// refused, because keeping every segment is what `split` is. A set naming
+  /// EVERY segment is refused too: erasing the whole clip is a delete, not an
+  /// apply.
+  discard_segments?: number[];
+}
+
+/// What one apply produced, discriminated by the verb asked for: segments are
+/// not markers, and a caller that has to sniff which it got would be a caller
+/// free to mis-read one as the other.
+///
+/// `split` with no interior boundary answers with the unchanged layer id and
+/// `mark` with an empty list — an idempotent no-op that writes no history
+/// entry, rather than an error. `discard` has no such case: with no boundary
+/// the clip is one segment, and the set can only be naming that.
+///
+/// `discard`'s `layer_ids` are the segments that SURVIVED, in timeline order —
+/// the discarded ones are gone, not listed.
+export type ApplyShotCutsResult =
+  | { mode: "split"; layer_ids: string[] }
+  | { mode: "mark"; marker_ids: string[] }
+  | { mode: "discard"; layer_ids: string[] };
+
+/// Split at, mark, or split-and-discard a clip's shot boundaries in ONE commit
+/// (one undo entry). Every verb consumes the same canonical cut list, so a
+/// split and a mark of the same request land on identical frames, and a
+/// discard's survivors sit on exactly the boundaries a plain split would have
+/// produced.
+///
+/// THROWS, like every write here: a swallowed failure would leave the timeline
+/// looking untouched with no reason given.
+export async function applyShotCuts(
+  args: ApplyShotCutsArgs,
+): Promise<ApplyShotCutsResult> {
+  return invoke<ApplyShotCutsResult>("apply_shot_cuts", { ...args });
+}
+
+// ============================================================
+// Speech — transcription and voiceover
+// ============================================================
+// The renderer half of the two authored speech recipes. Every channel here is
+// the SAME tool an agent calls by the same name: `transcribe_clip` and
+// `describe_clip` go through the MCP host's own `callClipComputeTool` (slice
+// resolution and engine injection included), and `apply_transcripts` /
+// `synthesize_speech` land the same single commit the agent's tools do.
+//
+// All four THROW. They are the read and write halves of one gesture, and a
+// swallowed failure would leave the timeline looking untouched with no reason
+// given; the calling dialog shows the message inline and logs a row.
+
+/// One word of a transcript with its own span. Times are timeline-absolute
+/// microseconds, already shifted by the slice's offset. Mirrors `speech::Word`.
+export interface TranscriptWord {
+  t_start_us: number;
+  t_end_us: number;
+  text: string;
+}
+
+/// One cue-sized span. `words` is empty when the engine reported no word-level
+/// timing at all (`word_timing: "none"`). Mirrors `speech::Segment`.
+export interface TranscriptSegment {
+  t_start_us: number;
+  t_end_us: number;
+  text: string;
+  words: TranscriptWord[];
+}
+
+/// Provenance of the per-word timestamps: straight from the engine's token
+/// offsets, derived by splitting a cue span across its words, or absent.
+/// Mirrors `speech::WordTiming` (serde snake_case).
+export type WordTiming = "exact" | "interpolated_from_cue" | "none";
+
+/// What `transcribe_clip` answers with. `backend` names the engine that actually
+/// served the request, so a resolver fallback is visible rather than silent.
+/// The app's transcription flow hands it to `applyTranscripts` whole, so words
+/// survive caption ingestion and saving.
+export interface TranscriptResult {
+  source?: import('../../shared/captionTiming').TranscriptPayload['source'];
+  backend: string;
+  segments: TranscriptSegment[];
+  language?: string | null;
+  word_timing: WordTiming;
+  input_normalization?: { input_peak_dbfs: number | null; gain_db: number; target_peak_dbfs: number; max_gain_db: number };
+}
+
+/// Transcribe one VideoClip or Audio layer's whole span. The engine is chosen by
+/// the user's Settings → Transcription preference then availability; when
+/// nothing is configured the call rejects with the message that names that
+/// panel. `language` blank/omitted lets the engine auto-detect.
+/// `normalizeAudio` is an explicit per-request opt-in for the inference copy;
+/// it leaves source media, timeline volume and the raw extraction cache intact.
+///
+/// A read: it commits nothing, so it neither enters undo nor dirties the
+/// project. Applying the result is `applyTranscripts`.
+///
+/// `requestId` tags the call so the run can find its job in
+/// `computeJobsStore` (it may join one an agent started). A cancelled job
+/// rejects with `ComputeCancelledError`.
+export async function transcribeClip(
+  layerId: string,
+  opts: { language?: string; normalizeAudio?: boolean; requestId?: string } = {},
+): Promise<TranscriptResult> {
+  const language = opts.language?.trim();
+  return throwIfCancelled(await invoke<TranscriptResult | ComputeCancelledPayload>("transcribe_clip", {
+    layer_id: layerId,
+    ...(language ? { language } : {}),
+    ...(opts.normalizeAudio ? { normalize_audio: true } : {}),
+    ...(opts.requestId ? { [COMPUTE_REQUEST_ID_ARG]: opts.requestId } : {}),
+  }));
+}
+
+export async function applyTranscripts(transcripts: TranscriptResult[], projectId: string, compositionId: string, sourceIds: string[]): Promise<string> {
+  return invoke<string>("apply_transcripts", { transcripts, project_id: projectId, composition_id: compositionId, source_ids: sourceIds });
+}
+
+export async function setCorrectionScript(projectId: string, text: string): Promise<void> {
+  return invoke<void>("set_correction_script", { project_id: projectId, text });
+}
+
+export async function correctCaptionText(projectId: string, compositionId: string, layerIds: string[] | null, expected?: import('../../shared/textCorrectionRequest').TextCorrectionExpectation): Promise<{ changed: number }> {
+  return invoke<{ changed: number }>("correct_caption_text", { project_id: projectId, composition_id: compositionId, layer_ids: layerIds, expected });
+}
+
+/// Voiceover request. Snake_case because these are the Rust tool's own argument
+/// names and the hybrid arm reads them straight off the forwarded object — one
+/// wire schema for both callers.
+export interface SynthesizeSpeechArgs {
+  /// The script. The provider caps a single call at 4096 characters; the dialog
+  /// enforces that in the field rather than letting the request fail.
+  text: string;
+  voice: string;
+  /// Playback rate. Omitted at the provider default (1.0) rather than sent as
+  /// `1`: the TTS cache keys an absent speed apart from an explicit 1.0, so
+  /// sending it would bill a fresh request for a script an agent's
+  /// default-speed call already produced, and vice versa.
+  speed?: number;
+  /// The Audio track the layer lands on. Passed explicitly by the dialog even
+  /// when it matches the default the hybrid would have picked, so where the
+  /// audio goes is never a hidden decision.
+  target_track_id?: string;
+  /// Timeline start in microseconds, in the ROOT composition's clock.
+  t_start_us?: number;
+}
+
+/// What one synthesis produced. `cached` is true when the request hit the
+/// content-addressed cache — same `(model, voice, speed, text)`, so no API call
+/// was billed.
+export interface SynthesizeSpeechResult {
+  layer_id: string;
+  media_id: string;
+  t_start_us: number;
+  t_end_us: number;
+  cached: boolean;
+}
+
+/// Synthesize a script and attach it as an Audio layer in ONE commit, so one
+/// undo removes the layer. Rejects with the resolver's own actionable message
+/// when no TTS provider is configured.
+///
+/// Parses, because the hybrid arm answers with a JSON STRING: its shape is set
+/// by the MCP side, where every result becomes one `ToolResult` text block
+/// (`main/state/hybrids.ts` states that contract). Peeling it here keeps the
+/// arm single and the caller typed.
+export async function synthesizeSpeech(
+  args: SynthesizeSpeechArgs,
+): Promise<SynthesizeSpeechResult> {
+  const json = await invoke<string>("synthesize_speech", { ...args });
+  return JSON.parse(json) as SynthesizeSpeechResult;
+}
+
+// ============================================================
+// Pauses — detect, mark, remove
+// ============================================================
+// One measurement, two verbs over it. `detectPauses` finds the pauses and
+// writes nothing; `markPauses` puts one region marker per pause on the
+// waveform the timeline already draws; `removePauses` cuts the core of every
+// pause out and closes the gaps behind them. The measurement is the half every
+// pause recipe shares, and which verb follows it is the caller's choice — the
+// two re-detect at the parameters they are given, so neither can act on a set
+// the section did not show.
+//
+// The SUBJECT of all three is the Audio layer that plays (spec Decision 1): a
+// VideoClip id is accepted and resolved to its linked Audio partner by main,
+// and refused when it has none.
+//
+// All three THROW, like every write and every panel-driven read here: the
+// section shows the message inline and logs a row.
+
+/// One pause in the subject's own composition clock — timeline-absolute and
+/// already clipped to the layer's span, so a caller never maps source time
+/// itself. Mirrors Rust `PauseRegion` (`native/src/mcp/tools.rs`).
+export interface PauseRegion {
+  t_start_us: number;
+  t_end_us: number;
+}
+
+/// Which peaks file a detection actually read: the media's own, or the baked
+/// effect sibling's. What plays is what is measured (spec Decision 11), so the
+/// bands can never disagree with the waveform under them.
+export type PeaksSource = "raw" | "fx";
+
+/// A detection, whole: the pauses, the noise floor the section's *Auto* button
+/// sets a threshold from, and which peaks were read. Mirrors Rust
+/// `DetectPausesResult`.
+///
+/// `noise_floor_db` is the 10th percentile of the peaks inside the subject's
+/// source window, dBFS; `null` when the window holds no peak at all or only
+/// digital silence.
+export interface DetectPausesResult {
+  pauses: PauseRegion[];
+  noise_floor_db: number | null;
+  peaks_source: PeaksSource;
+}
+
+/// Detect one clip's pauses. Reads the PRE-COMPUTED waveform peaks — no decode
+/// — which is what makes re-running it on every parameter change affordable,
+/// and why the Pauses section's controls are live where the shot Panel's
+/// threshold needed a Rust split to become so.
+///
+/// A read: it commits nothing, so it neither enters undo nor dirties the
+/// project. Marking the result is `markPauses`.
+///
+/// Rejects while the source's waveform job is still running, with a message
+/// naming the `media:job_complete` event to wait for — a real state on a fresh
+/// import, and one the caller is expected to WAIT on rather than report
+/// (`properties/PausesSection.tsx`).
+export async function detectPauses(args: {
+  layerId: string;
+  thresholdDb?: number;
+  minPauseUs?: number;
+}): Promise<DetectPausesResult> {
+  return invoke<DetectPausesResult>("detect_pauses", {
+    layer_id: args.layerId,
+    ...(args.thresholdDb === undefined ? {} : { threshold_db: args.thresholdDb }),
+    ...(args.minPauseUs === undefined ? {} : { min_pause_us: args.minPauseUs }),
+  });
+}
+
+/// Detect and mark in ONE commit (one undo entry): a region marker per pause,
+/// in the subject's own composition, anchored to the clip so trimming past one
+/// hibernates its mark and deleting the clip takes them all
+/// (docs/features.md#markers). Detection re-runs inside the same call at the
+/// parameters given, so the marks can never be a set the section did not show.
+///
+/// The FULL range is marked, pad and all — the pad is what a removal keeps, and
+/// a mark changes no timing (spec Decision 8), so it has nothing to shrink for.
+///
+/// `markers` is `0` with no commit at all when nothing is quiet above the
+/// threshold — re-tuning and re-running costs no undo steps.
+export async function markPauses(args: {
+  layerId: string;
+  thresholdDb?: number;
+  minPauseUs?: number;
+}): Promise<{ markers: number; marker_ids: string[] }> {
+  return invoke<{ markers: number; marker_ids: string[] }>("mark_pauses", {
+    layer_id: args.layerId,
+    ...(args.thresholdDb === undefined ? {} : { threshold_db: args.thresholdDb }),
+    ...(args.minPauseUs === undefined ? {} : { min_pause_us: args.minPauseUs }),
+  });
+}
+
+/// What one removal did: the clip's remaining pieces in timeline order, the
+/// number of pauses cut, and the total time that went with them — the sum of
+/// the CORES, not of the pauses, since each keeps its pad.
+/// Mirrors `RemovePausesResult` (`main/state/hybrids.ts`).
+export interface RemovePausesResult {
+  surviving_layer_ids: string[];
+  removed: number;
+  removed_us: number;
+}
+
+/// Detect and CUT in ONE commit (one undo entry): each pause's core is removed
+/// and the gap it vacated closes behind it, so the clip — and the film — get
+/// shorter (docs/features.md#ripple-delete). Detection re-runs inside the same
+/// call at the parameters given, exactly as `markPauses` does, so what leaves
+/// is the set the section showed.
+///
+/// `padUs` is what each side of a pause KEEPS: the core cut is
+/// `[start + pad, end − pad)`, and a pause touching the clip's head or tail
+/// keeps its pad on the inner side only. Erasing a pause outright makes speech
+/// breathless, so the default is 100 ms per side rather than zero (spec
+/// Decision 8); `0` restores the whole-erase behaviour. Refused when
+/// `2 × padUs ≥ minPauseUs` — a core that cannot exist is a parameter mistake,
+/// not an empty result.
+///
+/// `removed` is `0` with no commit at all when nothing is quiet above the
+/// threshold, and `surviving_layer_ids` is then the untouched clip: re-tuning
+/// and re-running costs no undo steps whichever verb the tuning ends on.
+///
+/// Refuses whole rather than half-cutting. The ripple planner's four refusals
+/// (a layer starting inside a pause, a collision, a link straddling one, a
+/// locked mover) each name the layer that blocked, and a clip that is quiet end
+/// to end is an `InvalidArgument` — removing every segment is a delete. Either
+/// way the clip comes back UNSPLIT with nothing recorded, so the section can
+/// show the message and let the user fix it and press again.
+///
+/// Unwrapped from the MCP arm's JSON string here, like `synthesizeSpeech`: the
+/// arm is advertised as a tool, where every result becomes one `ToolResult`
+/// text block (`main/state/hybrids.ts` states that contract).
+export async function removePauses(args: {
+  layerId: string;
+  thresholdDb?: number;
+  minPauseUs?: number;
+  padUs?: number;
+}): Promise<RemovePausesResult> {
+  const json = await invoke<string>("remove_pauses", {
+    layer_id: args.layerId,
+    ...(args.thresholdDb === undefined ? {} : { threshold_db: args.thresholdDb }),
+    ...(args.minPauseUs === undefined ? {} : { min_pause_us: args.minPauseUs }),
+    ...(args.padUs === undefined ? {} : { pad_us: args.padUs }),
+  });
+  return JSON.parse(json) as RemovePausesResult;
+}
+
+/// Export-readiness audio gate (Rust `ensure_export_audio_conform`): media
+/// ids of audible in-range audio layers whose conform cache is absent or
+/// invalid, each with a conform job kicked. Selection mirrors the Rust mix
+/// plan exactly (track mute/solo, layer lock/mute, window overlap, real
+/// cache-file validation). Register conform job listeners BEFORE calling
+/// (`createConformTracker`) so a fast job can't complete unseen.
+export async function ensureExportAudioConform(range: {
+  startUs: number;
+  endUs: number;
+}): Promise<string[]> {
+  return invoke<string[]>("ensure_export_audio_conform", {
+    startUs: range.startUs,
+    endUs: range.endUs,
+  });
+}
+
+// ── Audio effect chains (ADR 0063) ─────────────────────────────────────────
+// Three reads answered by main's baker, the sole holder of bake state. That
+// state is a DERIVATION — nothing about it rides the project summary — so
+// these calls are the only way the renderer can learn it.
+
+/// The baker's whole per-layer map: the audio-fx mirror's seed at boot and
+/// after a project switch. Every later change arrives out-of-band on
+/// `AUDIO_FX_STATUS_EVENT`.
+export async function audioFxSnapshot(): Promise<AudioFxSnapshot> {
+  return invoke<AudioFxSnapshot>("audio_fx_snapshot", {});
+}
+
+/// Export-readiness audio-effect gate: flushes the bake debounce for the
+/// layers the mix will read, then reports the ones whose artifact has yet to
+/// land and the ones whose bake failed. A null bound means the whole project.
+///
+/// Register the `AUDIO_FX_STATUS_EVENT` listener BEFORE calling
+/// (`createAudioFxTracker`) — a bake that lands in between would otherwise be
+/// missed and the wait would hang, the same rule the conform gate follows.
+export async function ensureExportAudioFx(range: {
+  startUs: number | null;
+  endUs: number | null;
+}): Promise<EnsureExportAudioFxResult> {
+  return invoke<EnsureExportAudioFxResult>("ensure_export_audio_fx", {
+    startUs: range.startUs,
+    endUs: range.endUs,
+  });
+}
+
+/// Tell the baker that an artifact it published as ready is gone (a waveform
+/// read came back `not_ready`), so it re-checks the disk and re-bakes. The
+/// answer arrives as an `AUDIO_FX_STATUS_EVENT` push, not as a return value.
+export async function audioFxReverify(layerId: string): Promise<void> {
+  await invoke<null>("audio_fx_reverify", { layerId });
+}
+
+/// Push the preview master-bus meter reading to Rust (~2 Hz while playing)
+/// for the MCP `composition://meter` resource. Clamp non-finite dB values
+/// before calling — JSON cannot carry -Infinity.
+export async function reportAudioMeter(report: {
+  rmsDb: number;
+  peakDb: number;
+}): Promise<void> {
+  await invoke("report_audio_meter", { report });
+}
+
+// ============================================================
+// Content description — describe, and read back what was described
+// ============================================================
+// The two halves of scene description: run a local vision model over a clip's
+// frames, and read the cache a previous run left. `describeClip` is the only
+// one that can spend the ~20 s a model costs; `getMediaDescription` never
+// computes, which is what lets a Panel ask for it on every selection change.
+//
+// `describeClip` THROWS, like every dialog-driven compute here — the dialog
+// shows the message inline and logs a row. `getMediaDescription` answers `null`
+// for the two "nothing to read" states and throws only on a real failure.
+
+/// One described span: a window of the SOURCE plus the model's prose and the
+/// tags it extracted. Times are source-absolute microseconds, which is what
+/// makes a shot row's own source span the only join needed. Mirrors Rust
+/// `DescSegment` (`native/src/vlm/description.rs`).
+export interface DescSegment {
+  src_start_us: number;
+  src_end_us: number;
+  text: string;
+  tags: string[];
+}
+
+/// What `describe_clip` answers with. `backend` and `model` name the engine that
+/// actually served the request, so a resolver fallback is visible rather than
+/// silent. Mirrors Rust `SceneDescription`.
+export interface SceneDescription {
+  backend: string;
+  model: string;
+  /// A few sentences over the whole window: clip descriptions of a window longer
+  /// than one request, once the summary request succeeded.
+  summary?: string;
+  segments: DescSegment[];
+}
+
+/// One run's summary and the source window it speaks for. Mirrors Rust
+/// `RunSummary`.
+export interface RunSummary {
+  window: [number, number];
+  text: string;
+}
+
+/// The range-lazy cache value behind `media://{id}/description`: which source
+/// ranges have been described, and every segment described so far. Mirrors Rust
+/// `DescriptionCache`.
+///
+/// `covered_ranges` is what distinguishes "this stretch holds nothing worth
+/// describing" from "this stretch was never looked at" — a described range with
+/// no segment in it is a real answer.
+export interface DescriptionCache {
+  covered_ranges: [number, number][];
+  segments: DescSegment[];
+  /// Every run's summary, newest first. Absent from an older backend's answer.
+  summaries?: RunSummary[];
+}
+
+/// Describe one VideoClip layer's window with a video-understanding model. The
+/// engine is chosen by the user's Settings → Video understanding preference then
+/// availability; when nothing is configured the call rejects with the message
+/// that names that panel.
+///
+/// A read: it commits nothing, so it neither enters undo nor dirties the
+/// project. What it writes is its own content-addressed cache, keyed by
+/// `(source, backend, model, fps, focus, language)` — so a second call over a
+/// window the same key already covers returns from disk with no model spawn.
+///
+/// `src_start_us` / `src_end_us` (source time, the domain of the shot rows and
+/// the answer's segments) default to the source the layer plays, in Rust. The
+/// THREE view arguments — sampling, focus, language — are not on this signature
+/// at all: main fills them from the user's Settings → Video understanding
+/// (`main/mcp/server.ts`), which is what makes a run land in the view
+/// `media://{id}/description` serves. A renderer that sent its own would be a
+/// second statement of a setting it does not own.
+///
+/// `requestId` and a cancelled job behave as on `transcribeClip`.
+export async function describeClip(args: {
+  purpose?: import("../../shared/description").DescriptionPurpose;
+  layerId: string;
+  srcStartUs?: number;
+  srcEndUs?: number;
+  requestId?: string;
+}): Promise<SceneDescription> {
+  return throwIfCancelled(await invoke<SceneDescription | ComputeCancelledPayload>("describe_clip", {
+    layer_id: args.layerId,
+    purpose: args.purpose ?? "clip",
+    ...(args.srcStartUs === undefined ? {} : { src_start_us: args.srcStartUs }),
+    ...(args.srcEndUs === undefined ? {} : { src_end_us: args.srcEndUs }),
+    ...(args.requestId ? { [COMPUTE_REQUEST_ID_ARG]: args.requestId } : {}),
+  }));
+}
+
+/// The description cached for one source under the view the app's settings name
+/// — the resolver's engine at the configured sampling, focus and language — or
+/// `null` when there is nothing there to read.
+///
+/// `null` covers both nothing-described-yet and no-engine-configured, because a
+/// row that has no description has one empty state either way. Which of the two
+/// it is matters only where something can be done about it, and that is the
+/// describe command, which acts on the engine's own sentence by opening
+/// Settings → Video understanding.
+///
+/// Never computes: this is the read path a Panel may issue on every selection
+/// change. `describeClip` is the only call that spends a model.
+export async function getMediaDescription(
+  mediaId: string,
+  purpose: import("../../shared/description").DescriptionPurpose = "clip",
+): Promise<DescriptionCache | null> {
+  return invoke<DescriptionCache | null>("get_media_description", {
+    media_id: mediaId,
+    purpose,
+  });
+}
+
+// ============================================================
+// Motifs
+// ============================================================
+
+/// Discriminated union mirroring `PropSpec` in `src/shared/motifs/catalog.ts`
+/// (which `render/motifs/catalog.ts` re-exports). The picker and the property
+/// panel both render through the one shared form generator (`MotifPropField`,
+/// renderer/properties/MotifPropFields.tsx). A new prop type must be added in
+/// three places: here, in the shared catalog, AND in that generator.
+/// `enum` renders as a dropdown; `string.multiline` renders as a textarea.
+export type PropSpec =
+  | { type: "string"; default: string; max_length?: number; multiline?: boolean }
+  | { type: "color"; default: string }
+  | { type: "number"; default: number; min?: number; max?: number }
+  | { type: "enum"; default: string; options: string[] }
+  | { type: "media"; default: "" };
+
+/// A Motif that can render: its manifest as `list_motifs` reports it, keyed by
+/// the id its scope serves it under.
+export interface MotifSummary {
+  id: string;
+  name: string;
+  version: number;
+  /// `[width, height]` in pixels — the document size the capture engine uses.
+  size: [number, number];
+  default_duration_s: number;
+  /// Optional hard cap on a placed layer's total length, in seconds. When
+  /// present, the timeline forbids trimming/adding the motif longer than
+  /// this; when absent the motif is freely extendable (holdable overlays).
+  /// Static fallback — overridden live by `max_duration_prop` when that names
+  /// a prop carrying a valid value.
+  max_duration_s?: number;
+  /// Optional name of a NUMBER prop whose current value (in seconds) is the
+  /// layer's length cap. When set, editing that prop changes the cap live;
+  /// falls back to `max_duration_s` when the prop is missing/invalid.
+  max_duration_prop?: string;
+  /// Fixed bake duration of the animation sequence in seconds (does not
+  /// include the holdable tail).
+  content_duration_s?: number;
+  /// The graphic role a placed layer defaults to; absent = untagged.
+  graphic_role?: string | null;
+  /// The package revision; part of every capture and cover key.
+  content_hash?: string;
+  /// True when a `params.html` sits next to this Motif's `index.html`, i.e. the
+  /// Motif owns its parameter UI and the property panel embeds that page
+  /// instead of generating the fallback form. Presence of the file is the whole
+  /// switch — additive catalog metadata, NOT a `props_schema` / `PropSpec`
+  /// change (the data plane above is frozen).
+  has_params_ui?: boolean;
+  /// Keyed by prop name, in the manifest's authored key order (the TS payload
+  /// spreads the manifest as-is) — the fallback form renders rows in this
+  /// order. Only the props VALUES object is canonicalized alphabetically.
+  props_schema: Record<string, PropSpec>;
+}
+
+/// Mirrors `ProjectMotifState` in `src/main/motif/catalogRows.ts`: a project
+/// Motif against the library Motif of its lineage, derived on every read.
+export type ProjectMotifState = "in_sync" | "modified" | "update_available" | "project_only";
+
+/// An update adds a version to library Motif `id`, seen at `version`; a first
+/// publication takes `new_id`.
+export type MotifPublicationTarget = { id: string; version: number } | { new_id: string };
+
+/// An agent's proposed publication as the project row it came from carries
+/// it. Mirrors `PublicationView` in `src/main/motif/publications.ts`.
+export interface MotifPublication {
+  state: "awaiting_approval" | "approved" | "rejected";
+  proposal_id: string;
+  revision: string;
+  target: MotifPublicationTarget;
+  note?: string;
+  library_id?: string;
+  version?: number;
+}
+
+/// One Motif of the open project (`Motifs/<id>/`). `motif` is its manifest
+/// when its folder makes a package, `ok` or `untrusted`, and null when the
+/// folder is missing or makes none; `diagnostic` says why it does not render.
+/// An untrusted row keeps its `revision`, and its manifest names and sizes it
+/// in the panel only: what runs it asks `rowRenders` (`motifs/motifRows.ts`).
+export interface ProjectMotifRow {
+  group: "project";
+  id: string;
+  uid: string;
+  status: MotifStatus;
+  state: ProjectMotifState;
+  /// The library package it was copied from; null for one made in the project.
+  from: { uid: string; version: number; revision: string } | null;
+  path: string;
+  revision: string | null;
+  diagnostic?: string;
+  publication?: MotifPublication;
+  motif: MotifSummary | null;
+}
+
+/// One library Motif: a built-in or one the user saved. `in_project` is the
+/// id the open project holds its lineage under, null when it holds none.
+export interface LibraryMotifRow {
+  group: "library";
+  id: string;
+  status: "builtin" | "installed";
+  revision: string;
+  in_project: string | null;
+  motif: MotifSummary;
+}
+
+export interface MotifCatalog {
+  project: ProjectMotifRow[];
+  library: LibraryMotifRow[];
+}
+
+type WireMotifRow = Record<string, unknown> & { group: "project" | "library"; id: string };
+
+/// The wire row's manifest fields, when it carries a manifest.
+function wireMotif(row: WireMotifRow): MotifSummary | null {
+  if (!Array.isArray(row.size)) return null;
+  const { group: _g, uid: _u, status: _s, state: _st, from: _f, path: _p, revision: _r, diagnostic: _d,
+    publication: _pub, in_project: _ip, html: _h, ...manifest } = row;
+  return { ...(manifest as unknown as MotifSummary), id: row.id };
+}
+
+/// `list_motifs`, split into its two groups. `group` asks for one of them.
+export async function listMotifCatalog(group?: "project" | "library"): Promise<MotifCatalog> {
+  const rows = await invoke<WireMotifRow[]>("list_motifs", group ? { group } : {});
+  const out: MotifCatalog = { project: [], library: [] };
+  for (const row of rows) {
+    if (row.group === "project") {
+      out.project.push({
+        group: "project", id: row.id, uid: row.uid as string, status: row.status as ProjectMotifRow["status"],
+        state: row.state as ProjectMotifState, from: (row.from ?? null) as ProjectMotifRow["from"],
+        path: row.path as string, revision: (row.revision ?? null) as string | null,
+        ...(typeof row.diagnostic === "string" ? { diagnostic: row.diagnostic } : {}),
+        ...(row.publication ? { publication: row.publication as MotifPublication } : {}),
+        motif: row.status === "ok" || row.status === "untrusted" ? wireMotif(row) : null,
+      });
+    } else {
+      const motif = wireMotif(row);
+      if (!motif) continue;
+      out.library.push({
+        group: "library", id: row.id, status: row.status as LibraryMotifRow["status"],
+        revision: row.revision as string, in_project: (row.in_project ?? null) as string | null, motif,
+      });
+    }
+  }
+  return out;
+}
+
+/// What the trust card shows of an untrusted project Motif's files, read as
+/// text in main and never run. Mirrors `MotifTrustSummary` in
+/// `src/main/motif/trustSummary.ts`.
+export interface MotifTrustSummary {
+  files: number;
+  bytes: number;
+  binary: number;
+  scripts: { path: string; bytes: number }[];
+  workers: string[];
+  wasm: string[];
+  minified: { path: string; longest_line: number }[];
+  unscanned: string[];
+}
+
+export interface MotifTrustCard {
+  motif_id: string;
+  /// The revision the summary was read from: the one Trust names.
+  revision: string;
+  trusted: boolean;
+  summary: MotifTrustSummary;
+}
+
+/// The trust card's summary of project Motif `id` as its folder holds it now.
+export async function motifTrustSummary(id: string): Promise<MotifTrustCard> {
+  return invoke<MotifTrustCard>("motif_trust_summary", { motif_id: id });
+}
+
+/// The user's Trust of project Motif `id` at `revision`, the one the card
+/// showed; refused when the folder holds another by now. Renderer-only: no
+/// MCP tool trusts (ADR 0174).
+export async function trustMotif(id: string, revision: string): Promise<void> {
+  await invoke("trust_motif", { motif_id: id, revision });
+}
+
+/** Default-props catalog cover, persisted by main across app openings. `host`
+ *  names the Motif's scope: its bare id for the project's, `libraryHost(id)`
+ *  for the library's. */
+export async function getMotifCover(host: string, contentHash: string): Promise<Blob> {
+  const bytes = await invoke<Uint8Array>("motif_get_cover", { id: host, contentHash });
+  return new Blob([bytes as BlobPart], { type: "image/png" });
+}
+
+/// Add a motif layer (the UI twin of `add_layers` kind `motif`):
+/// - `motifId` names a project Motif, or with `fromLibrary` a library one,
+///   copied into the project in the same undo step.
+/// - `t_end_us` defaults to `t_start_us + default_duration_s * 1e6`.
+/// - `track_id` defaults to first existing Video track or auto-creates
+///   one labeled "Motifs".
+/// - `props` is validated against the motif's `props_schema`; unknown
+///   keys reject, missing keys fall back to defaults.
+export async function addMotif(args: {
+  motifId: string;
+  fromLibrary?: boolean;
+  tStartUs: number;
+  tEndUs?: number;
+  // Explicit `| undefined` so callers can pass an "auto track" undefined
+  // through under `exactOptionalPropertyTypes`.
+  trackId?: string | undefined;
+  props?: Record<string, unknown>;
+}): Promise<string> {
+  return invoke<string>("add_motif", {
+    motifId: args.motifId,
+    ...(args.fromLibrary ? { fromLibrary: true } : {}),
+    tStartUs: args.tStartUs,
+    tEndUs: args.tEndUs,
+    trackId: args.trackId,
+    props: args.props,
+  });
+}
+
+// ============================================================
+// Motif lifecycle IPC wrappers
+// ============================================================
+
+/// The event the backend emits after a Motif changes in the project or the
+/// library (emit sites: `src/main/state/ts-actor-host.ts`,
+/// `src/main/motif/watcher.ts`, `src/main/index.ts`).
+export const MOTIFS_CHANGED_EVENT = "motifs:changed";
+
+export interface MotifSource {
+  revision: string;
+  manifest: MotifManifest;
+  html: string;
+}
+
+/// Project Motif `id`'s page, with the revision an edit must name.
+export async function getMotifSource(id: string): Promise<MotifSource> {
+  const file = await invoke<{ manifest: MotifManifest; revision: string; text: string }>("read_motif", { motif_id: id, path: "index.html" });
+  return { manifest: file.manifest, revision: file.revision, html: file.text };
+}
+
+/// Makes a new project Motif from authored `{ manifest, html }`, as one undo
+/// step. Returns its id.
+export async function createProjectMotif(manifest: MotifManifest, html: string): Promise<string> {
+  const made = await invoke<{ motif_id: string }>("create_motif", { source: {
+    kind: "empty", name: manifest.name,
+    files: [{ path: "manifest.json", text: JSON.stringify(manifest) }, { path: "index.html", text: html }],
+  } });
+  return made.motif_id;
+}
+
+/// Imports a Motif ZIP into the project. Returns the id it took there.
+export async function importMotif(path: string): Promise<string> {
+  return (await invoke<{ motif_id: string }>("create_motif", { source: { kind: "zip", path } })).motif_id;
+}
+
+/// Rewrites project Motif `id` from its full edited page (in-app source
+/// panel): every clip of it changes, with no approval. Refused when the
+/// folder no longer holds `expectedRevision`. Returns the new revision.
+export async function updateMotifSource(id: string, source: string, expectedRevision: string): Promise<string> {
+  const result = await invoke<{ revision: string }>("update_motif_files", {
+    motif_id: id, expected_revision: expectedRevision,
+    files: [{ path: "index.html", text: source }, { path: "manifest.json", text: JSON.stringify(parseManifestIsland(source)) }],
+  });
+  return result.revision;
+}
+
+/// Replaces project Motif `id`'s copy with the library's current version of
+/// its lineage, rebinding its clips; one undo step takes it back.
+export async function updateProjectMotif(id: string): Promise<{ unfinished: string | null }> {
+  const answer = await invoke<{ unfinished?: string } | undefined>("update_project_motif", { motif_id: id });
+  return { unfinished: answer?.unfinished ?? null };
+}
+
+/// Removes project Motif `id` from the project's table; refused (MotifInUse)
+/// while a clip uses it.
+export async function removeProjectMotif(id: string): Promise<void> {
+  await invoke("delete_motif", { motif_id: id });
+}
+
+/// Files and props schema of a package against the library version it
+/// replaces. Mirrors `ProposalDiff` in `src/main/motif/publications.ts`.
+export interface MotifDiff {
+  files: { added: string[]; removed: string[]; changed: string[] };
+  props: { added: string[]; removed: string[]; changed: string[] };
+}
+
+/// What "Save to library" of project Motif `id` would write: the library
+/// Motif it replaces and the change against it, or `replaces: null` when it
+/// makes a new one (a built-in is never replaced). Mirrors `PublishPlan` in
+/// `src/main/motif/publications.ts`.
+export interface MotifPublishPlan {
+  /// The project Motif's revision the plan was made from; the save sends it,
+  /// so content edited since is refused rather than saved unseen.
+  revision: string;
+  replaces: { id: string; version: number } | null;
+  diff: MotifDiff | null;
+}
+
+export async function planSaveToLibrary(id: string): Promise<MotifPublishPlan> {
+  return invoke<MotifPublishPlan>("publish_motif", { motif_id: id, dry_run: true });
+}
+
+/// The user's own "Save to library" of project Motif `id` at `revision`,
+/// published directly (an agent's `install_motif` only proposes). `replace`
+/// is the library Motif and the version the user confirmed replacing; absent,
+/// a new library Motif is made. Returns the library id.
+export async function saveToLibrary(id: string, revision: string, replace?: { id: string; version: number }): Promise<string> {
+  const result = await invoke<{ motif_id: string }>("publish_motif", {
+    motif_id: id,
+    expected_revision: revision,
+    ...(replace ? { target_id: replace.id, expected_version: replace.version } : { as_new: true }),
+  });
+  return result.motif_id;
+}
+
+/// Moves library Motif `id`'s folders to the system trash; rejects, deleting
+/// nothing, when the trash refuses. No project changes: projects hold copies.
+export async function deleteLibraryMotif(id: string): Promise<void> {
+  await invoke("delete_library_motif", { motif_id: id });
+}
+
+/// One saved version of an installed Motif (ADR 0172). Mirrors
+/// `MotifVersion` in `src/main/motif/store.ts`.
+export interface MotifVersion {
+  version: number;
+  revision: string;
+  saved_at: string;
+}
+
+/// The installed Motif's saved versions, newest (current) first; none for a
+/// built-in.
+export async function listMotifVersions(id: string): Promise<MotifVersion[]> {
+  return invoke<MotifVersion[]>("list_motif_versions", { motif_id: id });
+}
+
+/// Saves version `version` again as the library Motif's newest version.
+export async function restoreMotifVersion(id: string, version: number): Promise<void> {
+  await invoke("restore_motif_version", { motif_id: id, version });
+}
+
+/// Exports the complete package as one ZIP. `group: "library"` names a
+/// library Motif; absent, the project's.
+export async function exportMotif(id: string, path: string, group?: "library"): Promise<void> {
+  await invoke("export_motif", { motif_id: id, path, ...(group ? { group } : {}) });
+}
+
+/// An agent's proposed publication (`install_motif`), waiting for the user's
+/// approval on the Motif panel (ADR 0046). Mirrors `ProposalCard` in
+/// `src/main/motif/publications.ts`.
+export interface MotifProposal {
+  /// The project Motif it was proposed from.
+  source: { project: string; motif_id: string };
+  proposal_id: string;
+  state: "awaiting_approval";
+  revision: string;
+  target: MotifPublicationTarget;
+  proposed_at: string;
+  /// The id the frozen package previews under.
+  preview_id: string;
+  manifest: MotifManifest;
+  /// Against the current published version; null for a first publication.
+  diff: MotifDiff | null;
+}
+
+export async function listMotifProposals(): Promise<MotifProposal[]> {
+  return invoke<MotifProposal[]>("list_motif_proposals");
+}
+
+/// Approve: the proposed revision becomes a library version, of its target or,
+/// `asNew`, of a new library Motif; no project changes. Returns the library id.
+export async function approveMotifProposal(proposalId: string, asNew = false): Promise<string> {
+  return (await invoke<{ motif_id: string }>("approve_motif_proposal", { proposal_id: proposalId, ...(asNew ? { as_new: true } : {}) })).motif_id;
+}
+
+/// Reject: the note reaches the agent through list_motifs.
+export async function rejectMotifProposal(proposalId: string, note?: string): Promise<void> {
+  await invoke("reject_motif_proposal", { proposal_id: proposalId, ...(note ? { note } : {}) });
+}
+
+// ============================================================
+// Status / log surface (see `docs/status-log.md`)
+// ============================================================
+
+export type LogLevel = "trace" | "debug" | "info" | "warn" | "error";
+
+export type LogCategory =
+  | { kind: "Shortcut" }
+  | { kind: "Mcp" }
+  | { kind: "Job" }
+  | { kind: "Export" }
+  | { kind: "Import" }
+  | { kind: "Project" }
+  | { kind: "System" }
+  | { kind: "Agent" }
+  | { kind: "Other"; name: string };
+
+export type LogSource =
+  | { kind: "User" }
+  | { kind: "Agent"; client: string }
+  | { kind: "System" };
+
+export type OpState =
+  | { state: "Started"; progress?: null }
+  | { state: "Progress"; progress: number }
+  | { state: "Ok"; progress?: null }
+  | { state: "Err"; progress?: null };
+
+export interface LogEntry {
+  id: string;
+  ts: string;
+  level: LogLevel;
+  category: LogCategory;
+  source: LogSource;
+  message: string;
+  i18n_key?: string | null;
+  i18n_args?: unknown;
+  op_id?: string | null;
+  op_state?: OpState | null;
+  details?: unknown;
+}
+
+export type LogEntryInput = Omit<LogEntry, "id" | "ts">;
+
+export const LOG_EVENTS = {
+  entry: "log:entry",
+} as const;
+
+export async function logList(): Promise<LogEntry[]> {
+  return invoke<LogEntry[]>("log_list");
+}
+
+export async function logClear(): Promise<void> {
+  return invoke<void>("log_clear");
+}
+
+export async function logEmit(input: LogEntryInput): Promise<void> {
+  return invoke<void>("log_emit", { input });
+}
+
+export async function logDirPath(): Promise<string | null> {
+  return invoke<string | null>("log_dir_path");
+}
+
+// ============================================================
+// Video-sink IPC — 10-bit export pipeline (native encode path)
+// ============================================================
+
+/// Arguments for the native-encode video sink. Mirrors `VideoSinkStartArgs`
+/// in `export/videosink.rs` (serde camelCase).
+export interface VideoSinkStartArgs {
+  finalizationToken: string;
+  width: number;
+  height: number;
+  fpsNum: number;
+  fpsDen: number;
+  codec: string;
+  /// Target (average) bitrate in bits per second → ffmpeg `-b:v`.
+  bitrate: number;
+  cbr: boolean;
+  gop: number;
+  software: boolean;
+  outputPath: string;
+  /// rawvideo format the worker packs: "yuv420p" | "yuv420p10le"
+  /// (E3: "yuv422p" | "yuv422p10le"). Mirrors videosink.rs (serde default
+  /// keeps omission = yuv420p10le, but callers should always set it).
+  pixFmt: string;
+  /// Constant-quality value (rateMode "quality"). Present ⇒ CRF/quality args
+  /// replace -b:v. Only sent with software=true.
+  crf?: number;
+  /// Peak ceiling in bits per second → `-maxrate`. VBR only; omitted ⇒
+  /// uncapped ABR. Ignored by the backend under `cbr` (peak = target there).
+  maxBitrate?: number;
+  /// VBV buffer in BITS → `-bufsize`. Omitted ⇒ the encoder registry derives
+  /// it as 2× the ceiling.
+  bufferSize?: number;
+  /// Software-encoder speed preset: "fast" | "medium" | "slow".
+  preset?: string;
+  /// Intermediate-codec profile: prores proxy|lt|422|hq, dnxhr lb|sq|hq.
+  profile?: string;
+}
+
+/// Start a native-encode video sink.
+export function exportVideoSinkStart(args: VideoSinkStartArgs): Promise<void> {
+  return invoke("export_video_sink_start", { args });
+}
+
+/// Finalize the video sink after all frames have been sent. Returns byte
+/// count, frame count, and elapsed ms for diagnostics.
+export function exportVideoSinkFinish(): Promise<{
+  bytes: number;
+  frames: number;
+  elapsedMs: number;
+}> {
+  return invoke("export_video_sink_finish");
+}
+
+/// Abort a running sink (error / cancel paths). Safe to call even if the
+/// sink has already finished — the backend no-ops on a dead sink.
+export function exportVideoSinkCancel(): Promise<void> {
+  return invoke("export_video_sink_cancel");
+}
+
+/// The native sink's frame port (main/exportSinkPort.ts). Open it after
+/// `exportVideoSinkStart`; each export takes its own.
+export function openVideoSinkPort(): Promise<MessagePort> {
+  return new Promise((resolve, reject) => {
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data as { weftcutVideoSinkPort?: unknown } | null;
+      if (event.source !== window || data?.weftcutVideoSinkPort !== true || !event.ports[0]) return;
+      window.removeEventListener("message", onMessage);
+      resolve(event.ports[0]);
+    };
+    window.addEventListener("message", onMessage);
+    window.api.videoSinkPort().catch((error: unknown) => {
+      window.removeEventListener("message", onMessage);
+      reject(error instanceof Error ? error : new Error(String(error)));
+    });
+  });
+}
+
+/// Caption restyle patch. Fields are snake_case to match the actor
+/// `CaptionStylePatch`. `outline_width` 0 removes the outline (the actor stores
+/// `null`, the same absent style the Text tool writes).
+export interface CaptionStylePatch {
+  font_family?: string;
+  font_size_px?: number;
+  color?: Rgba;
+  outline_width?: number;
+}
+
+/// Project-wide caption restyle: patch every caption-role Track's Text layers
+/// atomically as one undo entry — the Caption Panel's corpus-level styling
+/// command.
+export async function restyleCaptions(patch: CaptionStylePatch): Promise<void> {
+  return invoke<void>("restyle_captions", { patch });
+}
+
+// ============================================================
+// Data location (user-managed data root)
+// ============================================================
+//
+// Main-process actions (not backend/Rust commands) — thin wrappers over
+// window.api.dataRoot.* (see src/preload/index.ts). Types are single-sourced in
+// src/shared/data-root.ts and re-exported here for call sites. The copy
+// migration's progress arrives on the `dataRoot:progress` event
+// (DATA_ROOT_EVENTS.progress) — subscribe via the bridge event surface.
+
+import type {
+  DataRootCurrent,
+  DataRootMigrateResult,
+  DataRootPendingCleanup,
+} from "../../shared/data-root";
+export type {
+  DataRootCurrent,
+  DataRootMigrateResult,
+  DataRootPendingCleanup,
+  DataRootProgress,
+} from "../../shared/data-root";
+export { DATA_ROOT_EVENTS } from "../../shared/data-root";
+
+/// The effective data root this process runs on, plus whether it is a fallback.
+export async function dataRootCurrent(): Promise<DataRootCurrent> {
+  return window.api.dataRoot.current();
+}
+
+/// Native folder picker → plan → (copy+verify OR adopt), emitting progress on
+/// `dataRoot:progress`. On success writes `data_root` + a pending-delete marker
+/// and returns ready-to-relaunch; on failure rolls back and returns the error.
+/// Does NOT relaunch — call `dataRootRelaunch()` after showing success.
+export async function dataRootPickAndMigrate(): Promise<DataRootMigrateResult> {
+  return window.api.dataRoot.pickAndMigrate();
+}
+
+/// Relaunch the app onto the newly-written data root (app.relaunch + exit).
+export async function dataRootRelaunch(): Promise<void> {
+  return window.api.dataRoot.relaunch();
+}
+
+/// Open the effective data root in the OS file manager.
+export async function dataRootOpenFolder(): Promise<void> {
+  return window.api.dataRoot.openFolder();
+}
+
+/// After a successful relaunch onto a new root, the old copy awaiting deletion
+/// (null when there is nothing pending, or the reboot didn't land on the new root).
+export async function dataRootPendingCleanup(): Promise<DataRootPendingCleanup | null> {
+  return window.api.dataRoot.pendingCleanup();
+}
+
+/// Delete the old copy recorded by the pending-delete marker, then clear it.
+/// Only ever called on explicit user confirm — never auto-invoked.
+export async function dataRootDeleteOld(): Promise<void> {
+  return window.api.dataRoot.deleteOld();
+}
+
+/// Dismiss the delete-old prompt without deleting: keep the old copy on disk and
+/// clear the marker so the prompt is one-time (no re-prompt on next launch).
+export async function dataRootDismissCleanup(): Promise<void> {
+  return window.api.dataRoot.dismissCleanup();
+}
+
+export function retimeLayers(layerIds: string[], target: import('../../shared/timeMapping').RetimeTarget): Promise<unknown> {
+  return invoke('retime_layers', { layerIds, target });
+}
+export function setPreservePitch(layerIds: string[], preservePitch: boolean): Promise<void> {
+  return invoke('set_preserve_pitch', { layerIds, preservePitch });
+}
+
+export function prepareRetimedAudio(compositionId: string, layerId?: string): Promise<{ waiting: boolean; stems: Array<{ role: AudioRole; path: string; duration_us: number }> }> {
+  return invoke('prepare_retimed_audio', { compositionId, ...(layerId ? { layerId } : {}) });
+}

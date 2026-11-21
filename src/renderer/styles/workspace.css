@@ -1,0 +1,716 @@
+.dock-workspace {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  /* Only panel viewports scroll. Focus/scrollIntoView must not pan the whole
+     workspace to reveal content clipped inside one of those panels. */
+  overflow: clip;
+  /* The recessed well behind the Dock: the theme's 6px inter-group gaps
+     (WEFT_DOCK_THEME) show this tone, so region boundaries read as depth
+     instead of drawn borders. Pure black, one step below --surface-sunken,
+     for maximum contrast against every Panel surface. */
+  background: #000;
+}
+
+.weft-dockview {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  /* One uniform --card island per group: strip, tabs, and Panel surface all
+     share it, so the black inter-group gaps do all the region separation.
+     Selection reads from the bottom accent line, the text-align-start marker, and
+     label weight — not from surface contrast. */
+  --weft-dock-strip: var(--card);
+  --weft-dock-tab-hidden: var(--card);
+  --weft-dock-panel-surface: var(--card);
+  --weft-dock-tab-visible: var(--card);
+  --weft-dock-border: var(--border);
+  --dv-tabs-and-actions-container-height: calc(28 * var(--ui-px));
+  --dv-tabs-and-actions-container-background-color: var(--weft-dock-strip);
+  /* Connected tab: the visible Panel's tab matches the Panel surface so it
+     reads as one continuous region with the content below. */
+  --dv-activegroup-visiblepanel-tab-background-color: var(
+    --weft-dock-tab-visible
+  );
+  --dv-activegroup-visiblepanel-tab-color: var(--foreground);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--weft-dock-tab-hidden);
+  --dv-activegroup-hiddenpanel-tab-color: var(--muted-foreground);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(
+    --weft-dock-tab-visible
+  );
+  --dv-inactivegroup-visiblepanel-tab-color: var(--foreground);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(
+    --weft-dock-tab-hidden
+  );
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--muted-foreground);
+  --dv-group-view-background-color: var(--weft-dock-panel-surface);
+  --dv-paneview-active-outline-color: var(--ring);
+  /* Tab-strip divider only — region separators are gone: the theme gap
+     separates groups with the sunken background instead. */
+  --dv-tab-divider-color: var(--weft-dock-border);
+  /* Dockview's default drop feedback is borderless with a faint gray fill —
+     nearly invisible on this palette. */
+  --dv-drag-over-background-color: color-mix(in srgb, var(--ring) 20%, transparent);
+  --dv-drag-over-border-color: var(--ring);
+  --dv-drag-over-border: 2px solid var(--ring);
+  --dv-context-menu-background-color: var(--card);
+  --dv-context-menu-color: var(--foreground);
+  --dv-icon-hover-background-color: var(--muted);
+  --dv-border-radius: var(--radius-sm);
+}
+
+/* Keep the grid backdrop transparent: Dockview paints
+ * `--dv-group-view-background-color` (now --card) across the whole
+ * `.dv-dockview` element, inter-group gaps included. Transparent lets the
+ * pure-black well show through the theme gap; each group island paints its
+ * own --card. Note `.dv-dockview` is the grid element — a CHILD of the
+ * `.weft-dockview` wrapper — so the rule must target it, not our class.
+ * Two-class selector so source order vs dockview.css can't flip it. */
+.dock-workspace .dv-dockview {
+  background-color: transparent;
+}
+
+/* Region separators off via Dockview's own theme variable — the same switch
+ * its built-in *Spaced themes use (`--dv-separator-border: transparent`).
+ * `hideBorders` doesn't reach the v7 shell splitviews (they're built without
+ * styles, which re-adds the `dv-separator-border` class), so the variable is
+ * the reliable surface. It must be set on `.dv-shell`: the theme class
+ * defines the color there, and the nearest ancestor declaration wins
+ * inheritance — setting it on `.dock-workspace` alone would lose to Abyss.
+ * The ::before still generates but paints nothing. */
+.dock-workspace .dv-shell {
+  --dv-separator-border: transparent;
+}
+
+.weft-dockview .dv-groupview {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* No hairline under the strip: region boundaries come from the inter-group
+   gaps alone. Selection reads from a bottom accent line, the text-align-start
+   marker, and label weight. Groups carry no focus-group marker. */
+
+/* Selection layer 1 — bottom accent line on the selected tab, inset so it
+   sits flush on the seam with the Panel below. */
+.weft-dockview .dv-groupview .dv-tabs-container > .dv-tab.dv-active-tab {
+  box-shadow: inset 0 -2px 0 var(--ring);
+}
+
+/* The selector chain must out-specify Dockview's group-scoped base rules
+   (six classes). */
+.weft-dockview .dv-groupview .dv-tabs-container > .dv-tab {
+  transition:
+    background-color var(--transition-base),
+    color var(--transition-base);
+}
+
+.weft-dockview
+  .dv-groupview
+  .dv-tabs-and-actions-container
+  .dv-tabs-container
+  > .dv-tab.dv-inactive-tab:hover {
+  background-color: color-mix(
+    in srgb,
+    var(--foreground) 7%,
+    var(--weft-dock-tab-hidden)
+  );
+  color: var(--foreground);
+}
+
+/* Kill Dockview's 1px focus outline (`.dv-tab:focus::after`): the silhouette
+   already marks selection, and the outline fires on plain mouse clicks. */
+.weft-dockview .dv-tabs-container > .dv-tab:focus::after,
+.weft-dockview .dv-tabs-container > .dv-tab:focus-within::after {
+  content: none;
+}
+
+.weft-dock-panel-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.weft-dock-panel-lock {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--card) 75%, transparent);
+  color: var(--muted-foreground);
+}
+
+/* Several panels lock at once during an export; the dimming says so, and the
+   lock appears only on the panel the pointer is over. */
+.weft-dock-panel-lock > .app-icon {
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.weft-dock-panel-lock:hover > .app-icon {
+  opacity: 1;
+}
+
+.weft-dock-panel {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: clip;
+  /* Every Panel sits on the unified --card surface. */
+  background: var(--weft-dock-panel-surface);
+}
+
+/* The Panel root is a focus REGION (ADR 0041) — a programmatic focus target,
+   not a control. It gets focused on almost every click in the app, so a ring
+   here would flash constantly and read as "this whole panel is selected".
+   Which panel owns the keyboard is already shown by Dockview's active-group
+   tab treatment. Keyboard users are unaffected: `tabindex="-1"` keeps the
+   region out of the Tab order entirely, so this never hides a Tab stop. */
+.weft-dock-panel:focus,
+.weft-dock-panel:focus-visible {
+  outline: none;
+}
+
+.weft-dock-panel > .preview,
+.weft-dock-panel > .timeline,
+.weft-dock-panel > .media-pool,
+.weft-dock-panel > .agent-panel,
+.weft-dock-panel > .history-panel {
+  width: 100%;
+  height: 100%;
+}
+
+.weft-dock-panel-scroll {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ── Quick Actions strip ──────────────────────────────────────────────────────
+ * Alone in its Group the strip shows no tab, just a six-dot drag grip sitting
+ * inline with its buttons. That grip IS Dockview's tab, left in normal flow and
+ * merely shrunk to grip size, so native drag / ghost image / drop targets /
+ * keyboard panel-moves all keep working untouched.
+ *
+ * The grip lands inline because the Panel flips Dockview's own `headerPosition`
+ * to follow the strip's axis: a row of buttons gets a `left` header (narrow
+ * grip column beside them), a column gets the default `top` header (short grip
+ * row above them).
+ *
+ * LANDMINE — do NOT try to overlay the header on top of the Panel content
+ * instead. `renderer: "always"` paints Panel content into
+ * `.dv-overlay-render-container`, a layer ABOVE the whole grid, so no z-index on
+ * a group header can rise above it: the content swallows the mousedown and the
+ * grip silently stops dragging. In-flow is the only arrangement that works.
+ *
+ * And do NOT "simplify" this to `header.hidden = true` plus a self-rolled drag:
+ * that needs dockview-core's UNEXPORTED `LocalSelectionTransfer` singleton,
+ * because the drop side reads that in-memory instance (`tab.js` →
+ * `getPanelData()`) rather than the `dataTransfer` payload.
+ *
+ * Scoped through `:has()` on the grip class our own tab renderer emits, so every
+ * other Group keeps its normal 28px tab strip. */
+.weft-dockview .dv-groupview:has(.weft-dock-tab--grip) {
+  --weft-qa-grip: calc(18 * var(--ui-px));
+}
+
+/* Default (`top`) header: a short grip row above a column of buttons. */
+.weft-dockview
+  .dv-groupview:has(.weft-dock-tab--grip)
+  > .dv-tabs-and-actions-container {
+  height: var(--weft-qa-grip);
+  min-height: 0;
+  background-color: transparent;
+  border: none;
+  overflow: hidden;
+}
+
+/* `left` header: a narrow grip column beside a row of buttons. */
+.weft-dockview
+  .dv-groupview.dv-groupview-header-left:has(.weft-dock-tab--grip)
+  > .dv-tabs-and-actions-container {
+  width: var(--weft-qa-grip);
+  height: auto;
+}
+
+/* Stretch Dockview's scroller + tabs container so the tab can claim the whole
+   slot: a 12px grip (the icon's intrinsic size) is a miserable drag target. */
+.weft-dockview
+  .dv-groupview:has(.weft-dock-tab--grip)
+  > .dv-tabs-and-actions-container
+  .dv-scrollable,
+.weft-dockview
+  .dv-groupview:has(.weft-dock-tab--grip)
+  > .dv-tabs-and-actions-container
+  .dv-tabs-container {
+  width: 100%;
+  height: 100%;
+}
+
+/* The grip fills its slot and drops every tab affordance: no selection accent
+   (one Panel has nothing to select), no hover fill, no min-width. `flex` — not
+   just `width` — because the tab is a flex item that would otherwise shrink
+   back to its icon's intrinsic size. */
+.weft-dockview
+  .dv-groupview:has(.weft-dock-tab--grip)
+  .dv-tabs-container
+  > .dv-tab {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: 0;
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.weft-dock-tab--grip {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground);
+  cursor: grab;
+  gap: 0;
+  /* Dockview rotates a `left`/`right` header's tabs container with
+     `writing-mode: vertical-rl`, which would tip the grip glyph on its side.
+     The icon already has an orientation-specific variant. */
+  writing-mode: horizontal-tb;
+}
+
+.weft-dock-tab--grip:hover {
+  color: var(--foreground);
+}
+
+.weft-dock-tab--grip:active {
+  cursor: grabbing;
+}
+
+/* The strip body — one single-axis scroller that NEVER wraps: overflow scrolls,
+   and whichever end still hides a button fades to say so. It occupies only the
+   Dockview content region, so the in-flow grip sits beside it rather than under
+   it. */
+.weft-quick-actions {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  gap: calc(2 * var(--ui-px));
+  padding: calc(4 * var(--ui-px));
+  overflow: auto;
+  /* No scrollbar, on a bar whose whole short axis is 44px. A classic (non-
+     overlay) scrollbar is IN FLOW, so `thin` took 10 of those 44 px the moment
+     the strip overflowed, squeezing 28px buttons into a 31px channel — the bar
+     visibly changed thickness with its own content. The end fades below say
+     "there is more" without costing layout, which is why they can carry the
+     whole affordance here. */
+  scrollbar-width: none;
+}
+
+.weft-quick-actions[data-orientation="horizontal"] {
+  flex-direction: row;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.weft-quick-actions[data-orientation="vertical"] {
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* Which ends still hide a button, from the same predicate the dock tab strip
+   reads (docs/features.md#strip-overflow). Driven by state rather than declared
+   once per axis: a fixed trailing fade keeps dimming the last button after the
+   strip has reached its end — announcing content that is not there — and says
+   nothing about what is behind the reader once they have scrolled.
+   No arrows here, unlike the tab strip: these buttons are anonymous icons, so an
+   overlay covering one costs more than it does over a named tab, and every one of
+   them already shows its keyboard shortcut.
+
+   These fades ARE the scroll affordance — the scrollbar is gone (see above) —
+   so they run deep enough to read as one: `--weft-qa-fade` covers most of a
+   28px button, and the `--weft-qa-fade-knee` stop drops the alpha early so the
+   ramp reaches near-nothing well before the edge instead of dimming evenly. A
+   shallow, even 10px nick was ignorable next to a scrollbar; alone it is not
+   enough to say "there is another button past this one". */
+.weft-quick-actions {
+  --weft-qa-fade: calc(22 * var(--ui-px));
+  --weft-qa-fade-knee: calc(8 * var(--ui-px));
+}
+
+.weft-quick-actions[data-orientation="horizontal"][data-fade="end"] {
+  mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - var(--weft-qa-fade)),
+    rgb(0 0 0 / 30%) calc(100% - var(--weft-qa-fade-knee)),
+    transparent 100%
+  );
+}
+
+.weft-quick-actions[data-orientation="horizontal"][data-fade="start"] {
+  mask-image: linear-gradient(
+    to left,
+    #000 calc(100% - var(--weft-qa-fade)),
+    rgb(0 0 0 / 30%) calc(100% - var(--weft-qa-fade-knee)),
+    transparent 100%
+  );
+}
+
+.weft-quick-actions[data-orientation="horizontal"][data-fade="both"] {
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    rgb(0 0 0 / 30%) var(--weft-qa-fade-knee),
+    #000 var(--weft-qa-fade),
+    #000 calc(100% - var(--weft-qa-fade)),
+    rgb(0 0 0 / 30%) calc(100% - var(--weft-qa-fade-knee)),
+    transparent 100%
+  );
+}
+
+.weft-quick-actions[data-orientation="vertical"][data-fade="end"] {
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--weft-qa-fade)),
+    rgb(0 0 0 / 30%) calc(100% - var(--weft-qa-fade-knee)),
+    transparent 100%
+  );
+}
+
+.weft-quick-actions[data-orientation="vertical"][data-fade="start"] {
+  mask-image: linear-gradient(
+    to top,
+    #000 calc(100% - var(--weft-qa-fade)),
+    rgb(0 0 0 / 30%) calc(100% - var(--weft-qa-fade-knee)),
+    transparent 100%
+  );
+}
+
+.weft-quick-actions[data-orientation="vertical"][data-fade="both"] {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    rgb(0 0 0 / 30%) var(--weft-qa-fade-knee),
+    #000 var(--weft-qa-fade),
+    #000 calc(100% - var(--weft-qa-fade)),
+    rgb(0 0 0 / 30%) calc(100% - var(--weft-qa-fade-knee)),
+    transparent 100%
+  );
+}
+
+.weft-quick-actions-section {
+  display: flex;
+  align-items: center;
+  gap: calc(2 * var(--ui-px));
+  /* Sections must not shrink — the strip scrolls instead of squeezing buttons
+     below their hit-target size. */
+  flex: 0 0 auto;
+}
+
+.weft-quick-actions[data-orientation="horizontal"] .weft-quick-actions-section {
+  flex-direction: row;
+}
+
+.weft-quick-actions[data-orientation="vertical"] .weft-quick-actions-section {
+  flex-direction: column;
+}
+
+/* Section divider — the single-row/column form has no room for headings, so
+   the split reads as one hairline between groups. */
+.weft-quick-actions-section + .weft-quick-actions-section {
+  border-color: var(--weft-dock-border);
+}
+
+.weft-quick-actions[data-orientation="horizontal"]
+  .weft-quick-actions-section
+  + .weft-quick-actions-section {
+  border-left-width: 1px;
+  border-left-style: solid;
+  margin-left: calc(4 * var(--ui-px));
+  padding-left: calc(4 * var(--ui-px));
+}
+
+.weft-quick-actions[data-orientation="vertical"]
+  .weft-quick-actions-section
+  + .weft-quick-actions-section {
+  border-top-width: 1px;
+  border-top-style: solid;
+  margin-top: calc(4 * var(--ui-px));
+  padding-top: calc(4 * var(--ui-px));
+}
+
+.weft-quick-action {
+  flex: 0 0 auto;
+  width: calc(28 * var(--ui-px));
+  height: calc(28 * var(--ui-px));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--muted-foreground);
+  background-color: transparent;
+  cursor: pointer;
+  transition:
+    background-color var(--transition-base),
+    color var(--transition-base);
+}
+
+.weft-quick-action:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+  color: var(--foreground);
+}
+
+.weft-quick-action[data-active="true"] {
+  background-color: color-mix(in srgb, var(--ring) 22%, transparent);
+  color: var(--foreground);
+}
+
+.weft-quick-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.weft-quick-action:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
+}
+
+.weft-dock-tab {
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--ui-px));
+  /* The whole tab is the dock drag source. */
+  cursor: grab;
+}
+
+.weft-dock-tab-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-caption);
+}
+
+/* Selection layer 2 — text-align-start marker, rendered into every tab (the React
+   renderer isn't re-run on activation changes) and revealed only on the
+   selected tab. The margins only take effect while visible: the left margin
+   widens the text gap to 12px, and the negative right margin seats the marker
+   6px from the tab's trailing edge. */
+.weft-dock-tab-active-icon {
+  display: none;
+  flex: none;
+  margin-left: calc(6 * var(--ui-px));
+  margin-right: calc(-6 * var(--ui-px));
+  color: var(--ring);
+}
+
+.weft-dockview
+  .dv-groupview
+  .dv-tabs-container
+  > .dv-tab.dv-active-tab
+  .weft-dock-tab-active-icon {
+  display: inline-flex;
+}
+
+/* Dockview's custom tab-strip scrollbar is hover chrome that flashes on
+   every wheel tick. */
+.weft-dockview .dv-tabs-and-actions-container .dv-scrollbar {
+  display: none;
+}
+
+/* Every group keeps its 28px tab header so the drag handle and Panel title
+   stay in one fixed place — with one exception: a group holding only Preview
+   has its strip hidden by the adapter (Dockview `hideHeader`), trading
+   draggability for vertical space. */
+.weft-dockview .dv-tabs-and-actions-container .dv-tab {
+  height: calc(28 * var(--ui-px));
+  /* Symmetric 12px: with the close button gone, the inactive tab's label
+     stays centered. The active tab's trailing text-align-start marker
+     leaves the text in place. */
+  padding: 0 calc(12 * var(--ui-px));
+  /* Top corners only: the bottom edge must stay flat so the selected tab
+     keeps its connected silhouette with the Panel below. */
+  border-radius: var(--radius-control) var(--radius-control) 0 0;
+  /* A tab never truncates its title (docs/features.md#strip-overflow). The
+     floor is the title's own width, so the label's `text-overflow` rule can
+     never fire and no Panel is ever named by a prefix — a tab is the ONLY place
+     a Panel is named, so a title the reader has to guess at costs more than a
+     strip they have to scroll. A group too narrow for its tabs clips them out
+     of the strip instead, and the two-ended overlay is what says so.
+
+     `max-content` rather than a measured px floor because the requirement is
+     the text, not a number: it tracks the label through both shipped locales
+     and any Panel renamed later. It binds only while something could shrink the
+     tab — Dockview ships `.dv-tab { flex-shrink: 0 }`, so today nothing does —
+     and that is the point of stating it here: the guarantee holds whichever way
+     a Dockview upgrade moves that value. */
+  min-width: max-content;
+}
+
+/* Label layer of selection: the active tab's title carries the weight,
+   hidden tabs stay on --muted-foreground. */
+.weft-dockview .dv-tabs-container > .dv-tab.dv-active-tab .weft-dock-tab-label {
+  font-weight: 500;
+}
+
+.weft-dockview .dv-drop-target-selection {
+  border-radius: var(--radius-sm);
+}
+
+/* While the Quick Actions strip is the drag payload (`weft-strip-drag`, set
+   by the adapter), the drop highlight is pinned to the strip's real landing
+   thickness — UI_METRICS.dock.stripThickness, 44px baseline — instead of Dockview's half-of-target
+   band, which promises a region the bar can never fill. `!important` beats
+   the inline geometry renderInPlaceOverlay writes every frame; the selection
+   box is relative-positioned, so `calc` pins the far edges. The thin-line
+   fallback for tiny targets keeps its own 4px inline size. */
+.weft-strip-drag
+  .dv-drop-target-selection:not(.dv-drop-target-selection-line).dv-drop-target-left {
+  width: var(--layout-strip-thickness) !important;
+}
+.weft-strip-drag
+  .dv-drop-target-selection:not(.dv-drop-target-selection-line).dv-drop-target-right {
+  left: calc(100% - var(--layout-strip-thickness)) !important;
+  width: var(--layout-strip-thickness) !important;
+}
+.weft-strip-drag
+  .dv-drop-target-selection:not(.dv-drop-target-selection-line).dv-drop-target-top {
+  height: var(--layout-strip-thickness) !important;
+}
+.weft-strip-drag
+  .dv-drop-target-selection:not(.dv-drop-target-selection-line).dv-drop-target-bottom {
+  top: calc(100% - var(--layout-strip-thickness)) !important;
+  height: var(--layout-strip-thickness) !important;
+}
+
+.weft-dock-empty {
+  min-width: calc(280 * var(--ui-px));
+  display: grid;
+  justify-items: center;
+  gap: calc(12 * var(--ui-px));
+  color: var(--muted-foreground);
+}
+
+.weft-dock-empty p {
+  margin: 0;
+}
+
+.weft-dock-empty-actions {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--ui-px));
+}
+
+.weft-dock-empty-actions > button {
+  height: calc(28 * var(--ui-px));
+  padding: 0 calc(10 * var(--ui-px));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--foreground);
+  background: var(--card);
+  cursor: pointer;
+}
+
+/* ---- Tab-strip edge overlays ---------------------------------------------
+   Overflow is announced at BOTH ends by a floating layer: a gradient saying
+   content continues that way, and an arrow that reveals it
+   (docs/features.md#strip-overflow).
+
+   Floating is load-bearing, not cosmetic. These claim no layout width, which is
+   what lets an end vanish at its stop: an affordance that took width would hand
+   that width back on disappearing, the strip could fall out of overflow, and the
+   affordance would come straight back.
+
+   The mount points are Dockview's two header slots either side of the tab strip,
+   so the arrow lives outside `role="tablist"` and the tablist's roving tabindex
+   is untouched. Both slots ship with no rules of their own; positioned and left
+   at their natural zero width, each becomes an anchor pinned to one edge of the
+   scroller — pre-actions to its leading edge, left-actions to its trailing one.
+   The overlays are absolutely positioned, so neither slot ever gains width. */
+.weft-dockview .dv-pre-actions-container,
+.weft-dockview .dv-left-actions-container {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.weft-tabstrip-edge {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Load-bearing: `.dv-pre-actions-container` precedes `.dv-tabs-container` in
+     the header's DOM, so without this the leading overlay would paint UNDER the
+     tabs it is meant to fade. The scroller is `position: relative` at z-index
+     auto, so 2 clears it. Its own extent is set inline from
+     UI_METRICS.edgeOverflowOverlay — one home for that number, shared with the
+     geometry. */
+  z-index: 2;
+  /* The soft tail must not eat clicks on the tab it is only dimming; the button
+     takes them back. */
+  pointer-events: none;
+}
+
+.weft-tabstrip-edge[data-axis="horizontal"] {
+  top: 0;
+  bottom: 0;
+}
+
+.weft-tabstrip-edge[data-axis="vertical"] {
+  left: 0;
+  right: 0;
+}
+
+.weft-tabstrip-edge[data-axis="horizontal"][data-toward="start"] {
+  left: 0;
+  background: linear-gradient(to right, var(--weft-dock-strip) 70%, transparent);
+}
+
+.weft-tabstrip-edge[data-axis="horizontal"][data-toward="end"] {
+  right: 0;
+  background: linear-gradient(to left, var(--weft-dock-strip) 70%, transparent);
+}
+
+.weft-tabstrip-edge[data-axis="vertical"][data-toward="start"] {
+  top: 0;
+  background: linear-gradient(to bottom, var(--weft-dock-strip) 70%, transparent);
+}
+
+.weft-tabstrip-edge[data-axis="vertical"][data-toward="end"] {
+  bottom: 0;
+  background: linear-gradient(to top, var(--weft-dock-strip) 70%, transparent);
+}
+
+.weft-tabstrip-edge > button {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(20 * var(--ui-px));
+  height: calc(20 * var(--ui-px));
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    color var(--transition-base),
+    background-color var(--transition-base);
+}
+
+.weft-tabstrip-edge > button:hover {
+  color: var(--foreground);
+  background: var(--hover-neutral-strong);
+}

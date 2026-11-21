@@ -1,0 +1,423 @@
+// Motif layer rendered via the CDP capture path → per-frame raster → texture.
+// A Motif animates over its layer duration. A per-instance playback cursor
+// selects frames and coalesces asynchronous frame demand.
+//
+// Preview frames come from `acquireMotifFrame` / `peekMotifFrame`
+// (`motifFrameSource.ts`): L0, a stored frame, or the hidden capture host.
+// Each chosen frame is a lease that pins its L0 bitmap, so eviction cannot
+// close it under the texture; the sprite releases the previous lease after
+// binding the next. A chosen frame reaches the texture only when the sprite
+// presents (`update`): the scene gate moves demand while the picture on
+// screen must stay as it is. Useful late results advance forward playback.
+// The export Worker binds exact pre-baked `injectedFrames` by index instead.
+//
+// Preview reads stored frames at the Playback Resolution divisor (ADR 0154).
+// The sprite draws every preview frame at the Motif's logical (manifest) size
+// whatever the bitmap's size, so geometry, anchors and the gizmo do not move
+// with the divisor.
+
+import { type Container, Rectangle, Sprite, Texture } from "pixi.js";
+
+import { frameIndexInLayer } from "../../frames";
+import { anchorPivot, textureExtent } from "../anchorPivot";
+import type { ResolvedMotifView } from "../resolveView";
+import { getMotif, motifUnavailable, type Motif } from "../motifs/catalog";
+import { MotifPlaybackCursor, type MotifPlaybackSnapshot } from "../motifs/MotifPlaybackCursor";
+import { motifFrameDescriptor } from "../motifs/motifFrameDescriptor";
+import { motifDurationFrames } from "../motifs/motifFrames";
+import type { StageableSprite } from "./StageableSprite";
+import { UnbindingImageSource } from "../unbindOnDestroy";
+import type { InjectedMotifFrames } from "../worker/motifStream";
+import type { MotifReaderDiv } from "../../../shared/motifs/readerProtocol";
+
+// A faint neutral tile shown while a first-ever-cold Motif's frame 0 is still
+// in flight, so the layer reads as "warming" rather than vanishing. Built once
+// from a 2×2 canvas (preview only — the export Worker never hits this path).
+let _placeholder: HTMLCanvasElement | null = null;
+function neutralPlaceholder(): HTMLCanvasElement {
+  if (_placeholder) return _placeholder;
+  const c = document.createElement("canvas");
+  c.width = 2;
+  c.height = 2;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = "rgba(128,128,128,0.18)";
+  ctx.fillRect(0, 0, 2, 2);
+  _placeholder = c;
+  return _placeholder;
+}
+
+/// The error placeholder's bitmap is at most this many pixels on its long
+/// side and stretched over its logical size, so a 4K canvas holds no 4K
+/// bitmap and the strokes keep a weight that reads at preview scale.
+const UNAVAILABLE_BITMAP_MAX = 960;
+/// Placeholder bitmaps by size; a project has one or two canvas sizes.
+const unavailableBySize = new Map<string, HTMLCanvasElement>();
+const UNAVAILABLE_SIZES_KEPT = 4;
+const unavailableBitmaps = new WeakSet<object>();
+
+// What a Motif layer shows while its project Motif is missing or invalid:
+// red hatching in a red frame over the layer's area, so the picture says
+// "broken here" instead of leaving a gap nobody notices (spec § Project
+// Motifs, "Missing is visible"). The red is the app's dark-theme
+// `--destructive`. Preview only: an export refuses such a Motif before it
+// draws anything.
+function unavailablePlaceholder(logical: { width: number; height: number }): HTMLCanvasElement {
+  const scale = Math.min(1, UNAVAILABLE_BITMAP_MAX / Math.max(logical.width, logical.height, 1));
+  const width = Math.max(1, Math.round(logical.width * scale));
+  const height = Math.max(1, Math.round(logical.height * scale));
+  const key = `${width}x${height}`;
+  const kept = unavailableBySize.get(key);
+  if (kept) return kept;
+  const c = document.createElement("canvas");
+  c.width = width;
+  c.height = height;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = "rgba(248,113,113,0.16)";
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = "rgba(248,113,113,0.4)";
+  ctx.lineWidth = 6;
+  for (let x = -height; x < width; x += 28) {
+    ctx.beginPath();
+    ctx.moveTo(x, height);
+    ctx.lineTo(x + height, 0);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = "#f87171";
+  ctx.lineWidth = 8;
+  ctx.strokeRect(4, 4, width - 8, height - 8);
+  // An exclamation mark in a disc: no text, so no font or locale to wait on.
+  // Drawn for a radius of 40, smaller only on a small canvas.
+  const cx = width / 2, cy = height / 2;
+  const k = Math.min(1, Math.min(width, height) / 160);
+  ctx.fillStyle = "#f87171";
+  ctx.beginPath();
+  ctx.arc(cx, cy, 40 * k, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#0a0c10";
+  ctx.fillRect(cx - 5 * k, cy - 26 * k, 10 * k, 34 * k);
+  ctx.beginPath();
+  ctx.arc(cx, cy + 20 * k, 6 * k, 0, Math.PI * 2);
+  ctx.fill();
+  if (unavailableBySize.size >= UNAVAILABLE_SIZES_KEPT) unavailableBySize.delete(unavailableBySize.keys().next().value!);
+  unavailableBySize.set(key, c);
+  unavailableBitmaps.add(c);
+  return c;
+}
+
+export interface MotifSpriteInit {
+  layerId: string;
+  motifId: string;
+  /// Composition fps rational. The sprite maps `tInLayerUs` to a frame index
+  /// with the same exact-rational math the rest of the renderer uses.
+  fpsNum: number;
+  fpsDen: number;
+  /// Fires after a freshly-rasterized bitmap is chosen, or when a failed
+  /// frame's retry is due. The host uses it to schedule a repaint when the
+  /// playhead is paused (no rAF tick in flight to present the bitmap or
+  /// request the retry). NOT fired on a synchronous cache hit — that happens
+  /// inside the current paint, so a repaint would be churn.
+  onLoaded?: () => void;
+  /// Preview's Playback Resolution divisor; 1 when absent.
+  scaleDiv?: () => MotifReaderDiv;
+  /// The composition canvas the layer draws into: the error placeholder of
+  /// a Motif that cannot render covers it, as a Motif layer has no box of
+  /// its own without its manifest. 1920×1080 when absent.
+  canvasSize?: () => { width: number; height: number };
+}
+
+const DEFAULT_CANVAS = { width: 1920, height: 1080 } as const;
+
+interface BoundRaster { bitmap: ImageBitmap | HTMLCanvasElement; release(): void }
+const unpinned = (bitmap: ImageBitmap | HTMLCanvasElement): BoundRaster => ({ bitmap, release: () => {} });
+
+export class MotifSprite implements StageableSprite {
+  readonly sprite: Sprite;
+  readonly layerId: string;
+  readonly motifId: string;
+  private readonly fpsNum: number;
+  private readonly fpsDen: number;
+  private motif: Motif | null;
+  private readonly playback: MotifPlaybackCursor;
+  /// Last comp-frame index bound from `injectedFrames` (export mode). Lets a
+  /// repeated index (output fps < comp fps, or a held frame) skip the rebind +
+  /// per-tick GPU texture churn. -1 = nothing bound yet.
+  private injectedFrame = -1;
+  private source: UnbindingImageSource | null = null;
+  private texture: Texture | null = null;
+  /// The texture's local size (`Texture.orig`): the Motif's logical size for
+  /// preview frames, the canvas for the error placeholder, the bitmap's own
+  /// for the neutral placeholder and export frames.
+  /// The texture's frame still follows the bitmap, so a 1/2 bitmap stretches
+  /// over the same quad.
+  private readonly orig = new Rectangle();
+  /// The lease on the raster `source` wraps. A preview frame's lease pins it
+  /// in L0, so an LRU eviction can't close it under a texture Pixi may still
+  /// re-upload; the placeholder and export frames hold a lease that does
+  /// nothing.
+  private bound: BoundRaster | null = null;
+  /// The frame the cursor chose last and the sprite has not presented yet,
+  /// with the size it is drawn at.
+  private chosen: { raster: BoundRaster; size: { width: number; height: number } } | null = null;
+  private onLoaded: (() => void) | null;
+  private readonly canvasSize: () => { width: number; height: number };
+  private disposed = false;
+  private boundOnce = false;
+
+  constructor(init: MotifSpriteInit) {
+    this.layerId = init.layerId;
+    this.motifId = init.motifId;
+    // The composition fps is captured ONCE at construction. If the project's
+    // fps changes while this sprite is alive (a project swap that keeps the
+    // sprite), the cached frame grid uses the stale rate until the sprite is
+    // recreated — which the Compositor does on a composition reload.
+    this.fpsNum = init.fpsNum;
+    this.fpsDen = init.fpsDen;
+    this.onLoaded = init.onLoaded ?? null;
+    this.canvasSize = init.canvasSize ?? (() => DEFAULT_CANVAS);
+    this.motif = getMotif(this.motifId);
+    this.playback = new MotifPlaybackCursor({
+      bind: (lease, d) => this.choose(lease, { width: d.renderW, height: d.renderH }),
+      onLoaded: () => this.onLoaded?.(),
+      onRetryDue: () => this.onLoaded?.(),
+      scaleDiv: init.scaleDiv ?? (() => 1),
+    });
+    this.sprite = new Sprite(Texture.EMPTY);
+  }
+
+  get displayObject(): Container {
+    return this.sprite;
+  }
+
+  /// EMPTY until the first raster (cache hit / capture) binds; not staged
+  /// before then (PixiJS v8 batched renderer crashes on the EMPTY placeholder).
+  get stageReady(): boolean {
+    return this.sprite.texture !== Texture.EMPTY;
+  }
+
+  /// Apply the layer's transform and bind the raster for the frame at
+  /// `tInLayerUs` (composition-time minus the layer's start; `src_in`
+  /// windowing, where it applies, happens inside `motifFrameDescriptor`). On a
+  /// cache hit the frame binds synchronously; on a miss it's captured +
+  /// rasterized async and bound once ready (if still wanted).
+  ///
+  /// Export supplies one owned bitmap selected on the composition grid by
+  /// exportMotifSource. Binding is synchronous; the worker releases pixels
+  /// after rendering. Indexed arrays remain supported by isolated render tests.
+  /// Absent (preview) uses the asynchronous cache/capture path below.
+  update(
+    view: ResolvedMotifView,
+    tInLayerUs: number,
+    durationUs: number,
+    injectedFrames?: InjectedMotifFrames,
+    playing = false,
+  ): void {
+    if (this.disposed) return;
+
+    // Transforms first, every tick, BEFORE the frame no-op below: a
+    // transform-only change with an unchanged frame must still take.
+    this.sprite.scale.set(view.scale_x, view.scale_y);
+    // Position is the anchor in composition pixels (anchorPivot.ts).
+    // The texture's local size (`orig`) is the local space: the logical size
+    // for preview frames, so the pivot does not move with the divisor.
+    const pivot = anchorPivot({
+      x: view.x,
+      y: view.y,
+      anchorX: view.anchor_x,
+      anchorY: view.anchor_y,
+      ...textureExtent(this.sprite.texture),
+    });
+    this.sprite.pivot.set(pivot.pivotX, pivot.pivotY);
+    this.sprite.position.set(pivot.posX, pivot.posY);
+    this.sprite.angle = view.rotation_deg;
+    this.sprite.alpha = view.opacity;
+
+    // Injected-frames path (export). Bind synchronously by layer-local
+    // comp-frame index into the pre-baked array. The bake (`exportBake.ts`) is
+    // responsible for content-window alignment: it renders each layer-local
+    // frame at its CONTENT time (src_in offset + content duration), so this
+    // branch only needs the layer-local index — it must NOT re-apply src_in or
+    // the content cap (the preview path below does that for live rendering).
+    // No canonicalize, no harness, no cache: the bitmaps are already baked.
+    if (injectedFrames) {
+      if ("bitmap" in injectedFrames) {
+        // Each streamed bitmap has its own lifetime, even when output fps
+        // repeats the same composition frame. Never reuse a closed binding.
+        if (this.bound?.bitmap !== injectedFrames.bitmap) this.bindRaster(unpinned(injectedFrames.bitmap));
+        this.injectedFrame = injectedFrames.frame;
+        return;
+      }
+      const durationFrames = motifDurationFrames(
+        durationUs,
+        this.fpsNum,
+        this.fpsDen,
+      );
+      const frame = Math.min(
+        durationFrames - 1,
+        frameIndexInLayer(tInLayerUs, this.fpsNum, this.fpsDen),
+      );
+      // Clamp into the baked array — a mid-layer export start leaves head
+      // holes, and the array's length is `lastFrame + 1`, so an in-range
+      // request always lands on a real bitmap. Guard against a hole / OOB
+      // defensively (would otherwise bind `undefined`).
+      const idx = Math.max(0, Math.min(injectedFrames.length - 1, frame));
+      // Same index already bound → skip the rebind (avoids per-tick GPU
+      // texture churn when output fps < comp fps or the frame is held).
+      if (idx === this.injectedFrame) return;
+      const bitmap = injectedFrames[idx];
+      if (bitmap) {
+        this.bindRaster(unpinned(bitmap));
+        this.injectedFrame = idx;
+      }
+      return;
+    }
+
+    this.demand(view, tInLayerUs, durationUs, playing);
+    this.present();
+  }
+
+  /// The preview half of `update` without the transforms or the texture:
+  /// selects the frame at `tInLayerUs` and moves its demand. The scene gate
+  /// calls it alone while the presented picture must stay as it is.
+  demand(view: ResolvedMotifView, tInLayerUs: number, durationUs: number, playing = false): void {
+    if (this.disposed) return;
+    // Only live capture needs the catalog. The export Worker has built-ins
+    // but no runtime user manifests; its injected bitmaps are already baked
+    // and must render even when this Motif is unknown in the Worker.
+    if (!this.motif) return;
+
+    // `layerId` opts the on-screen frame into the preview overlay: a params
+    // page mid-gesture renders here and nowhere else (the baker and the export
+    // path deliberately omit it — see motifFrameDescriptor).
+    const desc = motifFrameDescriptor(
+      view, tInLayerUs, durationUs, this.fpsNum, this.fpsDen, this.motif, this.layerId,
+    );
+    if (!desc) {
+      // eslint-disable-next-line no-console
+      console.warn(`[weftcut/pixi] MotifSprite ${this.layerId}: canonicalize failed`);
+      return;
+    }
+    this.playback.update(desc, playing);
+  }
+
+  /// Binds the frame the cursor chose last, or a placeholder: the neutral one
+  /// before any frame, the error one while the project Motif cannot render.
+  /// `update` presents; the scene gate's `demand` never does.
+  present(): void {
+    if (this.disposed) return;
+    if (!this.motif) {
+      // An id the catalog has not heard of is a sync still in flight, not a
+      // broken Motif: nothing is drawn until it lands.
+      if (typeof document === "undefined" || !motifUnavailable(this.motifId)) return;
+      const canvas = this.canvasSize();
+      // Bound again when the canvas is resized under it.
+      if (this.showsUnavailable && this.orig.width === canvas.width && this.orig.height === canvas.height) return;
+      this.bindRaster(unpinned(unavailablePlaceholder(canvas)), { width: canvas.width, height: canvas.height });
+      return;
+    }
+    const chosen = this.chosen;
+    if (chosen) {
+      this.chosen = null;
+      this.bindRaster(chosen.raster, chosen.size);
+    } else if (this.motif && !this.boundOnce && this.texture === null && typeof document !== "undefined") {
+      this.bindRaster(unpinned(neutralPlaceholder()));
+    }
+  }
+
+  /// Whether the picture shows the error placeholder (`present`).
+  get showsUnavailable(): boolean {
+    return this.bound !== null && unavailableBitmaps.has(this.bound.bitmap);
+  }
+
+  playbackSnapshot(): MotifPlaybackSnapshot { return this.playback.snapshot(); }
+  /** See `MotifPlaybackCursor.holdDeadline`; null for a Motif the catalog
+   * lacks, which never binds. */
+  holdDeadline(now?: number): number | null { return this.motif ? this.playback.holdDeadline(now) : null; }
+  /** The layer is off the playhead; see `MotifPlaybackCursor.leave`. */
+  leave(): void { this.playback.leave(); }
+  invalidatePlayback(): void { this.playback.invalidate(); }
+
+  /// Re-fetch this layer's Motif from the runtime catalog and reset the render
+  /// target so the next `update()` re-evaluates the cache key and re-captures.
+  /// Called by `Compositor.refreshMotifs()` on a catalog change (an edit,
+  /// an update from the library, a folder gone or back). Does NOT dispose —
+  /// the last bound bitmap stays on screen until the fresh frame lands, so
+  /// there's no flash; only the error placeholder of a Motif that renders
+  /// again gives way at once. No-op once disposed.
+  refreshMotif(): void {
+    if (this.disposed) return;
+    this.motif = getMotif(this.motifId);
+    this.playback.invalidate();
+    if (this.motif && this.showsUnavailable) this.bindRaster(unpinned(neutralPlaceholder()));
+  }
+
+  /// Takes the cursor's lease until it is presented or a later choice
+  /// replaces it, which releases it unseen.
+  private choose(raster: BoundRaster, size: { width: number; height: number }): void {
+    this.chosen?.raster.release();
+    this.chosen = { raster, size };
+  }
+
+  /// Takes `raster`'s lease. `size` is the local size the bitmap is drawn
+  /// at; the neutral placeholder and export frames keep their own.
+  private bindRaster(
+    raster: BoundRaster,
+    size: { width: number; height: number } = raster.bitmap,
+  ): void {
+    // Release the previous lease only once the source no longer references
+    // its bitmap below: its last release may close an evicted bitmap.
+    const previous = this.bound;
+    const bitmap = raster.bitmap;
+    this.bound = raster;
+    // The new lease is bound whatever happens below; the previous one is
+    // released even when the upload throws, or its pin leaks.
+    try {
+      const resized = this.orig.width !== size.width || this.orig.height !== size.height;
+      this.orig.width = size.width;
+      this.orig.height = size.height;
+      // WebGPU caches batch BindGroups by source identity. Keep one source and
+      // texture per sprite: destroying them each frame leaves the previous
+      // batch bound to a dead source/sampler and produces a warning every tick.
+      if (this.source) {
+        this.source.resource = bitmap;
+        this.source.update(); // uploads new pixels; also resizes when needed
+        if (resized) this.texture!.update();
+      } else {
+        this.source = new UnbindingImageSource({
+          resource: bitmap,
+          width: bitmap.width,
+          height: bitmap.height,
+        });
+        // Dynamic keeps Sprite geometry in sync when a placeholder, an edited
+        // Motif or a divisor changes dimensions while retaining the same Texture
+        // identity. No `frame`: it follows the source; `orig` is the local size.
+        this.texture = new Texture({ source: this.source, orig: this.orig, dynamic: true });
+        this.sprite.texture = this.texture;
+      }
+      this.boundOnce = true;
+    } finally {
+      if (previous !== raster) previous?.release();
+    }
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.playback.dispose();
+    this.sprite.destroy({ children: true });
+    if (this.texture && this.texture !== Texture.EMPTY) {
+      try {
+        // Unbinds and frees the sprite-owned texture/source/GPU allocation,
+        // never the cache-owned ImageBitmap.
+        this.texture.destroy(true);
+      } catch {
+        // ignore
+      }
+    }
+    this.texture = null;
+    this.source = null;
+    this.bound?.release();
+    this.bound = null;
+    this.chosen?.raster.release();
+    this.chosen = null;
+  }
+}
