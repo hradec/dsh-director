@@ -56,6 +56,12 @@ export class EditingStore {
     this.dir = join(workspaceDir, 'editing');
     this.core = core;
     this.actors = new Map();
+    // Publication identity for the renderer (WeftCut ProjectVersion semantics).
+    // ponytail: revision is process-wide, not per-document — the renderer keeps
+    // one document open, so one counter is enough; upgrade path is a Map.
+    this.session = Math.floor(Math.random() * 1e9) || 1;
+    this.revision = 0;
+    this.viewSeq = 0;
     this.ready = this.#init();
   }
   async #init() {
@@ -169,6 +175,7 @@ export class EditingStore {
     if (res.ok) {
       const doc = wrapped.handle.snapshot();
       await this.#save(id, got.entry, doc);
+      this.revision++;
       return { ok: true, value: res.value, tags: EditingStore.docTags(doc), checkpoint: wrapped.handle.listCheckpoints() };
     }
     return res;
@@ -177,6 +184,20 @@ export class EditingStore {
   snapshot(id) {
     const w = this.actors.get(id);
     return w ? w.handle.snapshot() : null;
+  }
+
+  // The renderer projection: exactly WeftCut's ProjectPublicationReply shape.
+  // The UI never reads the raw document — it gets main's own buildProjectSummary
+  // output, so the timeline sees the same projection WeftCut desktop renders.
+  async publication(id) {
+    await this.ready;
+    const got = await this.get(id);
+    if (!got || !got.doc) return null;
+    const w = await this.#actor(id, got.entry, got.doc);
+    // ponytail: static "present" verdicts — DSH media resolves through /api/file
+    // at play time; upgrade path wires createPoolFiles fs existence gating.
+    const summary = this.core.buildProjectSummary(w.handle.snapshot(), w.handle.historyStatus(), () => ({ source: 'present', quick_proxy: false, full_proxy: false, conform: false }));
+    return { version: { session: this.session, revision: this.revision }, viewId: ++this.viewSeq, summary };
   }
   async undo(id) { return this.#historyOp(id, 'undo'); }
   async redo(id) { return this.#historyOp(id, 'redo'); }
@@ -188,6 +209,7 @@ export class EditingStore {
     const res = w.handle.dispatch(kind, {});
     if (res.ok !== false) {
       await this.#save(id, w.entry, w.handle.snapshot());
+      this.revision++;
       return { ok: true, tags: EditingStore.docTags(w.handle.snapshot()) };
     }
     return res;

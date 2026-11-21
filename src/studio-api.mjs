@@ -360,16 +360,24 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       // every save; nobody (UI or agent) hand-writes them. Live at the next harness restart.
       if(path==='/api/editing'&&req.method==='GET'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const tags=(url.searchParams.get('tags')??'').split(',').filter(Boolean);const items=tags.length?await ed.find(tags):Object.values(await ed.catalog());sendJson(res,200,{editing:items});return;}
       if(path==='/api/editing'&&req.method==='POST'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const b=await readJson(req,controller.signal);sendJson(res,201,await ed.create({name:String(b.name??'edit'),note:b.note??null,doc:b.doc}));return;}
-      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint))?$/.exec(path);
+      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication))?$/.exec(path);
       if(match){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const id=match[1],sub=match[2];
         if(!sub&&req.method==='GET'){const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}sendJson(res,200,got);return;}
         if(!sub&&req.method==='DELETE'){sendJson(res,200,{deleted:await ed.delete(id)});return;}
-        if(!sub)return void sendJson(res,405,{detail:'method not allowed'});
+        // The renderer reads the WeftCut summary projection, never the raw doc.
+        if(sub==='publication'&&req.method==='GET'){const pub=await ed.publication(id);if(!pub){sendJson(res,404,{detail:'no such editing document'});return;}sendJson(res,200,pub);return;}
+        if(!sub||req.method!=='POST')return void sendJson(res,405,{detail:'method not allowed'});
         const b=await readJson(req,controller.signal);
         if(sub==='command')sendJson(res,200,await ed.command(id,String(b.channel??''),b.args??{},String(b.by??'user')));
         else if(sub==='undo')sendJson(res,200,await ed.undo(id));
         else if(sub==='redo')sendJson(res,200,await ed.redo(id));
         else sendJson(res,200,await ed.checkpoint(id,String(b.label??'checkpoint')));
+        return;}
+      // The Timeline tab loads the vendored WeftCut renderer bundle from here
+      // (same package dir the harness booted this server from).
+      if(path==='/timeline-engine.js'&&req.method==='GET'){
+        try{const f=readFileSync(new URL('../lib/timeline-engine.js',import.meta.url));res.writeHead(200,{'content-type':'text/javascript','cache-control':'no-cache'});res.end(f);}
+        catch{sendJson(res,404,{detail:'timeline-engine.js not built — run node scripts/build.mjs'});}
         return;}
       // Footage & Images libraries: /api/footage* over media/ (video) and /api/images* over images/ — one shared block, kind from the URL segment.
       // Bridge contract: footage/big files move DSH→ComfyUI input/dsh/ by the SERVER (the Comfy box can never reach 127.0.0.1:3081); the browser only passes names.

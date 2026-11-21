@@ -634,4 +634,14 @@ test('editing routes: create (default + explicit doc), shared-path commands, der
   assert.deepEqual((await (await json(base,'/api/editing?tags=shot-c12')).json()).editing,[]);
   const list=(await (await json(base,'/api/editing')).json()).editing;
   assert.deepEqual(list.map(i=>i.id).sort(),[fresh.id,e.id].sort());
+  // renderer projection: the exact ProjectPublicationReply the Timeline consumes
+  const pub=await (await json(base,`/api/editing/${e.id}/publication`)).json();
+  assert.ok(pub.version.session>0&&pub.version.revision>=1);
+  assert.ok(pub.viewId>=1);
+  const comp=pub.summary.compositions[pub.summary.root_id];
+  assert.equal(comp.tracks.length,1);
+  assert.equal(comp.tracks[0].layers.length,1);
+  assert.equal(typeof comp.fps_num,'number');
+  assert.ok(pub.summary.media.length===0||pub.summary.media[0].id);
+  assert.equal((await (await json(base,'/api/editing/nope000/publication')).status),404);
 });

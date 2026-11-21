@@ -12,6 +12,19 @@ covers only its own original material and does not relabel the copied UI. The se
 vendor source is retained under `src/client/studio/vendor/` for review and attribution.
 No separate Director Studio backend or application is bundled or required.
 
+## Vendored WeftCut timeline engine
+
+The editing timeline (renderer under `src/renderer/`, headless state core under
+`src/main/state/` and `src/shared/`, and the built eval-wasm under
+`src/renderer/eval/`) is vendored from [WeftCut](https://github.com/WeftCut/WeftCut),
+source revision `688e71e5b309fb340de4395f71edc38afc00cfd7`, under WeftCut's MIT
+license (see LICENSE upstream). The directory layout mirrors upstream so future
+upstream changes apply with minimal conflict. Fork-local changes are limited and
+documented in-file: the Electron bridge seams (`src/renderer/bridge/ipc.ts`,
+`src/renderer/bridge/events.ts`) re-export an HTTP transport to this plugin's
+editing store, and an i18n shim serves the English locale tree. The plugin's own
+MIT license covers the combined work consistent with that upstream grant.
+
 ## Optional MiniMax H3 prompt documents
 
 The current source tree and npm package do **not** contain the official

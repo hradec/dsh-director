@@ -6,3 +6,4 @@ Official MiniMax H3 prompt guides and license text are not part of this plugin
 distribution. Optional user-authorized downloads retain the upstream terms.
 The local wrapper and integration are not an official MiniMax Skill release.
 See LICENSE and THIRD_PARTY_NOTICES.md for scope and upstream source links.
+The editing timeline renderer and state core include vendored material from WeftCut (https://github.com/WeftCut/WeftCut), MIT-licensed; see THIRD_PARTY_NOTICES.md.

@@ -1,28 +1,21 @@
-// Event subscription bridge: listen() returns a Promise<UnlistenFn>. Events are
-// delivered from main -> webContents.send -> preload on() — both Rust core
-// events and renderer-originated cross-window broadcasts (see emit() below).
+// DSH fork: cross-window events replaced by an in-page emitter. Mutations
+// refresh through the projection re-read in the transport, not push events.
 export interface Event<T> { event: string; id: number; payload: T }
 export type UnlistenFn = () => void
 
-let _idCounter = 0
+const handlers = new Map<string, Set<(e: Event<unknown>) => void>>()
 
 export async function listen<T>(
   event: string,
   handler: (e: Event<T>) => void,
 ): Promise<UnlistenFn> {
-  const id = _idCounter++
-  const unsub = window.api.on(event, (payload) =>
-    handler({ event, id, payload: payload as T }),
-  )
-  return unsub
+  let set = handlers.get(event)
+  if (!set) { set = new Set(); handlers.set(event, set) }
+  const wrapped = handler as (e: Event<unknown>) => void
+  set.add(wrapped)
+  return () => { set!.delete(wrapped) }
 }
 
 export async function emit(event: string, payload?: unknown): Promise<void> {
-  // Fire-and-forget from the renderer side: forward to main's cross-window
-  // broadcast and swallow any rejection.
-  try {
-    await window.api.emit(event, payload)
-  } catch {
-    // ignored (fire-and-forget)
-  }
+  for (const h of handlers.get(event) ?? []) h({ event, id: 0, payload })
 }
