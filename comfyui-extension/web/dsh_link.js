@@ -261,9 +261,37 @@ async function stageAsset(slug) {
     await refreshNodeOptions();
 }
 
-const VER = "1.43";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
+const VER = "1.44";   // SINGLE version constant — bridge-hello, ver probe and the boot heartbeat all read this; cannot desync anymore
 
 const nativeFetch = window.fetch;   // v1.26 FIX: was declared INSIDE setup() — every module-scope authed fetch (resolveUser, authedUrl, probes) threw a silent ReferenceError; that is the real reason previews never painted even on fresh frames
+
+// v1.44 GLOBAL media auth: on 0.45/0.46 the frontend fetches its OWN /view + /userdata
+// media (blob pipeline) and in the DSH embed the iframe is ANONYMOUS (third-party
+// storage partitioning hides any login; only the comfy-user header answers on this
+// --multi-user box) → saved images 404 → broken thumbs. Wrap window.fetch so EVERY
+// media request in the page carries the identity, not just the bridge's own.
+// ponytail: header injection is per-request and idempotent; if the frontend later
+// gains real session auth in the iframe, resolveUser() returns "" and this is a no-op.
+const dsMediaPath = /^\/(view|view_image|userdata)(\/|\?|$)/;
+const _origFetch = nativeFetch;
+window.fetch = function (input, init) {
+    try {
+        const u = typeof input === "string" ? input : (input && input.url) || "";
+        const sameOrigin = u.startsWith("/") || u.startsWith(location.origin);
+        if (sameOrigin && dsMediaPath.test(new URL(u, location.origin).pathname + (u.includes("?") ? "?" : ""))) {
+            init = init ? Object.assign({}, init) : {};
+            const h = new Headers(init.headers || {});
+            if (!h.has("comfy-user")) {
+                return resolveUser().then((who) => {
+                    if (who) h.set("comfy-user", who);
+                    init.headers = h;
+                    return _origFetch.call(window, input, init);
+                });
+            }
+        }
+    } catch (e) { /* fall through unauthenticated — the server's own error will show */ }
+    return _origFetch.call(window, input, init);
+};
 // ---- v1.31 AGENT DRIVE: ops file -> execute on live graph -> result file. Agent writes user/<uid>/dsh-ops.json via authenticated curl; this poller applies it here.
 let lastOpsId = null;
 function nodes2dst(lid) {   // node-owned scanning: which node's outputs claim this link id
