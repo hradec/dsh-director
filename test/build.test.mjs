@@ -29,7 +29,7 @@ test('declared sidebar service activates every Studio tab and opens ComfyUI afte
   }});
   client.apply(ctx);active=false;
   await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(tabs.length,8);assert.ok(tabs.includes('director-studio-comfy'));
+  assert.equal(tabs.length,7);assert.ok(tabs.includes('director-studio-comfy'));
   assert.equal(sandbox.__DSH_COMFY_BRIDGE__({type:'load-workflow',workflow:{nodes:[]}}),true);
   assert.deepEqual(JSON.parse(JSON.stringify(opened)),[{kind:'director-studio-comfy',options:{params:{}}}]);
   for(const dispose of disposers.reverse())dispose?.();

@@ -605,3 +605,33 @@ test('bridge kind=assets shape (0.2.85)',async t=>{
   assert.equal(a.images.length,1);assert.ok(a.images[0].abs&&a.images[0].file.endsWith('.png')&&!a.images[0].file.includes('/'),'bare file name + abs');
   assert.deepEqual([a.videos.length,a.audio.length],[0,0]);
 });
+
+test('editing routes: create (default + explicit doc), shared-path commands, derived tags, find, undo re-derives',async t=>{
+  const {base}=await setup(t);
+  assert.deepEqual((await (await json(base,'/api/editing')).json()).editing,[]);
+  // default document factory (no doc in body)
+  const fresh=await (await json(base,'/api/editing',{method:'POST',body:JSON.stringify({name:'fresh'})})).json();
+  assert.ok(fresh.id);
+  const freshDoc=(await (await json(base,`/api/editing/${fresh.id}`)).json()).doc;
+  assert.ok(freshDoc?.compositions?.[freshDoc.root_id]);
+  // explicit document with a media pool (shape proven by scripts/coreprobe.mjs)
+  const ROOT='11111111-1111-4111-8111-111111111111',VID='22222222-2222-4222-8222-222222222222';
+  const doc={schema_version:(await import('../lib/timeline-core.mjs')).SCHEMA_VERSION,project_id:'33333333-3333-4333-8333-333333333333',metadata:{name:'ep1',created_at:'',modified_at:'',description:null},compositions:{[ROOT]:{id:ROOT,label:null,ordinal:0,width:1920,height:1080,fps:{num:24,den:1},duration_us:10000000,duration_pinned:false,sample_rate:48000,channels:2,color_space:'Bt709',background:{r:0,g:0,b:0,a:255},tracks:[],markers:[],transitions:[],links:[]}},root_id:ROOT,next_group_ordinal:1,media_pool:{[VID]:{id:VID,label:null,path_abs:'x.mp4',path_rel:null,kind:'Video',metadata:{duration_us:5000000,video:null,audio:null,container_format:null},file_hash_blake3:'0',file_size:0,file_mtime:0,imported_at:'',decode_route:{route:'bypass'},conform_path:null}},audio_roles:{},settings:{preview_width:1280,preview_height:720,autosave_interval_secs:null,history_capacity:50,auto_pair_audio_on_import:false,prefer_proxies:false,proxy_overrides:{},shot_review:null,pause_review:null},motifs:{}};
+  const e=await (await json(base,'/api/editing',{method:'POST',body:JSON.stringify({name:'ep1-cut',doc})})).json();assert.ok(e.id);
+  assert.equal(e.tags.length,0);
+  const tr=await (await json(base,`/api/editing/${e.id}/command`,{method:'POST',body:JSON.stringify({channel:'add_track',args:{compositionId:ROOT}})})).json();
+  assert.equal(tr.ok,true,JSON.stringify(tr.error));
+  const trackId=((await (await json(base,`/api/editing/${e.id}`)).json()).doc.compositions[ROOT].tracks||[]).slice(-1)[0].id;
+  const ml=await (await json(base,`/api/editing/${e.id}/command`,{method:'POST',body:JSON.stringify({channel:'add_media_layer',args:{trackId,mediaId:VID,tStartUs:0}})})).json();
+  assert.equal(ml.ok,true,JSON.stringify(ml.error));
+  const st=await (await json(base,`/api/editing/${e.id}/command`,{method:'POST',body:JSON.stringify({channel:'update_layer',args:{layerId:ml.value,patch:{metadata:{dsh:{shot_id:'c12',sequence_id:'s3',episode_id:'e1',take_id:'v2'}}}}})})).json();
+  assert.equal(st.ok,true,JSON.stringify(st.error));
+  assert.deepEqual(st.tags,['episode-e1','sequence-s3','shot-c12','take-v2']);
+  const found=await (await json(base,'/api/editing?tags=shot-c12')).json();
+  assert.deepEqual(found.editing.map(i=>i.id),[e.id]);
+  const un=await (await json(base,`/api/editing/${e.id}/undo`,{method:'POST',body:'{}'})).json();
+  assert.equal(un.ok,true,JSON.stringify(un.error));
+  assert.deepEqual((await (await json(base,'/api/editing?tags=shot-c12')).json()).editing,[]);
+  const list=(await (await json(base,'/api/editing')).json()).editing;
+  assert.deepEqual(list.map(i=>i.id).sort(),[fresh.id,e.id].sort());
+});

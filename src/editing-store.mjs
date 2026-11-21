@@ -30,6 +30,26 @@ async function writeAtomic(path, text) {
   await rename(tmp, path);
 }
 
+
+// ---- core loading + per-workspace singleton (API and agent tools share ONE instance,
+// so ONE actor cache and ONE tag-maintenance path exist process-wide) ----
+let corePromise = null;
+export function loadCore() {
+  if (!corePromise) corePromise = (async () => {
+    for (const p of ['./timeline-core.mjs', '../lib/timeline-core.mjs']) {
+      try { return await import(p); } catch (err) { if (err && err.code !== 'ERR_MODULE_NOT_FOUND') throw err; }
+    }
+    throw new Error('timeline-core.mjs not built — run node scripts/build.mjs');
+  })();
+  return corePromise;
+}
+const stores = new Map();
+export function editingStoreFor(workspaceDir) {
+  let s = stores.get(workspaceDir);
+  if (!s) { s = new EditingStore(workspaceDir, null); stores.set(workspaceDir, s); }
+  return s;
+}
+
 export class EditingStore {
   // core: the module built from the vendored state core ({createActor, SCHEMA_VERSION, initEval})
   constructor(workspaceDir, core) {
@@ -40,6 +60,7 @@ export class EditingStore {
   }
   async #init() {
     await mkdir(this.dir, { recursive: true });
+    if (!this.core) this.core = await loadCore();
     await this.core.initEval();
   }
 
@@ -80,8 +101,26 @@ export class EditingStore {
     await writeAtomic(join(this.dir, CATALOG), JSON.stringify(cat, null, 1));
   }
 
+
+  // Default document for a fresh edit (root composition at 1080p24, empty pool).
+  // ponytail: fixed defaults; a new edit inherits the project canvas when the
+  // Production adapter starts seeding docs.
+  async newProjectDoc(name) {
+    if (!this.core) this.core = await loadCore();
+    const ROOT = randomUUID();
+    return {
+      schema_version: this.core.SCHEMA_VERSION, project_id: randomUUID(),
+      metadata: { name: name || 'edit', created_at: new Date().toISOString(), modified_at: new Date().toISOString(), description: null },
+      compositions: { [ROOT]: { id: ROOT, label: null, ordinal: 0, width: 1920, height: 1080, fps: { num: 24, den: 1 }, duration_us: 60000000, duration_pinned: false, sample_rate: 48000, channels: 2, color_space: 'Bt709', background: { r: 0, g: 0, b: 0, a: 255 }, tracks: [], markers: [], transitions: [], links: [] } },
+      root_id: ROOT, next_group_ordinal: 1, media_pool: {}, audio_roles: {},
+      settings: { preview_width: 1280, preview_height: 720, autosave_interval_secs: null, history_capacity: 500, auto_pair_audio_on_import: true, prefer_proxies: false, proxy_overrides: {}, shot_review: null, pause_review: null },
+      motifs: {},
+    };
+  }
+
   async create({ name, note, doc }) {
     await this.ready;
+    if (!doc) doc = await this.newProjectDoc(name);
     const id = randomUUID();
     const path = id + '.json';
     const cat = await this.catalog();

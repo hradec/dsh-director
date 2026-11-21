@@ -1,6 +1,7 @@
 import {agentTaskStoreRootFor} from './agent-task.mjs';
 import {StudioStoreError,isStudioAssetKind,studioStoreConstants} from './studio-store.mjs';
 import {storyStoreFor} from './story-store.mjs';
+import {editingStoreFor} from './editing-store.mjs';
 import {Readable} from 'node:stream';
 import {createReadStream,statSync,fstatSync,realpathSync,readdirSync,readFileSync,rmSync,existsSync,mkdirSync,writeFileSync,openSync,closeSync,readSync,utimesSync} from 'node:fs';
 import {execFile} from 'node:child_process';
@@ -354,6 +355,22 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         const clips=Object.fromEntries(shots.map(shot=>{const asset=shot.video_asset_id?assets.get(shot.video_asset_id):null,file=asset?.files?.master?files.get(asset.files.master):null;return [shot.id,file?{asset_id:asset.id,path:file.path,filename:file.filename}:null];}));
         sendJson(res,200,{shots,sequences,takes,clips,episodes:(await storyStoreFor(store).story()).episodes});return;
       }
+      // Editing library (WeftCut EDLs): catalog + documents under <workspace>/editing/, SAME
+      // EditingStore singleton the agent tools use — tags are derived from the document on
+      // every save; nobody (UI or agent) hand-writes them. Live at the next harness restart.
+      if(path==='/api/editing'&&req.method==='GET'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const tags=(url.searchParams.get('tags')??'').split(',').filter(Boolean);const items=tags.length?await ed.find(tags):Object.values(await ed.catalog());sendJson(res,200,{editing:items});return;}
+      if(path==='/api/editing'&&req.method==='POST'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const b=await readJson(req,controller.signal);sendJson(res,201,await ed.create({name:String(b.name??'edit'),note:b.note??null,doc:b.doc}));return;}
+      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint))?$/.exec(path);
+      if(match){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const id=match[1],sub=match[2];
+        if(!sub&&req.method==='GET'){const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}sendJson(res,200,got);return;}
+        if(!sub&&req.method==='DELETE'){sendJson(res,200,{deleted:await ed.delete(id)});return;}
+        if(!sub)return void sendJson(res,405,{detail:'method not allowed'});
+        const b=await readJson(req,controller.signal);
+        if(sub==='command')sendJson(res,200,await ed.command(id,String(b.channel??''),b.args??{},String(b.by??'user')));
+        else if(sub==='undo')sendJson(res,200,await ed.undo(id));
+        else if(sub==='redo')sendJson(res,200,await ed.redo(id));
+        else sendJson(res,200,await ed.checkpoint(id,String(b.label??'checkpoint')));
+        return;}
       // Footage & Images libraries: /api/footage* over media/ (video) and /api/images* over images/ — one shared block, kind from the URL segment.
       // Bridge contract: footage/big files move DSH→ComfyUI input/dsh/ by the SERVER (the Comfy box can never reach 127.0.0.1:3081); the browser only passes names.
       if(path==='/api/comfy-upload'&&req.method==='POST'){
