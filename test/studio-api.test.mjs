@@ -651,7 +651,10 @@ test('editing routes: create (default + explicit doc), shared-path commands, der
   const sdoc=(await (await json(base,`/api/editing/${seeded.id}`)).json()).doc;
   const slayers=sdoc.compositions[sdoc.root_id].tracks[0].layers;
   assert.deepEqual(slayers.map(l=>[l.t_start_us,l.t_end_us]),[[0,4000000],[4000000,7000000]]);
-  assert.deepEqual((await (await json(base,'/api/editing?tags=shot-c9')).json()).editing.map(i=>i.id),[seeded.id]);
+  const foundByTag=(await (await json(base,'/api/editing?tags=shot-c9')).json()).editing[0];
+  assert.equal(foundByTag.id,seeded.id);
+  // Picker contract: list entries carry tags so the UI can open an edit by tag.
+  assert.ok(Array.isArray(foundByTag.tags)&&foundByTag.tags.includes('sequence-s9'));
   const before=slayers[0].params.media;
   const rr=await (await json(base,`/api/editing/${seeded.id}/relink`,{method:'POST',body:JSON.stringify({shot_id:'c9',path:'/ws/media/clipA_v2.mp4',duration_us:4500000})})).json();
   assert.ok(rr.ok&&rr.relinked.length===1&&rr.relinked[0].old_media_id===before,JSON.stringify(rr));
