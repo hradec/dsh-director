@@ -12,6 +12,10 @@ export interface LayerPatch {
   label?: string | null
   enabled?: boolean
   locked?: boolean
+  // DSH fork feature: metadata carries Director Studio identity
+  // (metadata.dsh = {shot_id, sequence_id, episode_id, take_id}) so Editing
+  // library tag maintenance derives catalog tags from the document itself.
+  metadata?: Record<string, unknown>
 }
 
 /** Envelope-only patch. Only a lock-only patch bypasses content protection. */
@@ -21,6 +25,13 @@ export function applyUpdateLayer(p: Project, id: Uuid, patch: LayerPatch): void 
   if (patch.label !== undefined) layer.label = patch.label
   if (typeof patch.enabled === 'boolean') layer.enabled = patch.enabled
   if (typeof patch.locked === 'boolean') layer.locked = patch.locked
+  // DSH fork feature: shallow-merge metadata (a null value deletes that key).
+  if (patch.metadata && typeof patch.metadata === 'object') {
+    for (const [key, value] of Object.entries(patch.metadata)) {
+      if (value === null) delete layer.metadata[key]
+      else layer.metadata[key] = value
+    }
+  }
 }
 
 /** Set `enabled` on exactly the layers named — the caller supplies a link's

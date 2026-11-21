@@ -39,6 +39,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "pretest": "node scripts/build.mjs",
     "test": "node --test src/*.test.mjs test/*.test.mjs",
     "build": "node scripts/build.mjs",
     "prepack": "npm run build"
