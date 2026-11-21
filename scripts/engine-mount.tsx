@@ -5,16 +5,20 @@
 // everything below it is WeftCut's own renderer.
 import * as React from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Timeline } from "@/timeline/Timeline";
-import { PreviewSurface, type PreviewSurfaceHandle } from "@/preview/PreviewSurface";
+import { DockWorkspace, type DockPanelContracts } from "@/workspace/DockWorkspace";
+import { mediaReadiness, type MediaReadiness } from "@/panels/mediaReadiness";
 import { ShortcutBindingsProvider } from "@/shortcuts/bindings-context";
 import { useProjectStore } from "@/state/projectStore";
 import { useAppSettingsStore } from "@/settings/appSettingsStore";
+import { usePlaybackStore, transportPlay, transportPause } from "@/state/playbackStore";
 import { configure, invoke } from "@/bridge/ipc";
 import { seekPlayheadTimeUs } from "@/state/playheadStore";
+import { useSelectionStore, setLayerSelection, primaryLayerIdOf } from "@/state/selectionStore";
 import { initEval } from "@/eval";
 import { installBootstrapHook, installMotifTestHooks, installMotifHook, installAudioTestHooks, installDecodeBenchHooks } from "@/testhook/e2eHook"; // e2e seek + composite readback bridge for proofs (mirrors main.tsx)
 import { startPreviewAudioSession } from "@/render/audio/previewAudioSession"; // registers the playback transport (Play/Pause/Seek) — desktop App does this in its session effect
+import type { PreviewSurfaceHandle } from "@/preview/PreviewSurface";
+import dockviewCss from "dockview/dist/styles/dockview.css";
 import CSS from "./timeline-css.generated.mjs";
 import i18n from "i18next";
 import enUS from "@/i18n/locales/en-US";
@@ -40,64 +44,63 @@ function injectCss(): void {
   if (injected || !CSS) return;
   const style = document.createElement("style");
   style.setAttribute("data-dsh-timeline", "");
-  style.textContent = CSS;
+  // dockview's own stylesheet first — the panel chrome (Media Pool / Timeline
+  // tabs, splitters, grips) is invisible without it; then the app's compiled CSS.
+  style.textContent = dockviewCss + "\n" + CSS;
   document.head.appendChild(style);
   injected = true;
   document.documentElement.classList.add("dsh-timeline-scope");
 }
 
-function Shell() {
-  const previewRef = React.useRef<PreviewSurfaceHandle>(null);
-  const [playing, setPlaying] = React.useState(false);
+// The full desktop layout: Media Pool + monitor with transport + timeline +
+// property/marker panels, exactly the DockWorkspace the upstream app mounts.
+// DSH supplies only the contract (17 fields); every panel is store-driven.
+// ponytail: importsById/readinessById/optimizeById are empty and onImportMedia
+// no-ops until a Footage-import route lands (upgrade path: wire "+ Footage"
+// to POST add_media_item, then feed useImportReadiness from /api/file probes).
+function Workspace() {
   const summary = useProjectStore((s) => s.summary);
+  const previewRef = React.useRef<PreviewSurfaceHandle | null>(null);
+  const [revealedTrackId, setRevealedTrackId] = React.useState<string | null>(null);
+  const selectedLayerId = useSelectionStore((s) => primaryLayerIdOf(s.selection));
+  const contracts = React.useMemo<DockPanelContracts>(() => ({
+    summary,
+    previewRef,
+    onSeek: (us: number) => { seekPlayheadTimeUs(us); previewRef.current?.seekTo(us); },
+    onTogglePlay: () => {
+      if (usePlaybackStore.getState().requestedPlaying) transportPause();
+      else transportPlay();
+    },
+    previewDecodableOf: () => true,
+    revealedTrackId,
+    keybindings: {},
+    importsById: new Map(),
+    // DSH footage is original, streamed over /api/file — always playable; the
+    // desktop 'preparing/optimizing' badges describe its transcode pipeline.
+    readinessById: new Map((summary?.media ?? []).map((m) => [String(m.id), { ready: true } as MediaReadiness])),
+    // DSH media is original footage streamed over /api/file — always playable;
+    // the desktop 'preparing/optimizing' badges describe its transcode pipeline,
+    // which DSH does not have.
+    readinessOf: (id: string) => {
+      const media = useProjectStore.getState().mediaById.get(id);
+      return media ? mediaReadiness(media, { status: "ok", target: media.path } as never) : { ready: false, reason: "missing" };
+    },
+    optimizeById: new Map(),
+    onMutated: async () => {}, // every mutation already round-trips the actor and saves server-side
+    onImportMedia: async () => {},
+    selectedLayerId,
+    onSelectLayer: (layerId: string | null) => setLayerSelection(layerId, layerId ? [layerId] : []),
+    onRevealTrack: (trackId: string) => setRevealedTrackId(trackId),
+  }), [summary, revealedTrackId, selectedLayerId]);
+  return <DockWorkspace contracts={contracts} onControllerReady={() => {}} onResetWorkspace={() => {}} />;
+}
+
+function Shell() {
   const ready = useProjectStore((s) => s.ready);
+  const summary = useProjectStore((s) => s.summary);
   if (!ready) return <div className="p-4 text-sm opacity-70">Loading edit…</div>;
   if (!summary) return <div className="p-4 text-sm text-red-400">No edit is open.</div>;
-  const compositionId = summary.root_id;
-  const comp = summary.compositions[compositionId];
-  if (!comp) return <div className="p-4 text-sm text-red-400">Root composition missing.</div>;
-  const hasContent = Object.values(comp.tracks ?? {}).some((tr) => ((tr as { layers?: unknown[] }).layers ?? []).length > 0);
-  const toggle = (): void => {
-    const p = previewRef.current;
-    if (!p) return;
-    if (p.paused()) { p.play(); setPlaying(true); } else { p.pause(); setPlaying(false); }
-  };
-  return (
-    <div className="dsh-tl flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2 px-2 py-1 border-b border-border bg-card">
-        <button type="button" className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground" onClick={toggle}>{playing ? "Pause" : "Play"}</button>
-        <span className="text-xs opacity-60">{(comp.duration_us / 1e6).toFixed(2)}s</span>
-      </div>
-      <div className="min-h-0 basis-2/5 grow-0 shrink-0">
-        <PreviewSurface
-          ref={previewRef}
-          hasContent={hasContent}
-          previewDecodableOf={() => true}
-          visible
-          editingLocked={false}
-        />
-      </div>
-      <Timeline
-        compositionId={compositionId}
-        tracks={comp.tracks}
-        links={comp.links}
-        transitions={comp.transitions}
-        durationUs={comp.duration_us}
-        revealedTrackId={null}
-        keybindings={{}}
-        fpsNum={comp.fps_num}
-        fpsDen={comp.fps_den}
-        bladeMode={false}
-        media={summary.media}
-        readinessOf={() => ({ ready: true } as const)}
-        visible
-        editingLocked={false}
-        onExitBlade={() => {}}
-        onSeek={(us) => { seekPlayheadTimeUs(us); previewRef.current?.seekTo(us); }}
-        onMutated={async () => {}}
-      />
-    </div>
-  );
+  return <div className="dsh-tl h-full min-h-0 w-full"><Workspace /></div>;
 }
 
 const roots = new Map<Element, Root>();

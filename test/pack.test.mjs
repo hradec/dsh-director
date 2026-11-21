@@ -11,7 +11,7 @@ test('release archive excludes personal media and works without workspace skills
   const runtime = new Set((await readdir('src')).filter(name=>name.endsWith('.mjs')&&!name.endsWith('.test.mjs')).map(name=>'package/lib/'+name));
   const rootFiles = new Set(['package.json','README.md','docs/CONFIGURATION.md','docs/RELEASE_REVIEW.md','docs/TIMELINE.md','LICENSE','NOTICE','THIRD_PARTY_NOTICES.md','SECURITY.md','cordis.patch.yml'].map(name=>'package/'+name));
   assert.ok(files.includes('package/docs/CONFIGURATION.md'),'The installed README must link to a bundled configuration guide');
-  for (const file of files) assert.ok(runtime.has(file)||rootFiles.has(file)||file==='package/lib/client.js'||/^package\/skills\/(crew|director|h3-prompt-writing)\/(SKILL\.md|references\/[^/]+\.(md|txt))$/.test(file),`Unexpected release content: ${file}`);
+  for (const file of files) assert.ok(runtime.has(file)||rootFiles.has(file)||file==='package/lib/client.js'||/^package\/lib\/timeline-(engine\.js|core\.mjs)$/.test(file)||/^package\/assets\/fonts\/|^package\/skills\/(crew|director|h3-prompt-writing)\/(SKILL\.md|references\/[^/]+\.(md|txt))$/.test(file),`Unexpected release content: ${file}`);
   const root=await mkdtemp(join(tmpdir(),"dsh pack $literal's-"));execFileSync('tar',['-xzf',tarball,'-C',root]);
   const {createBundledProvider}=await import(new URL('file:///'+join(root,'package/lib/skills.mjs').replaceAll('\\','/')));
   const provider=await createBundledProvider();const result=await provider.list();assert.deepEqual(result.candidates.map(c=>c.name).sort(),['crew','director','h3-prompt-writing']);
