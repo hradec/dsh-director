@@ -84,6 +84,11 @@ function injectCss(host: Element): void {
   style.textContent = dockviewCss + "\n" + CSS + "\n.dsh-tl{background:#0e0e13;color:#e6e6ec;}\n.dsh-tl *{scrollbar-color:#3a3a45 transparent;}\n.dsh-tl .dv-popover-anchor{z-index:2147483000;}\n";
   doc.head.appendChild(style);
   doc.documentElement.classList.add("dsh-timeline-scope");
+  // Base UI menus/popovers portal to document.body, OUTSIDE the .dsh-tl .dark
+  // scope — they rendered white and under dockview's z-999 panels. The host
+  // document here is the Studio panel's own app copy (iframe); scoping dark to
+  // it darkens that copy's chrome too — consistent with the surrounding dark GUI.
+  doc.documentElement.classList.add("dark");
   injected = true;
 }
 
