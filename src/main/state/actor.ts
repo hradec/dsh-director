@@ -1502,6 +1502,23 @@ export function createActor(opts: ActorOptions): ActorHandle {
         // Nothing references a deletable composition, so there is no layer to name.
         case 'compositions_delete': commit(HISTORY_SUMMARY.compositionDelete, [], { kind: 'Coarse' }, (d) => applyCompositionsDelete(d, a.composition as Uuid)); return { ok: true, value: null }
         case 'update_layer': commit(HISTORY_SUMMARY.layerUpdate, [{ kind: 'Layer', id: a.layer as Uuid }], { kind: 'Layer', id: a.layer as Uuid }, (d) => applyUpdateLayer(d, a.layer as Uuid, a.patch as LayerPatch)); return { ok: true, value: null }
+        // DSH fork feature: relink_layer_media — repoint an EXISTING layer at another
+        // pool item with times and trims untouched (Director Studio take/upscale swap:
+        // the EDL keeps its shot slot, only the source file changes). Upstream keeps
+        // media refs immutable on purpose; this seam is the EDL-side path, and it
+        // clamps src_out_us to the new item's duration instead of refusing the swap.
+        case 'relink_layer_media': commit(HISTORY_SUMMARY.layerUpdate, [{ kind: 'Layer', id: a.layer as Uuid }], { kind: 'Layer', id: a.layer as Uuid }, (d) => {
+          const layer = a.layer as Uuid, media = a.media as Uuid
+          const item = d.media_pool[media]
+          if (!item) throw new CommandFailure({ error: 'MediaNotFound', media })
+          const loc = locateLayer(d, layer)
+          if (!loc) throw new CommandFailure({ error: 'LayerNotFound', layer })
+          const p = loc.layer.params as unknown as { media?: Uuid; src_out_us?: number }
+          if (typeof p.media !== 'string') throw new CommandFailure({ error: 'InvalidArgument', field: 'layer', detail: 'layer params carry no media reference' })
+          p.media = media
+          const dur = item.metadata?.duration_us
+          if (dur != null && typeof p.src_out_us === 'number' && p.src_out_us > dur) p.src_out_us = dur
+        }); return { ok: true, value: null }
         // The four commands below end with the scale-link invariant check
         // (mutations/scaleLink.ts): result-based, so it runs once per COMMIT —
         // the plural batch is legitimately mid-divergence between its scale_x

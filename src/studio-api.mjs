@@ -360,7 +360,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       // every save; nobody (UI or agent) hand-writes them. Live at the next harness restart.
       if(path==='/api/editing'&&req.method==='GET'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const tags=(url.searchParams.get('tags')??'').split(',').filter(Boolean);const items=tags.length?await ed.find(tags):Object.values(await ed.catalog());sendJson(res,200,{editing:items});return;}
       if(path==='/api/editing'&&req.method==='POST'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const b=await readJson(req,controller.signal);sendJson(res,201,await ed.create({name:String(b.name??'edit'),note:b.note??null,doc:b.doc}));return;}
-      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication))?$/.exec(path);
+      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink))?$/.exec(path);
       if(match){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const id=match[1],sub=match[2];
         if(!sub&&req.method==='GET'){const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}sendJson(res,200,got);return;}
         if(!sub&&req.method==='DELETE'){sendJson(res,200,{deleted:await ed.delete(id)});return;}
@@ -371,6 +371,8 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         if(sub==='command')sendJson(res,200,await ed.command(id,String(b.channel??''),b.args??{},String(b.by??'user')));
         else if(sub==='undo')sendJson(res,200,await ed.undo(id));
         else if(sub==='redo')sendJson(res,200,await ed.redo(id));
+        else if(sub==='seed')sendJson(res,200,await ed.seedShots(id,b.shots??b));
+        else if(sub==='relink')sendJson(res,200,await ed.relinkMedia(id,{media_id:b.media_id,shot_id:b.shot_id,path:b.path,duration_us:b.duration_us}));
         else sendJson(res,200,await ed.checkpoint(id,String(b.label??'checkpoint')));
         return;}
       // The Timeline tab loads the vendored WeftCut renderer bundle from here

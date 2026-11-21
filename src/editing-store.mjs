@@ -181,6 +181,24 @@ export class EditingStore {
     return res;
   }
 
+  // Same persist/tag path as command(), for the ops the camelWire command
+  // switch does not expose (add_media_item, update_layer_params) — the snake
+  // dispatch core owns them.
+  async dispatchOp(id, op, args) {
+    await this.ready;
+    const got = await this.get(id);
+    if (!got || !got.doc) return { ok: false, error: { code: 'not_found', detail: 'editing ' + id + ' has no document' } };
+    const w = await this.#actor(id, got.entry, got.doc);
+    const res = w.handle.dispatch(op, args || {});
+    if (res.ok) {
+      const doc = w.handle.snapshot();
+      await this.#save(id, got.entry, doc);
+      this.revision++;
+      return { ok: true, value: res.value, tags: EditingStore.docTags(doc) };
+    }
+    return res;
+  }
+
   snapshot(id) {
     const w = this.actors.get(id);
     return w ? w.handle.snapshot() : null;
@@ -218,6 +236,85 @@ export class EditingStore {
     const w = this.actors.get(id);
     if (!w) return { ok: false, error: { code: 'not_found' } };
     return { ok: true, id: w.handle.checkpoint(label) };
+  }
+
+  // Media-pool entry for a library clip (shape proven by scripts/coreprobe.mjs).
+  // ponytail: path_rel mirrors the absolute path — DSH resolves media through
+  // /api/file?path=, the WeftCut workspace-relative scheme is unused here.
+  static poolEntry(id, path, durationUs) {
+    const p = String(path).replace(/\\/g, '/');
+    // path_rel must be project-relative for the validator; the abs path is the
+    // DSH source of truth (/api/file), rel just keeps the doc valid + readable.
+    const rel = p.split('/').pop();
+    return { id, label: null, path_abs: p, path_rel: rel, kind: 'Video', metadata: { duration_us: durationUs ?? null, video: null, audio: null, container_format: null }, file_hash_blake3: '0', file_size: 0, file_mtime: 0, imported_at: new Date().toISOString(), decode_route: { route: 'bypass' }, conform_path: null };
+  }
+
+  // Seed an edit from Production shot slots: one Video track, one layer per shot
+  // laid out in order, each layer tagged metadata.dsh — the tags are the EDL's
+  // identity, so take/upscale swaps relink the media without touching layers.
+  async seedShots(id, shots) {
+    await this.ready;
+    const got = await this.get(id);
+    if (!got || !got.doc) return { ok: false, error: { code: 'not_found', detail: 'editing ' + id + ' has no document' } };
+    const ROOT = got.doc.root_id;
+    await this.#actor(id, got.entry, got.doc); // materialize the cached actor so snapshot() answers
+    let trackId = (this.snapshot(id).compositions[ROOT].tracks.find((t) => t.kind === 'Video') || {}).id;
+    if (!trackId) {
+      const r = await this.command(id, 'add_track', { compositionId: ROOT });
+      if (!r.ok) return r;
+      trackId = this.snapshot(id).compositions[ROOT].tracks.slice(-1)[0].id;
+    }
+    const added = [];
+    let tUs = 0;
+    const list = Array.isArray(shots) ? shots : (shots && Array.isArray(shots.shots) ? shots.shots : []);
+    for (const shot of list) {
+      if (!shot || !shot.path || !shot.shot_id) continue;
+      const durUs = Math.round(Number(shot.duration_us ?? Number(shot.duration_s) * 1e6) || 5e6);
+      const med = await this.dispatchOp(id, 'add_media_item', { media: EditingStore.poolEntry(randomUUID(), String(shot.path), durUs) });
+      if (!med.ok) return { ok: false, error: med.error ?? med, added };
+      const layer = await this.command(id, 'add_media_layer', { trackId, mediaId: med.value, tStartUs: tUs });
+      if (!layer.ok) return { ok: false, error: layer.error ?? layer, added };
+      const dsh = { shot_id: String(shot.shot_id) };
+      if (shot.sequence_id) dsh.sequence_id = String(shot.sequence_id);
+      if (shot.episode_id) dsh.episode_id = String(shot.episode_id);
+      const st = await this.command(id, 'update_layer', { layerId: layer.value, patch: { metadata: { dsh } } });
+      if (!st.ok) return { ok: false, error: st.error ?? st, added };
+      added.push({ shot_id: String(shot.shot_id), media_id: med.value, layer_id: layer.value, t_start_us: tUs, duration_us: durUs });
+      tUs += durUs;
+    }
+    return { ok: true, added };
+  }
+
+  // Swap the SOURCE of every layer for a shot slot (or a media id) — the take
+  // changed, the edit does not move: times, trims, tags all survive.
+  async relinkMedia(id, { media_id, shot_id, path, duration_us }) {
+    await this.ready;
+    const got = await this.get(id);
+    if (!got || !got.doc) return { ok: false, error: { code: 'not_found', detail: 'editing ' + id + ' has no document' } };
+    const snap = this.snapshot(id) ?? (await this.#actor(id, got.entry, got.doc)).handle.snapshot();
+    const oldIds = [];
+    for (const comp of Object.values(snap.compositions)) for (const tr of comp.tracks) for (const l of tr.layers) {
+      if (!l.params || !l.params.media) continue;
+      if (media_id && l.params.media === media_id) oldIds.push(media_id);
+      else if (shot_id && l.metadata && l.metadata.dsh && l.metadata.dsh.shot_id === String(shot_id)) oldIds.push(l.params.media);
+    }
+    const uniq = [...new Set(oldIds)];
+    if (!uniq.length) return { ok: false, error: { code: 'not_found', detail: 'no layers reference that media id or shot slot' } };
+    const durUs = duration_us != null ? Math.round(Number(duration_us)) : null;
+    const relinked = [];
+    for (const old of uniq) {
+      const newId = randomUUID();
+      const add = await this.dispatchOp(id, 'add_media_item', { media: EditingStore.poolEntry(newId, String(path), durUs) });
+      if (!add.ok) return { ok: false, error: add.error ?? add, relinked };
+      for (const comp of Object.values(this.snapshot(id).compositions)) for (const tr of comp.tracks) for (const l of tr.layers) {
+        if (!l.params || l.params.media !== old) continue;
+        // fork op: times/trims untouched, src_out clamped to the new duration
+        const st = await this.dispatchOp(id, 'relink_layer_media', { layer: l.id, media: newId });
+        if (!st.ok) return { ok: false, error: st.error ?? st, relinked };
+        relinked.push({ layer_id: l.id, old_media_id: old, new_media_id: newId });
+      }
+    }
+    return { ok: true, relinked };
   }
 
   async delete(id) {

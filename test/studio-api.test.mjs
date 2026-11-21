@@ -644,4 +644,22 @@ test('editing routes: create (default + explicit doc), shared-path commands, der
   assert.equal(typeof comp.fps_num,'number');
   assert.ok(pub.summary.media.length===0||pub.summary.media[0].id);
   assert.equal((await (await json(base,'/api/editing/nope000/publication')).status),404);
+  // shot-slot seeding + take relink over the SAME routes the agent tools use
+  const seeded=await (await json(base,'/api/editing',{method:'POST',body:JSON.stringify({name:'seeded'})})).json();
+  const sr=await (await json(base,`/api/editing/${seeded.id}/seed`,{method:'POST',body:JSON.stringify({shots:[{shot_id:'c9',sequence_id:'s9',episode_id:'e9',path:'/ws/media/clipA.mp4',duration_s:4},{shot_id:'c10',episode_id:'e9',path:'/ws/media/clipB.mp4',duration_s:3}]})})).json();
+  assert.ok(sr.ok&&sr.added.length===2,JSON.stringify(sr));
+  const sdoc=(await (await json(base,`/api/editing/${seeded.id}`)).json()).doc;
+  const slayers=sdoc.compositions[sdoc.root_id].tracks[0].layers;
+  assert.deepEqual(slayers.map(l=>[l.t_start_us,l.t_end_us]),[[0,4000000],[4000000,7000000]]);
+  assert.deepEqual((await (await json(base,'/api/editing?tags=shot-c9')).json()).editing.map(i=>i.id),[seeded.id]);
+  const before=slayers[0].params.media;
+  const rr=await (await json(base,`/api/editing/${seeded.id}/relink`,{method:'POST',body:JSON.stringify({shot_id:'c9',path:'/ws/media/clipA_v2.mp4',duration_us:4500000})})).json();
+  assert.ok(rr.ok&&rr.relinked.length===1&&rr.relinked[0].old_media_id===before,JSON.stringify(rr));
+  const ndoc=(await (await json(base,`/api/editing/${seeded.id}`)).json()).doc;
+  const nl=ndoc.compositions[ndoc.root_id].tracks[0].layers;
+  assert.notEqual(nl[0].params.media,before);
+  assert.deepEqual(nl.map(l=>[l.t_start_us,l.t_end_us]),[[0,4000000],[4000000,7000000]]);
+  assert.equal(nl[0].params.src_out_us,4000000);
+  assert.deepEqual(ndoc.compositions[ndoc.root_id].tracks[0].layers[1].params.media,slayers[1].params.media);
+  assert.deepEqual((await (await json(base,`/api/editing/${seeded.id}`)).json()).entry.tags.sort(),['episode-e9','sequence-s9','shot-c10','shot-c9']);
 });
