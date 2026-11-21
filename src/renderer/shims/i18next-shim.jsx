@@ -33,6 +33,20 @@ const i18n = {
     return key;
   },
   changeLanguage: async (lng) => { i18n.language = lng; i18n.resolvedLanguage = lng; },
+  // formatCommandError/searchIndexStore pin English copy via getFixedT('en-US');
+  // return a t() bound to that language, falling back to whatever bundle we
+  // actually carry (this shim ships en only).
+  getFixedT: (lng, ns) => {
+    const lang = lng && resources[lng] ? lng : i18n.language;
+    const namespace = typeof ns === 'string' ? ns : 'translation';
+    return (k, opts) => {
+      const key = typeof k === 'string' ? k : String((k && k.key) || '');
+      const found = lookup((resources[lang] || {})[namespace], key);
+      if (found !== undefined) return interpolate(found, opts);
+      if (opts && typeof opts.defaultValue === 'string') return interpolate(opts.defaultValue, opts);
+      return key;
+    };
+  },
   use: () => i18n,
   init: (opts) => {
     for (const [lng, byNs] of Object.entries((opts && opts.resources) || {}))

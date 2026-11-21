@@ -26,12 +26,21 @@ export function TimelineStudio(){
     return list.slice().sort((a,b)=>String(b.updated_at??'').localeCompare(String(a.updated_at??'')));
   },[]);
   const mountEdit=useCallback(async entry=>{
-    if(!globalThis.DSH_TIMELINE){
-      await new Promise((res,rej)=>{const s=document.createElement('script');s.src='/director-studio/timeline-engine.js';s.onload=res;s.onerror=()=>rej(new Error('engine script unavailable'));document.head.appendChild(s);});
+    const host=hostRef.current;
+    if(!host)return;
+    // Realm alignment: the Studio panel hosts its DOM in an IFRAME. The engine's
+    // vendored gesture code listens on ITS OWN realm's window — loaded into the
+    // top frame it never sees pointermove from the iframe document, which kills
+    // playhead scrubbing and clip drags. Load + run the engine in the host
+    // element's own document.
+    const doc=host.ownerDocument;const win=doc&&doc.defaultView;
+    if(win&&!win.DSH_TIMELINE){
+      await new Promise((res,rej)=>{const s=doc.createElement('script');s.src='/director-studio/timeline-engine.js';s.onload=res;s.onerror=()=>rej(new Error('engine script unavailable'));doc.head.appendChild(s);});
     }
-    if(globalThis.DSH_TIMELINE&&hostRef.current){
-      globalThis.DSH_TIMELINE.unmount(hostRef.current); // idempotent; fresh mount for the new edit
-      globalThis.DSH_TIMELINE.mount(hostRef.current,{editingId:entry.id,apiBase:'/director-studio',session:globalThis.__DSH_DIRECTOR_SESSION__??''});
+    const api=(win&&win.DSH_TIMELINE)||globalThis.DSH_TIMELINE;
+    if(api){
+      api.unmount(host); // idempotent; fresh mount for the new edit
+      api.mount(host,{editingId:entry.id,apiBase:'/director-studio',session:globalThis.__DSH_DIRECTOR_SESSION__??''});
       setCurrentId(entry.id);setReady(true);
       try{sessionStorage.setItem(LAST_EDIT_KEY,entry.id);}catch{/* private mode */}
     }
@@ -53,7 +62,7 @@ export function TimelineStudio(){
       setEdits(list);
       await mountEdit(entry);
     })().catch(()=>{if(!disposed){setView('board');setNote('Timeline engine unavailable — showing the shot board.');}});
-    return()=>{disposed=true;if(globalThis.DSH_TIMELINE&&hostRef.current)globalThis.DSH_TIMELINE.unmount(hostRef.current);};
+    return()=>{disposed=true;const host=hostRef.current;const win=host&&host.ownerDocument&&host.ownerDocument.defaultView;const api=(win&&win.DSH_TIMELINE)||globalThis.DSH_TIMELINE;if(api&&host)api.unmount(host);};
   },[loadEdits,mountEdit]);
   const switchEdit=useCallback(async id=>{
     const entry=edits.find(item=>item.id===id);
