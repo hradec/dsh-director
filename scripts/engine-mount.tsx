@@ -17,6 +17,7 @@ import { useSelectionStore, setLayerSelection, primaryLayerIdOf } from "@/state/
 import { initEval } from "@/eval";
 import { installBootstrapHook, installMotifTestHooks, installMotifHook, installAudioTestHooks, installDecodeBenchHooks } from "@/testhook/e2eHook"; // e2e seek + composite readback bridge for proofs (mirrors main.tsx)
 import { startPreviewAudioSession } from "@/render/audio/previewAudioSession"; // registers the playback transport (Play/Pause/Seek) — desktop App does this in its session effect
+import { Ticker } from "pixi.js";
 import type { PreviewSurfaceHandle } from "@/preview/PreviewSurface";
 import dockviewCss from "dockview/dist/styles/dockview.css";
 import CSS from "./timeline-css.generated.mjs";
@@ -40,6 +41,25 @@ if (!globalThis.window.api) {
 }
 
 let injected = false;
+
+// Embedded on a weak-GPU browser, three idle 60fps Pixi tickers keep
+// compositing full canvases forever; the window compositor then starves the
+// whole page (scroll/typing lag on GTX 1050-class hardware). The desktop app
+// owns its own pacing, so cap it at the DSH engine boundary only: 20fps idle,
+// 60fps while playing. Realm-level patch — every ticker is captured at start.
+const DSH_IDLE_FPS = 20;
+const DSH_PLAY_FPS = 60;
+const dshTickers = new Set<Ticker>();
+const tickerStart = Ticker.prototype.start;
+Ticker.prototype.start = function (this: Ticker, ...args: unknown[]) {
+  dshTickers.add(this);
+  if (this.maxFPS == null || this.maxFPS > DSH_IDLE_FPS) this.maxFPS = DSH_IDLE_FPS;
+  return tickerStart.apply(this, args as []);
+};
+usePlaybackStore.subscribe(() => {
+  const fps = usePlaybackStore.getState().requestedPlaying ? DSH_PLAY_FPS : DSH_IDLE_FPS;
+  for (const t of dshTickers) t.maxFPS = fps;
+});
 function injectCss(host: Element): void {
   // The Studio panel hosts this element inside an IFRAME whose document is NOT
   // the script's own; appending styles to `document.head` leaves the dock
