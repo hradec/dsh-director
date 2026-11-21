@@ -65,6 +65,18 @@ export function TimelineStudio(){
     if(entry){setEdits(list=>[entry,...list]);await mountEdit(entry);}
   },[edits.length,mountEdit]);
   const current=edits.find(item=>item.id===currentId);
+  // dockview sizes itself off an explicit height: the Studio tab body is an
+  // auto-height scroll container, so `height:100%` collapses the whole dock.
+  // Measure the host's real top edge instead of guessing a header offset.
+  const [hostH,setHostH]=useState(480);
+  useEffect(()=>{
+    if(view!=='edit')return;
+    const update=()=>{const el=hostRef.current;if(!el)return;setHostH(Math.max(420,window.innerHeight-el.getBoundingClientRect().top-12));};
+    update();
+    window.addEventListener('resize',update);
+    const t=setInterval(update,800); // toolbar/panel chrome changes have no resize event
+    return()=>{window.removeEventListener('resize',update);clearInterval(t);};
+  },[view,currentId]);
   return <div style={{display:'flex',flexDirection:'column',height:'100%',minHeight:0}}>
     <div style={{display:'flex',gap:8,alignItems:'center',padding:'6px 10px',flex:'0 0 auto'}}>
       <button className={view==='edit'?'btn primary sm':'btn ghost sm'} onClick={()=>setView('edit')} disabled={!ready}>Edit {current?`“${current.name}”`:''}</button>
@@ -75,7 +87,7 @@ export function TimelineStudio(){
       {ready&&<button className="btn ghost sm" onClick={newEdit}>+ New edit</button>}
       {note&&<span style={{opacity:.7,fontSize:12}}>{note}</span>}
     </div>
-    {view==='edit'&&<div ref={hostRef} style={{flex:'1 1 auto',minHeight:0,position:'relative'}}/>}
+    {view==='edit'&&<div ref={hostRef} style={{flex:'1 1 auto',minHeight:0,position:'relative',height:hostH}}/>}
     {view==='board'&&<div style={{flex:'1 1 auto',minHeight:0,overflow:'auto'}}><TimelineBoard/></div>}
   </div>;
 }

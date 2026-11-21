@@ -40,16 +40,23 @@ if (!globalThis.window.api) {
 }
 
 let injected = false;
-function injectCss(): void {
-  if (injected || !CSS) return;
-  const style = document.createElement("style");
+function injectCss(host: Element): void {
+  // The Studio panel hosts this element inside an IFRAME whose document is NOT
+  // the script's own; appending styles to `document.head` leaves the dock
+  // unstyled (and collapsed) there. Scope styles + scope class to the element's
+  // OWN document.
+  const doc = host.ownerDocument;
+  if (!CSS || doc.querySelector("style[data-dsh-timeline]")) { injected = true; return; }
+  const style = doc.createElement("style");
   style.setAttribute("data-dsh-timeline", "");
   // dockview's own stylesheet first — the panel chrome (Media Pool / Timeline
-  // tabs, splitters, grips) is invisible without it; then the app's compiled CSS.
-  style.textContent = dockviewCss + "\n" + CSS;
-  document.head.appendChild(style);
+  // tabs, splitters, grips) is invisible without it; then the app's compiled CSS,
+  // then a guard: the Studio page's own light-theme CSS otherwise paints the
+  // dock white (it loads later than nothing but sets body backgrounds directly).
+  style.textContent = dockviewCss + "\n" + CSS + "\n.dsh-tl{background:#0e0e13;color:#e6e6ec;}\n.dsh-tl *{scrollbar-color:#3a3a45 transparent;}\n";
+  doc.head.appendChild(style);
+  doc.documentElement.classList.add("dsh-timeline-scope");
   injected = true;
-  document.documentElement.classList.add("dsh-timeline-scope");
 }
 
 // The full desktop layout: Media Pool + monitor with transport + timeline +
@@ -100,13 +107,15 @@ function Shell() {
   const summary = useProjectStore((s) => s.summary);
   if (!ready) return <div className="p-4 text-sm opacity-70">Loading edit…</div>;
   if (!summary) return <div className="p-4 text-sm text-red-400">No edit is open.</div>;
-  return <div className="dsh-tl h-full min-h-0 w-full"><Workspace /></div>;
+  // `dark` scopes WeftCut's dark CSS variables (app.css defines them under
+  // `.dark`) to the engine subtree — the Studio page stays its own theme.
+  return <div className="dsh-tl dark h-full min-h-0 w-full"><Workspace /></div>;
 }
 
 const roots = new Map<Element, Root>();
 
 export function mount(el: Element, opts: MountOpts): void {
-  injectCss();
+  injectCss(el);
   installBootstrapHook(() => {}, () => {}); installMotifTestHooks(); installMotifHook(); installAudioTestHooks(); installDecodeBenchHooks();
   // DSH edits carry no A/B-roll role stamps yet, so the WeftCut default AbRoll
   // view would show an empty lane. Open in AllTracks until the Production
