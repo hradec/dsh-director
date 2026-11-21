@@ -76,12 +76,20 @@ function refreshStore(): Promise<unknown> {
 }
 
 export function invokeRaw<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  // Renderer telemetry is fire-and-forget in desktop; DSH has no log service,
+  // and log_emit is not an actor production op — answer locally, never POST.
+  if (cmd === 'log_emit' || cmd === 'report_audio_meter') return Promise.resolve(undefined as T);
+  // Conform stem preparation lives in the desktop main process; DSH has no
+  // audio-conform service yet. Honest empty answer: zero stems, not waiting —
+  // the preview clock plays with silence until conform lands server-side.
+  if (cmd === 'prepare_retimed_audio') return Promise.resolve({ waiting: false, stems: [] } as unknown as T);
   if (cmd === 'project_publication') return publication() as Promise<T>
   if (cmd === 'project_summary') return publication().then((r) => r.summary) as Promise<T>
   return Promise.reject(new Error('DSH timeline: unknown read op ' + cmd))
 }
 
 export async function invoke<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (cmd === 'log_emit') return undefined as T; // telemetry no-op (see invokeRaw)
   const id = cfg_().editingId
   switch (cmd) {
     case 'project_publication': return await publication() as T

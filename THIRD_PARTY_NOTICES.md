@@ -57,3 +57,11 @@ Dependencies and their registry origins are recorded in `package-lock.json`;
 they retain their own licenses. React is external to the browser bundle. Build
 output preserves esbuild's legal comments. Harness, ComfyUI, llama-swap and any
 models/nodes installed by the user are separate products with their own terms.
+
+## Font assets
+
+`assets/fonts/LiberationSans-Regular.woff2` — Liberation Sans, (c) Red Hat,
+SIL Open Font License 1.1. `assets/fonts/NotoSansSC-VF.ttf` — currently an
+OFL Liberation Sans placeholder for the Noto Sans SC asset (SIL OFL 1.1),
+pending a real CJK vendor drop. Both are embedded into the timeline engine
+bundle as data URLs at build time.

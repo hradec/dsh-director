@@ -15,27 +15,54 @@ const store = new EditingStore(ws, null);
 await store.ready;
 
 // Seed one edit with a media pool + two layers through the REAL command path.
+// Real decodable clips for the preview-surface proof.
+import { execFileSync } from 'node:child_process';
+import { createReadStream, statSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
+const CLIP_DIR = '/tmp/codex/tlclips';
+mkdirSync(CLIP_DIR, { recursive: true });
+const CLIP_A = CLIP_DIR + '/A.mp4', CLIP_B = CLIP_DIR + '/B.mp4';
+execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=24:duration=4', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', CLIP_A]);
+execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'smptebars=size=640x360:rate=25:duration=3', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', CLIP_B]);
+const probeDur = (f) => Math.round(Number(execFileSync('ffprobe', ['-v', 'quiet', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).toString().trim()) * 1e6);
+const DUR_A = probeDur(CLIP_A), DUR_B = probeDur(CLIP_B);
+function serveFile(req, res, url) {
+  const f = url.searchParams.get('path') || '';
+  if (f !== CLIP_A && f !== CLIP_B) { res.writeHead(404); res.end(''); return; }
+  const size = statSync(f).size;
+  const range = req.headers.range;
+  if (range && range.startsWith('bytes=')) {
+    const m = /bytes=(\d*)-(\d*)/.exec(range);
+    const start = m[1] ? Number(m[1]) : 0;
+    const end = m[2] ? Number(m[2]) : size - 1;
+    res.writeHead(206, { 'content-range': `bytes ${start}-${end}/${size}`, 'accept-ranges': 'bytes', 'content-length': end - start + 1, 'content-type': 'video/mp4' });
+    createReadStream(f, { start, end }).pipe(res);
+    return;
+  }
+  res.writeHead(200, { 'content-length': size, 'accept-ranges': 'bytes', 'content-type': 'video/mp4' });
+  createReadStream(f).pipe(res);
+}
 const doc = await store.newProjectDoc('dev-cut');
 const poolId = '66666666-6666-4666-8666-666666666666';
 const vid = '77777777-7777-4777-8777-777777777777';
-doc.media_pool[poolId] = { id: poolId, label: null, path_abs: 'A.mp4', path_rel: null, kind: 'Video', metadata: { duration_us: 5000000, video: null, audio: null, container_format: null }, file_hash_blake3: '0', file_size: 0, file_mtime: 0, imported_at: '', decode_route: { route: 'bypass' }, conform_path: null };
-doc.media_pool[vid] = { id: vid, label: null, path_abs: 'B.mp4', path_rel: null, kind: 'Video', metadata: { duration_us: 4000000, video: null, audio: null, container_format: null }, file_hash_blake3: '0', file_size: 0, file_mtime: 0, imported_at: '', decode_route: { route: 'bypass' }, conform_path: null };
+doc.media_pool[poolId] = { id: poolId, label: 'A.mp4', path_abs: CLIP_A, path_rel: 'A.mp4', kind: 'Video', metadata: { duration_us: DUR_A, video: null, audio: null, container_format: null }, file_hash_blake3: '0', file_size: 0, file_mtime: 0, imported_at: '', decode_route: { route: 'bypass' }, conform_path: null };
+doc.media_pool[vid] = { id: vid, label: 'B.mp4', path_abs: CLIP_B, path_rel: 'B.mp4', kind: 'Video', metadata: { duration_us: DUR_B, video: null, audio: null, container_format: null }, file_hash_blake3: '0', file_size: 0, file_mtime: 0, imported_at: '', decode_route: { route: 'bypass' }, conform_path: null };
 const entry = await store.create({ name: 'dev-cut', doc });
 const ROOT = doc.root_id;
 const tr1 = await store.command(entry.id, 'add_track', { compositionId: ROOT });
 const trackId = store.snapshot(entry.id).compositions[ROOT].tracks[0].id;
 const ml1 = await store.command(entry.id, 'add_media_layer', { trackId, mediaId: poolId, tStartUs: 0 });
-const ml2 = await store.command(entry.id, 'add_media_layer', { trackId, mediaId: vid, tStartUs: 5000000 });
+const ml2 = await store.command(entry.id, 'add_media_layer', { trackId, mediaId: vid, tStartUs: DUR_A });
 await store.command(entry.id, 'update_layer', { layerId: ml1.value, patch: { metadata: { dsh: { shot_id: 'c1', episode_id: 'e1' } } } });
 console.log('seeded edit', entry.id, 'tracks', store.snapshot(entry.id).compositions[ROOT].tracks.length, 'layers', ml1.ok, ml2.ok);
 
-const engine = await readFile(join(process.cwd(), 'lib/timeline-engine.js'));
+const engineRoute = async () => readFile(join(process.cwd(), 'lib/timeline-engine.js')); // fresh per request in dev
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
   const json = (code, o) => { res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*' }); res.end(JSON.stringify(o)); };
-  if (p === '/engine.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end(engine); return; }
-  if (p === '/api/file') { res.writeHead(404); res.end(''); return; }
+  if (p === '/engine.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end(await engineRoute()); return; }
+  if (p === '/api/file') { serveFile(req, res, url); return; }
   const m = /^\/api\/editing\/([a-f0-9-]{36})(?:\/(publication|command|undo|redo|checkpoint))?$/.exec(p);
   if (m) {
     const id = m[1], sub = m[2];
