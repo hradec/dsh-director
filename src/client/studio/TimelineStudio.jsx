@@ -14,11 +14,16 @@ const LAST_EDIT_KEY='dsh-director.timeline-edit';
 
 export function TimelineStudio(){
   const hostRef=useRef(null);
+  const mountedRef=useRef(null); // {el,api}: the element the engine root is bound to RIGHT NOW
   const [view,setView]=useState('edit'); // 'edit' = WeftCut engine, 'board' = legacy
   const [ready,setReady]=useState(false);
   const [note,setNote]=useState('');
   const [edits,setEdits]=useState([]);
   const [currentId,setCurrentId]=useState('');
+  const unmountEngine=useCallback(()=>{
+    const m=mountedRef.current;
+    if(m){m.api.unmount(m.el);mountedRef.current=null;}
+  },[]);
   const loadEdits=useCallback(async()=>{
     const r=await apiFetch('/api/editing');
     if(!r.ok)return null;
@@ -38,13 +43,15 @@ export function TimelineStudio(){
       await new Promise((res,rej)=>{const s=doc.createElement('script');s.src='/director-studio/timeline-engine.js';s.onload=res;s.onerror=()=>rej(new Error('engine script unavailable'));doc.head.appendChild(s);});
     }
     const api=(win&&win.DSH_TIMELINE)||globalThis.DSH_TIMELINE;
-    if(api){
+    if(api&&host.isConnected){ // view may have toggled while the script loaded
+      unmountEngine(); // previous edit lived on its own element; release it (Pixi tickers keep running on detached nodes)
       api.unmount(host); // idempotent; fresh mount for the new edit
       api.mount(host,{editingId:entry.id,apiBase:'/director-studio',session:globalThis.__DSH_DIRECTOR_SESSION__??''});
+      mountedRef.current={el:host,api};
       setCurrentId(entry.id);setReady(true);
       try{sessionStorage.setItem(LAST_EDIT_KEY,entry.id);}catch{/* private mode */}
     }
-  },[]);
+  },[unmountEngine]);
   useEffect(()=>{
     let disposed=false;
     (async()=>{
@@ -62,8 +69,16 @@ export function TimelineStudio(){
       setEdits(list);
       await mountEdit(entry);
     })().catch(()=>{if(!disposed){setView('board');setNote('Timeline engine unavailable — showing the shot board.');}});
-    return()=>{disposed=true;const host=hostRef.current;const win=host&&host.ownerDocument&&host.ownerDocument.defaultView;const api=(win&&win.DSH_TIMELINE)||globalThis.DSH_TIMELINE;if(api&&host)api.unmount(host);};
-  },[loadEdits,mountEdit]);
+    return()=>{disposed=true;unmountEngine();};
+  },[loadEdits,mountEdit,unmountEngine]);
+  // View switches replace the host div (conditional render), so the engine must
+  // remount onto the new one when returning, and must be released when leaving:
+  // a React root on a detached element keeps Pixi tickers + observers alive.
+  useEffect(()=>{
+    if(view!=='edit'){unmountEngine();return;}
+    const entry=edits.find(item=>item.id===currentId);
+    if(entry&&hostRef.current&&mountedRef.current?.el!==hostRef.current)void mountEdit(entry);
+  },[view,currentId,edits,mountEdit,unmountEngine]);
   const switchEdit=useCallback(async id=>{
     const entry=edits.find(item=>item.id===id);
     if(entry)await mountEdit(entry);
