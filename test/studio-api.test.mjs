@@ -666,3 +666,4 @@ test('editing routes: create (default + explicit doc), shared-path commands, der
   assert.deepEqual(ndoc.compositions[ndoc.root_id].tracks[0].layers[1].params.media,slayers[1].params.media);
   assert.deepEqual((await (await json(base,`/api/editing/${seeded.id}`)).json()).entry.tags.sort(),['episode-e9','sequence-s9','shot-c10','shot-c9']);
 });
+test('GET /timeline-engine.js serves the engine bundle without a session (script tags cannot send headers)',async t=>{const {base}=await setup(t);const r=await fetch(base+'/timeline-engine.js');assert.equal(r.status,200);assert.match(r.headers.get('content-type')??'',/javascript/);assert.ok((await r.text()).includes('DSH_TIMELINE'));});

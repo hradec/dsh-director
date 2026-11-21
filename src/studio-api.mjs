@@ -247,7 +247,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
     try{
       const rejection=requestRejection(req);if(rejection!==undefined){res.writeHead(rejection);res.end();return;}
       const url=new URL(req.url,'http://localhost');if(!url.pathname.startsWith('/director-studio')){sendJson(res,404,{detail:'Not found.'});return;}
-      const path=url.pathname.slice('/director-studio'.length)||'/';if(!path.startsWith('/api/')){sendJson(res,404,{detail:'Not found.'});return;}
+      const path=url.pathname.slice('/director-studio'.length)||'/';if(path==='/timeline-engine.js'&&req.method==='GET'){try{const f=readFileSync(new URL('../lib/timeline-engine.js',import.meta.url));res.writeHead(200,{'content-type':'text/javascript','cache-control':'no-cache'});res.end(f);}catch{sendJson(res,404,{detail:'timeline-engine.js not built — run node scripts/build.mjs'});}return;}if(!path.startsWith('/api/')){sendJson(res,404,{detail:'Not found.'});return;}
       // Bridge contract v1 (BRIDGE_CONTRACT.md): the ComfyUI page (iframe or standalone) fetches these GETs cross-origin from the browser; auth model unchanged (?session=), CORS only on the read lanes.
       const isBridgePath=(p)=>p==='/api/file'||p==='/api/footage/thumb'||p.startsWith('/api/library')||p==='/api/footage'||p==='/api/images';
       if(req.method==='OPTIONS'){res.writeHead(204,{Allow:'GET, HEAD, POST, PATCH, DELETE, OPTIONS',...(isBridgePath(path)?{'access-control-allow-origin':'*','access-control-allow-methods':'GET, HEAD, OPTIONS','access-control-allow-headers':'content-type'}:{})});res.end();return;}
@@ -375,12 +375,8 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         else if(sub==='relink')sendJson(res,200,await ed.relinkMedia(id,{media_id:b.media_id,shot_id:b.shot_id,path:b.path,duration_us:b.duration_us}));
         else sendJson(res,200,await ed.checkpoint(id,String(b.label??'checkpoint')));
         return;}
-      // The Timeline tab loads the vendored WeftCut renderer bundle from here
-      // (same package dir the harness booted this server from).
-      if(path==='/timeline-engine.js'&&req.method==='GET'){
-        try{const f=readFileSync(new URL('../lib/timeline-engine.js',import.meta.url));res.writeHead(200,{'content-type':'text/javascript','cache-control':'no-cache'});res.end(f);}
-        catch{sendJson(res,404,{detail:'timeline-engine.js not built — run node scripts/build.mjs'});}
-        return;}
+      // (The engine bundle is served pre-session at the /api gate above: a
+      //  <script> tag cannot send the session header.)
       // Footage & Images libraries: /api/footage* over media/ (video) and /api/images* over images/ — one shared block, kind from the URL segment.
       // Bridge contract: footage/big files move DSH→ComfyUI input/dsh/ by the SERVER (the Comfy box can never reach 127.0.0.1:3081); the browser only passes names.
       if(path==='/api/comfy-upload'&&req.method==='POST'){
