@@ -11,12 +11,18 @@ import { ShortcutBindingsProvider } from "@/shortcuts/bindings-context";
 import { useProjectStore } from "@/state/projectStore";
 import { useAppSettingsStore } from "@/settings/appSettingsStore";
 import { usePlaybackStore, transportPlay, transportPause } from "@/state/playbackStore";
-import { configure, invoke } from "@/bridge/ipc";
+import { configure, invoke, invokeRaw } from "@/bridge/ipc";
+import { attachProjectPublication } from "@/state/projectPublication";
 import { seekPlayheadTimeUs } from "@/state/playheadStore";
 import { useSelectionStore, setLayerSelection, primaryLayerIdOf } from "@/state/selectionStore";
 import { initEval } from "@/eval";
 import { installBootstrapHook, installMotifTestHooks, installMotifHook, installAudioTestHooks, installDecodeBenchHooks } from "@/testhook/e2eHook"; // e2e seek + composite readback bridge for proofs (mirrors main.tsx)
 import { startPreviewAudioSession } from "@/render/audio/previewAudioSession"; // registers the playback transport (Play/Pause/Seek) — desktop App does this in its session effect
+import { useFocusRegions } from "@/focus/useFocusRegions"; // panel-scope tracker (ADR 0041) — desktop mounts it at the root
+import { useShortcuts, type HandlerMap } from "@/shortcuts/useShortcuts"; // key dispatch lives in the shell, not DockWorkspace
+import { deleteLayers, rippleDeleteLayers, projectUndo, projectRedo } from "@/ipc";
+import { currentSelection, layerIdsOf, clearLayerSelection } from "@/state/selectionStore";
+import { settleProjectStore } from "@/state/projectStore";
 import { Ticker } from "pixi.js";
 import type { PreviewSurfaceHandle } from "@/preview/PreviewSurface";
 import dockviewCss from "dockview/dist/styles/dockview.css";
@@ -73,7 +79,9 @@ function injectCss(host: Element): void {
   // tabs, splitters, grips) is invisible without it; then the app's compiled CSS,
   // then a guard: the Studio page's own light-theme CSS otherwise paints the
   // dock white (it loads later than nothing but sets body backgrounds directly).
-  style.textContent = dockviewCss + "\n" + CSS + "\n.dsh-tl{background:#0e0e13;color:#e6e6ec;}\n.dsh-tl *{scrollbar-color:#3a3a45 transparent;}\n";
+  // .dv-popover-anchor holds dockview context menus; it ships with no z-index,
+  // so menus painted inside it sink under later panel siblings in a cramped dock.
+  style.textContent = dockviewCss + "\n" + CSS + "\n.dsh-tl{background:#0e0e13;color:#e6e6ec;}\n.dsh-tl *{scrollbar-color:#3a3a45 transparent;}\n.dsh-tl .dv-popover-anchor{z-index:2147483000;}\n";
   doc.head.appendChild(style);
   doc.documentElement.classList.add("dsh-timeline-scope");
   injected = true;
@@ -90,6 +98,30 @@ function Workspace() {
   const previewRef = React.useRef<PreviewSurfaceHandle | null>(null);
   const [revealedTrackId, setRevealedTrackId] = React.useState<string | null>(null);
   const selectedLayerId = useSelectionStore((s) => primaryLayerIdOf(s.selection));
+  // Key dispatch (Delete/Shift+Delete/undo/redo/space) is App-shell behavior on
+  // desktop; the DSH shell is this component, so it owns the same minimal map.
+  useFocusRegions();
+  const handlers = React.useMemo<HandlerMap>(() => ({
+    togglePlay: () => {
+      if (usePlaybackStore.getState().requestedPlaying) transportPause();
+      else transportPlay();
+    },
+    deleteSelected: async () => {
+      const ids = [...layerIdsOf(currentSelection())];
+      if (!ids.length) return;
+      try { await deleteLayers(ids); clearLayerSelection(); await settleProjectStore(); }
+      catch (err) { console.error("dsh-timeline: delete failed", err); }
+    },
+    rippleDeleteSelected: async () => {
+      const ids = [...layerIdsOf(currentSelection())];
+      if (!ids.length) return;
+      try { await rippleDeleteLayers(ids); clearLayerSelection(); await settleProjectStore(); }
+      catch (err) { console.error("dsh-timeline: ripple delete failed", err); }
+    },
+    undo: () => projectUndo(),
+    redo: () => projectRedo(),
+  }), []);
+  useShortcuts({ handlers, overrides: {} });
   const contracts = React.useMemo<DockPanelContracts>(() => ({
     summary,
     previewRef,
@@ -142,6 +174,21 @@ export function mount(el: Element, opts: MountOpts): void {
   // adapter stamps roles (upgrade path: flip the default back then).
   useAppSettingsStore.setState((s) => ({ settings: { ...s.settings, display_mode: "AllTracks" } }));
   configure({ editingId: opts.editingId, apiBase: opts.apiBase, session: opts.session });
+  // Publication barrier: desktop wires a push-driven client (wireProjectStore);
+  // DSH's HTTP bridge already re-reads and applies the full projection after
+  // EVERY command (refreshStore in dsh-bridge-ipc), so the barrier is
+  // satisfied by construction. Without an attached client every gated command
+  // (delete, ripple-delete, undo…) rejects 'unavailable' — clips looked
+  // undeletable. refresh still re-reads for callers like refreshProjectStore.
+  attachProjectPublication({
+    waitFor: () => Promise.resolve(),
+    settle: () => Promise.resolve(),
+    refresh: async () => {
+      const pub = await invokeRaw<{ summary: unknown }>("project_publication");
+      useProjectStore.getState().apply(pub.summary as never);
+    },
+    stop: () => {},
+  });
   const run = (): void => {
     void initEval()
       .catch((err) => console.error("dsh-timeline: eval wasm init failed", err))
