@@ -35,6 +35,9 @@ i18n.addResourceBundle("en", "translation", enUS);
 
 interface MountOpts { editingId: string; apiBase: string; session: string }
 
+// Debounce handle for post-edit media normalization (see Workspace onMutated).
+let normalizeTimer: ReturnType<typeof setTimeout> | null = null;
+
 // DSH has no Electron secondary windows. PerfHUD's telemetry bridge asks
 // SecondaryWindow.getByLabel on mount; without this the passive effect throws
 // (window.api is Electron-preload-only), React unmounts the preview subtree and
@@ -167,7 +170,13 @@ function Workspace() {
       return media ? mediaReadiness(media, { status: "ok", target: media.path } as never) : { ready: false, reason: "missing" };
     },
     optimizeById: new Map(),
-    onMutated: async () => {}, // every mutation already round-trips the actor and saves server-side
+    // After any edit (esp. dropping a clip from the pool onto the timeline), a
+    // short debounced normalize-pool makes freshly-added 10-bit sources playable
+    // in the SAME session — the route early-returns if a pass is already running.
+    onMutated: async () => {
+      if (normalizeTimer) clearTimeout(normalizeTimer);
+      normalizeTimer = setTimeout(() => { normalizeTimer = null; void invoke("dsh_normalize_pool").catch(() => {}); }, 1500);
+    },
     // Media Pool import button: server scans workspace media/ and adds every
     // not-yet-pooled video through the shared actor (then refreshes projection).
     onImportMedia: async () => { await invoke("dsh_import_footage"); },
