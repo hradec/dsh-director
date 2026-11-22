@@ -3,6 +3,7 @@ import {StudioStoreError,isStudioAssetKind,studioStoreConstants} from './studio-
 import {storyStoreFor} from './story-store.mjs';
 import {editingStoreFor,EditingStore} from './editing-store.mjs';
 import {ensureWaveform,readWaveformTile} from './media-waveform.mjs';
+import {ensureConform,readConformRange} from './media-conform.mjs';
 import {Readable} from 'node:stream';
 import {createReadStream,statSync,fstatSync,realpathSync,readdirSync,readFileSync,rmSync,existsSync,mkdirSync,writeFileSync,openSync,closeSync,readSync,utimesSync,renameSync} from 'node:fs';
 import {execFile} from 'node:child_process';
@@ -442,7 +443,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       // every save; nobody (UI or agent) hand-writes them. Live at the next harness restart.
       if(path==='/api/editing'&&req.method==='GET'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const tags=(url.searchParams.get('tags')??'').split(',').filter(Boolean);const items=tags.length?await ed.find(tags):Object.values(await ed.catalog());sendJson(res,200,{editing:items});return;}
       if(path==='/api/editing'&&req.method==='POST'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const b=await readJson(req,controller.signal);sendJson(res,201,await ed.create({name:String(b.name??'edit'),note:b.note??null,doc:b.doc}));return;}
-      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink|thumbnail|tile|art-file|import-footage|waveform-levels|waveform-tile|normalize-pool|normalize-status|job-status|pool-ensure))?$/.exec(path);
+      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink|thumbnail|tile|art-file|conform-file|import-footage|waveform-levels|waveform-tile|normalize-pool|normalize-status|job-status|pool-ensure))?$/.exec(path);
       if(match){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const id=match[1],sub=match[2];
         if(!sub&&req.method==='GET'){const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}sendJson(res,200,got);return;}
         if(!sub&&req.method==='DELETE'){sendJson(res,200,{deleted:await ed.delete(id)});return;}
@@ -482,6 +483,20 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
           res.writeHead(200,{'Content-Type':'image/jpeg','X-Content-Type-Options':'nosniff','Cache-Control':'private, max-age=86400','Content-Length':String(info.size)});mediaLog(req,200,'art-file');
           if(req.method==='HEAD'){res.end();return;}
           createReadStream(want).pipe(res);return;
+        }
+        // VCONF conform for the preview audio mixer: byte-Range served from the
+        // .director-studio/conform cache (ConformSource.readWindow range-reads).
+        if(sub==='conform-file'&&req.method==='GET'){
+          const want=resolve(url.searchParams.get('path')??'');
+          const confRoot=resolve(join(store.root,'conform'));
+          if(want!==confRoot&&!want.startsWith(confRoot+sep)||extname(want)!=='.vconf'){sendJson(res,404,{detail:'not a conform cache file'});return;}
+          const stat=statSync(want);
+          const range=readConformRange(want,req.headers['range'],stat.size);
+          if(range===null){res.writeHead(416,{'Content-Range':`bytes */${stat.size}`});res.end();return;}
+          const base={'Content-Type':'application/octet-stream','X-Content-Type-Options':'nosniff','Accept-Ranges':'bytes','Cache-Control':'private, max-age=86400'};
+          if(range.partial){res.writeHead(206,{...base,'Content-Range':`bytes ${range.start}-${range.end}/${stat.size}`,'Content-Length':String(range.end-range.start+1)});mediaLog(req,206,'conform range');createReadStream(want,{start:range.start,end:range.end}).pipe(res);}
+          else{res.writeHead(200,{...base,'Content-Length':String(stat.size)});mediaLog(req,200,'conform');createReadStream(want).pipe(res);}
+          return;
         }
         // Waveform lanes: pyramid peaks built once per source with ffmpeg,
         // cached under .director-studio/waveform (meta JSON + int16 block).
@@ -590,7 +605,29 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
                 p.done++;
               }
               p.running=false;p.current=null;
-              return {detail:'normalized '+String(need.length-p.failed)+'/'+String(need.length)};
+              // Conform pass: the preview audio mixer needs a VCONF file per
+              // USED media (conform_path); without it playback fails with
+              // 'Audio source is not ready'. Idempotent + only for media that
+              // actually has an audio stream.
+              let conformed=0;
+              try{
+                const after=await ed.get(id);
+                const usedNow=new Set();
+                for(const comp of Object.values(after?.doc.compositions??{}))for(const tr of comp.tracks??[])for(const l of tr.layers??[])if(l.params&&l.params.media)usedNow.add(String(l.params.media));
+                for(const mid of usedNow){
+                  const med=after?.doc.media_pool?.[mid];
+                  if(!med||!med.path_abs)continue;
+                  const abs=med.path_abs.startsWith('/')?med.path_abs:join(root,med.path_abs);
+                  if(!existsSync(abs))continue;
+                  const conf=await ensureConform(join(store.root,'conform'),abs);
+                  if(!conf)continue;
+                  if(String(med.conform_path??'')!==String(conf)){
+                    const sd=await ed.dispatchOp(id,'set_media_derivatives',{media:mid,patch:{conform_path:conf}});
+                    if(sd.ok)conformed++;
+                  }
+                }
+              }catch{}
+              return {detail:'normalized '+String(need.length-p.failed)+'/'+String(need.length)+', conformed '+String(conformed)};
             },
           });
           sendJson(res,200,{ok:true,queued:true,task});return;
@@ -620,13 +657,30 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
           for(const m of Object.values(pool)){
             const p=String(m.path_abs??'');
             const mAbs=p.startsWith('/')?resolve(p):resolve(join(root,p));
-            if(p===libRel||mAbs===abs){const dur=(m.metadata&&m.metadata.duration_us)??null;sendJson(res,200,{ok:true,mediaId:String(m.id),kind,durationUs:typeof dur==='number'?dur:null});return;}
+            if(p===libRel||mAbs===abs){
+              const dur=(m.metadata&&m.metadata.duration_us)??null;
+              try{
+                if(kind!=='Image'&&!String(m.conform_path??'')&&existsSync(mAbs)){
+                  const conf=await ensureConform(join(store.root,'conform'),mAbs);
+                  if(conf)await ed.dispatchOp(id,'set_media_derivatives',{media:String(m.id),patch:{conform_path:conf}});
+                }
+              }catch{}
+              sendJson(res,200,{ok:true,mediaId:String(m.id),kind,durationUs:typeof dur==='number'?dur:null});return;
+            }
           }
           const dur=kind==='Image'?null:await videoDuration(abs);
           const dims=await ed.probeDims(abs);
           const aud=kind==='Image'?null:await ed.probeAudio(abs);
           const med=await ed.dispatchOp(id,'add_media_item',{media:EditingStore.poolEntry(randomUUID(),libRel,dur!=null?Math.round(dur*1e6):null,dims,aud,kind)});
           if(!med.ok){sendJson(res,200,{ok:false,error:med.error??med});return;}
+          // Conform now so the just-dropped clip is playable without waiting for
+          // the debounced normalize job (silent media: no conform, stays honest).
+          try{
+            if(kind!=='Image'){
+              const conf=await ensureConform(join(store.root,'conform'),abs);
+              if(conf)await ed.dispatchOp(id,'set_media_derivatives',{media:String(med.value),patch:{conform_path:conf}});
+            }
+          }catch{}
           sendJson(res,200,{ok:true,mediaId:String(med.value),kind,durationUs:dur!=null?Math.round(dur*1e6):null});return;
         }
         if(!sub||req.method!=='POST')return void sendJson(res,405,{detail:'method not allowed'});

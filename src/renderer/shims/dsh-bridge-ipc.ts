@@ -165,5 +165,9 @@ export function convertFileSrc(filePath: string): string {
   if (filePath.includes('/.director-studio/timeline-art/')) {
     return url(`/api/editing/${cfg_().editingId}/art-file?path=` + encodeURIComponent(filePath))
   }
+  // VCONF conform files: byte-Range served (ConformSource.readWindow).
+  if (filePath.includes('/.director-studio/conform/')) {
+    return url(`/api/editing/${cfg_().editingId}/conform-file?path=` + encodeURIComponent(filePath))
+  }
   return url('/api/file?path=' + encodeURIComponent(filePath) + (cfg_().session ? '&session=' + encodeURIComponent(cfg_().session) : ''))
 }

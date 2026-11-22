@@ -763,6 +763,18 @@ test('normalize: import pools originals (no transcode at import); normalize-pool
   const doc2 = done.doc;
   const layer2 = doc2.compositions[doc2.root_id].tracks.find((tr) => tr.role === 'ARoll').layers[0];
   assert.equal(String(doc2.media_pool[layer2.params.media].path_abs), 'media/normalized/tenbit.mp4', 'the timeline layer relinked onto the playable copy');
+  // conform pass (same queued job): timeline-used audio media now carries a
+  // VCONF file the preview audio mixer can range-read
+  const conformed = (await (await json(base, `/api/editing/${ed.id}`)).json()).doc;
+  const audioLayer = conformed.compositions[conformed.root_id].tracks.find((tr) => tr.role === 'ARoll').layers.find((l) => l.params && l.params.kind === 'Audio');
+  const cm = audioLayer ? conformed.media_pool[audioLayer.params.media] : conformed.media_pool[layer2.params.media];
+  assert.ok(String(cm?.conform_path ?? '').endsWith('.vconf'), 'conform_path set for timeline-used audio media: ' + JSON.stringify(cm?.conform_path));
+  const head = await json(base, `/api/editing/${ed.id}/conform-file?path=${encodeURIComponent(cm.conform_path)}`, { headers: { range: 'bytes=0-27' } });
+  assert.equal(head.status, 206);
+  const hb = Buffer.from(await head.arrayBuffer());
+  assert.equal(hb.subarray(0, 5).toString(), 'VCONF', 'VCONF header magic');
+  assert.equal(hb.readUInt32LE(12), 48000, 'conform sample rate');
+  assert.ok(hb.readBigUInt64LE(20) > 0n, 'frame count > 0');
 });
 test('pool-ensure: idempotently adds one library file to the editing media pool (library-drag drop support)', async t => {
   const { base, root } = await setup(t);
