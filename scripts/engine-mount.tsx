@@ -103,6 +103,23 @@ function Workspace() {
   const previewRef = React.useRef<PreviewSurfaceHandle | null>(null);
   const [revealedTrackId, setRevealedTrackId] = React.useState<string | null>(null);
   const selectedLayerId = useSelectionStore((s) => primaryLayerIdOf(s.selection));
+  // A/B Roll view hides un-roled lanes — dropping onto the SPAWN STRIP creates
+  // exactly such a lane, so the clip looks like it "wasn't added" (user report:
+  // C1-dshvideo-crw2.mp4 vanishing). When hidden-but-nonempty lanes appear,
+  // switch to All Tracks once per change; manual toggles between changes stick.
+  const lastHiddenFingerprint = React.useRef("");
+  React.useEffect(() => {
+    if (!summary) return;
+    const comp = Object.values(summary.compositions ?? {})[0] as { tracks?: { role: string | null; layers: unknown[] }[] } | undefined;
+    const hidden = (comp?.tracks ?? []).filter((t) => t.role === null && t.layers.length > 0);
+    const fp = hidden.map((t) => String(t.layers.length)).join(",");
+    if (hidden.length && fp !== lastHiddenFingerprint.current) {
+      lastHiddenFingerprint.current = fp;
+      useAppSettingsStore.setState((s) => (s.settings.display_mode === "AllTracks" ? s : { settings: { ...s.settings, display_mode: "AllTracks" } }));
+    } else if (!hidden.length) {
+      lastHiddenFingerprint.current = "";
+    }
+  }, [summary]);
   // Key dispatch (Delete/Shift+Delete/undo/redo/space) is App-shell behavior on
   // desktop; the DSH shell is this component, so it owns the same minimal map.
   useFocusRegions();
