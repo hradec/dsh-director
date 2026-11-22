@@ -9,6 +9,7 @@ import { DockWorkspace, type DockPanelContracts } from "@/workspace/DockWorkspac
 import { mediaReadiness, type MediaReadiness } from "@/panels/mediaReadiness";
 import { ShortcutBindingsProvider } from "@/shortcuts/bindings-context";
 import { useProjectStore } from "@/state/projectStore";
+import { useAppSettingsStore } from "@/settings/appSettingsStore";
 import { usePlaybackStore, transportPlay, transportPause } from "@/state/playbackStore";
 import { configure, invoke, invokeRaw } from "@/bridge/ipc";
 import { attachProjectPublication } from "@/state/projectPublication";
@@ -177,6 +178,9 @@ export function mount(el: Element, opts: MountOpts): void {
   installBootstrapHook(() => {}, () => {}); installMotifTestHooks(); installMotifHook(); installAudioTestHooks(); installDecodeBenchHooks();
   // display_mode: the store now migrates/creates A-roll/B-roll role stamps on
   // every document, so WeftCut's default AbRoll view works unforced.
+  // Pool layout 'large': the poster card is what the reference picture shows;
+  // the compact list hides the thumbnail slot entirely.
+  useAppSettingsStore.setState((s) => ({ settings: { ...s.settings, media_pool_layout: "large" } }));
   configure({ editingId: opts.editingId, apiBase: opts.apiBase, session: opts.session });
   // Publication barrier: desktop wires a push-driven client (wireProjectStore);
   // DSH's HTTP bridge already re-reads and applies the full projection after
