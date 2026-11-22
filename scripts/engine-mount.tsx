@@ -32,6 +32,16 @@ import enUS from "@/i18n/locales/en-US";
 // English resource tree from the vendored locale file (the shim stores it; see
 // src/renderer/shims/i18next-shim.jsx) so t() answers with real copy.
 i18n.addResourceBundle("en", "translation", enUS);
+// DSH panel titles for the embedded library tabs (addResourceBundle merges at
+// the namespace level, so pass the dock_workspace subtree whole).
+i18n.addResourceBundle("en", "translation", {
+  ...(enUS as Record<string, unknown>).dock_workspace,
+  panels: {
+    ...(((enUS as Record<string, unknown>).dock_workspace as Record<string, unknown>)?.panels as Record<string, string> ?? {}),
+    "library-footage": "Footage",
+    "library-images": "Images",
+  },
+});
 
 interface MountOpts { editingId: string; apiBase: string; session: string }
 
@@ -208,6 +218,9 @@ export function mount(el: Element, opts: MountOpts): void {
   // the compact list hides the thumbnail slot entirely.
   useAppSettingsStore.setState((s) => ({ settings: { ...s.settings, media_pool_layout: "large" } }));
   configure({ editingId: opts.editingId, apiBase: opts.apiBase, session: opts.session });
+  // StudioLibraryPanel hands this to the tab bridge so the embedded Footage/
+  // Images tabs talk to the same studio session as the editor.
+  (globalThis as unknown as { __DSH_TIMELINE_SESSION__?: string }).__DSH_TIMELINE_SESSION__ = opts.session;
   // Publication barrier: desktop wires a push-driven client (wireProjectStore);
   // DSH's HTTP bridge already re-reads and applies the full projection after
   // EVERY command (refreshStore in dsh-bridge-ipc), so the barrier is

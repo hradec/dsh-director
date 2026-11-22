@@ -64,6 +64,7 @@ import { RoleMixerPanel } from "../panels/RoleMixerPanel";
 import { AgentPanel } from "../agent/AgentPanel";
 import { HistoryPanel } from "../history/HistoryPanel";
 import { ShotsPanel } from "../shots/ShotsPanel";
+import { StudioLibraryPanel } from "./StudioLibraryPanel";
 import {
   importCancel,
   restackLayer,
@@ -541,6 +542,9 @@ const PANEL_COMPONENTS: Readonly<Record<PanelKind, () => ReactElement>> = {
   agent: AgentDockPanel,
   history: HistoryDockPanel,
   shots: ShotsDockPanel,
+  // DSH feature: the Studio Footage/Images tab embedded in the dock.
+  "library-footage": () => <StudioLibraryPanel tab="footage" />,
+  "library-images": () => <StudioLibraryPanel tab="images" />,
 };
 
 export function WeftCutPanelRenderer({

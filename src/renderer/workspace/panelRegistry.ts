@@ -24,6 +24,10 @@ export const PANEL_KINDS = [
   "agent",
   "history",
   "shots",
+  // DSH feature: the Director Studio Footage/Images tab embedded in the dock
+  // through window.__DSH_STUDIO_TABS__ (see StudioLibraryPanel.tsx).
+  "library-footage",
+  "library-images",
 ] as const;
 
 export type PanelKind = (typeof PANEL_KINDS)[number];
@@ -192,6 +196,22 @@ export const PANEL_REGISTRY: Readonly<Record<PanelKind, PanelDefinition>> = {
     ...TOOL_MINIMUM,
     initiallyOpen: false,
     duringExport: "locked",
+  },
+  // DSH: opened by default, tabbed with the Media Pool group, so the footage
+  // library sits exactly where the picture's pool lives.
+  "library-footage": {
+    kind: "library-footage",
+    titleKey: "dock_workspace.panels.library-footage",
+    ...TOOL_MINIMUM,
+    initiallyOpen: true,
+    duringExport: "review",
+  },
+  "library-images": {
+    kind: "library-images",
+    titleKey: "dock_workspace.panels.library-images",
+    ...TOOL_MINIMUM,
+    initiallyOpen: true,
+    duringExport: "review",
   },
 };
 

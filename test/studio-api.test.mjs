@@ -14,12 +14,29 @@ const png=Buffer.from('89504e470d0a1a0a00000000','hex');
 // The DSH session workspace folder IS the project; tests resolve every session id to one temporary workspace.
 async function setup(t,{reject,fetchImpl,sessionIndex,agentTasks}={}){
   const root=await mkdtemp(join(tmpdir(),'dsh-studio-api-'));t.after(()=>rm(root,{recursive:true,force:true}));
-  const registry=createStudioRegistry();const server=createServer(createStudioApiHandler({resolveSession:()=>registry(root),requestRejection:()=>reject,comfyHosts:()=>['http://comfy.test'],sessionIndex:sessionIndex??(()=>[]),agentTasks:agentTasks??undefined,fetchImpl:fetchImpl??(async()=>new Response('{}'))}));
+  const registry=createStudioRegistry();const server=createServer(createStudioApiHandler({resolveSession:()=>registry(root),requestRejection:()=>reject,comfyHosts:()=>['http://comfy.test'],sessionIndex:sessionIndex??(()=>[]),agentTasks:agentTasks??createFakeAgentQueue(),fetchImpl:fetchImpl??(async()=>new Response('{}'))}));
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
   const {store,project}=await registry(root);
   return {store,project,root,base:`http://127.0.0.1:${server.address().port}/director-studio`};
 }
 const json=(base,path,init={})=>fetch(base+path,{...init,headers:{'content-type':'application/json','x-director-session':'session-a',...init.headers}});
+// In-memory DSH queue for tests: submitJob runs the job promise immediately;
+// latest() serves job-status polling. Mirrors agent-task.mjs semantics.
+function createFakeAgentQueue(){
+  const rows=[];let n=0;
+  return {
+    async submit(){throw Error('agents not wired in tests');},
+    async submitJob({label,run,meta}){
+      const t={id:'j-'+(++n),label,kind:'job',status:'pending',progress:null,meta:meta??null,result:null};
+      rows.push(t);
+      (async()=>{t.status='running';try{const r=await run((p)=>{t.progress=p;});t.result=(r&&r.detail)||'done';t.status=r&&r.ok===false?'failed':'done';}catch(e){t.status='failed';t.result=String(e&&e.message||e);}})();
+      return {id:t.id,label:t.label,kind:'job',status:t.status,progress:null};
+    },
+    latest(meta){for(let i=rows.length-1;i>=0;i--){const t=rows[i];if(t.meta&&Object.entries(meta).every(([k,v])=>t.meta[k]===v))return {id:t.id,label:t.label,kind:t.kind,status:t.status,progress:t.progress??null,result:t.result};}return null;},
+    list(){return rows;},cancel(){return null;},
+  };
+}
+async function waitJob(base,ed,kind){for(let i=0;i<200;i++){const st=await (await json(base,`/api/editing/${ed}/job-status?kind=${kind}`)).json();if(st.task&&st.task.status!=='pending'&&st.task.status!=='running')return st.task;await new Promise((r)=>setTimeout(r,50));}throw new Error('job timeout: '+kind);}
 
 test('timeline board routes serve sequences, arc tags and story episodes for the Timeline tab',async t=>{
   const {base,store,project}=await setup(t);
@@ -691,7 +708,11 @@ test('timeline art routes: poster data URL, filmstrip tile + art-file stream, fo
   execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=64x64:d=0.2:r=10', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', join(root, 'media', 'artmore.mp4')]);
   const imp = await (await json(base, `/api/editing/${ed.id}/import-footage`, { method: 'POST', body: '{}' })).json();
   assert.equal(imp.ok, true);
-  assert.deepEqual(imp.added.map((item) => item.path), ['media/artmore.mp4'], 'every not-yet-pooled workspace video joins the pool');
+  const job = await waitJob(base, ed.id, 'import-footage');
+  assert.equal(job.status, 'done', JSON.stringify(job));
+  const doc2 = (await (await json(base, `/api/editing/${ed.id}`)).json()).doc;
+  const paths = Object.values(doc2.media_pool).map((m) => String(m.path_abs));
+  assert.ok(paths.includes('media/artmore.mp4'), 'every not-yet-pooled workspace video joins the pool (queued job): ' + paths.join(','));
   await rm(join(root, 'media', 'arttest.mp4'), { force: true });
   const gone = await (await json(base, `/api/editing/${ed.id}/thumbnail?mediaId=${mediaId}`)).json();
   assert.equal(gone.ok, false); assert.equal(gone.error.code, 'not_ready', 'missing media answers honestly, never a crash');
@@ -715,37 +736,31 @@ test('waveform routes: pyramid levels + tile slices for audio media, not_ready f
   assert.ok(tile.value.max.some((v) => v > 0.1), 'a 440Hz tone must show real amplitude');
   // silent video: honest not_ready, no crash
   execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=64x64:d=0.5:r=10', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', join(root, 'media', 'silent.mp4')]);
-  const imp = await (await json(base, `/api/editing/${ed.id}/import-footage`, { method: 'POST', body: '{}' })).json();
-  const silentId = imp.added.find((item) => item.path === 'media/silent.mp4').media_id;
+  await (await json(base, `/api/editing/${ed.id}/import-footage`, { method: 'POST', body: '{}' })).json();
+  await waitJob(base, ed.id, 'import-footage');
+  const doc2 = (await (await json(base, `/api/editing/${ed.id}`)).json()).doc;
+  const silentId = Object.values(doc2.media_pool).find((m) => String(m.path_abs) === 'media/silent.mp4').id;
   const lv2 = await (await json(base, `/api/editing/${ed.id}/waveform-levels?mediaId=${silentId}`)).json();
   assert.equal(lv2.ok, false); assert.equal(lv2.error.code, 'not_ready');
 });
-test('normalize: 10-bit imports pool as 8-bit copies; normalize-pool relinks legacy entries', async t => {
+test('normalize: import pools originals (no transcode at import); normalize-pool repairs timeline-used 10-bit media', async t => {
   const { base, root } = await setup(t);
   await mkdir(join(root, 'media'), { recursive: true });
   execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=64x64:d=0.3:r=10', '-f', 'lavfi', '-i', 'sine=frequency=300:duration=0.3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p10le', '-c:a', 'aac', '-shortest', join(root, 'media', 'tenbit.mp4')]);
   const ed = await (await json(base, '/api/editing', { method: 'POST', body: JSON.stringify({ name: 'norm' }) })).json();
-  const imp = await (await json(base, `/api/editing/${ed.id}/import-footage`, { method: 'POST', body: '{}' })).json();
-  assert.equal(imp.ok, true);
-  assert.equal(imp.added[0].path, 'media/normalized/tenbit.mp4', '10-bit source pools as an 8-bit copy');
-  const fmt = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=pix_fmt', '-of', 'csv=p=0', join(root, 'media', 'normalized', 'tenbit.mp4')]).toString().trim();
-  assert.equal(fmt, 'yuv420p');
-  // legacy path: seed points the pool AT the 10-bit original — normalize-pool must repair + relink
-  const ed2 = await (await json(base, '/api/editing', { method: 'POST', body: JSON.stringify({ name: 'legacy' }) })).json();
-  const seed = await (await json(base, `/api/editing/${ed2.id}/seed`, { method: 'POST', body: JSON.stringify({ shots: [{ shot_id: 't1', path: 'media/tenbit.mp4', duration_s: 0.3 }] }) })).json();
+  const seed = await (await json(base, `/api/editing/${ed.id}/seed`, { method: 'POST', body: JSON.stringify({ shots: [{ shot_id: 't1', path: 'media/tenbit.mp4', duration_s: 0.3 }] }) })).json();
   assert.equal(seed.ok, true);
-  const start = await (await json(base, `/api/editing/${ed2.id}/normalize-pool`, { method: 'POST', body: '{}' })).json();
+  const pre = (await (await json(base, `/api/editing/${ed.id}`)).json()).doc;
+  const preLayer = pre.compositions[pre.root_id].tracks.find((tr) => tr.role === 'ARoll').layers[0];
+  assert.equal(String(pre.media_pool[preLayer.params.media].path_abs), 'media/tenbit.mp4', 'seeding pools the original; repair is a separate queued job');
+  const start = await (await json(base, `/api/editing/${ed.id}/normalize-pool`, { method: 'POST', body: '{}' })).json();
   assert.equal(start.ok, true);
-  assert.equal(start.started, 1, JSON.stringify(start));
-  for (let i = 0; i < 60; i++) {
-    const st = await (await json(base, `/api/editing/${ed2.id}/normalize-status`)).json();
-    if (!st.progress.running) break;
-    await new Promise((res2) => setTimeout(res2, 500));
-  }
-  const done = await (await json(base, `/api/editing/${ed2.id}`)).json();
-  const paths = Object.values(done.doc.media_pool).map((m) => String(m.path_abs));
-  assert.ok(paths.some((p) => p === 'media/normalized/tenbit.mp4'), 'normalized entry exists: ' + paths.join(','));
-  const layerMedia = done.doc.compositions[done.doc.root_id].tracks.find((tr) => tr.role === 'ARoll').layers[0].params.media;
-  const med = done.doc.media_pool[layerMedia];
-  assert.equal(String(med.path_abs), 'media/normalized/tenbit.mp4', 'the layer relinked onto the playable copy');
+  const job = await waitJob(base, ed.id, 'normalize-pool');
+  assert.equal(job.status, 'done', JSON.stringify(job));
+  const done = await (await json(base, `/api/editing/${ed.id}`)).json();
+  const fmt = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=pix_fmt', '-of', 'csv=p=0', join(root, 'media', 'normalized', 'tenbit.mp4')]).toString().trim();
+  assert.equal(fmt, 'yuv420p', 'normalized copy is browser-decodable');
+  const doc2 = done.doc;
+  const layer2 = doc2.compositions[doc2.root_id].tracks.find((tr) => tr.role === 'ARoll').layers[0];
+  assert.equal(String(doc2.media_pool[layer2.params.media].path_abs), 'media/normalized/tenbit.mp4', 'the timeline layer relinked onto the playable copy');
 });

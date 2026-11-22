@@ -88,6 +88,21 @@ export function invokeRaw<T = unknown>(cmd: string, args?: Record<string, unknow
   return Promise.reject(new Error('DSH timeline: unknown read op ' + cmd))
 }
 
+// Queued DSH-queue jobs (import-footage, normalize-pool): start, then poll
+// status; every poll refreshes the projection so the pool fills progressively.
+// No client-side cap — the loop ends when the SERVER says the task settled.
+async function runQueuedEditingJob(id: string, kind: string): Promise<unknown> {
+  const started = await postJson(`/api/editing/${id}/${kind}`)
+  await refreshStore()
+  for (;;) {
+    const st = await getJson(`/api/editing/${id}/job-status?kind=${kind}`)
+    await refreshStore()
+    const status = st?.task?.status
+    if (status !== 'pending' && status !== 'running') return st
+    await new Promise((res2) => setTimeout(res2, 1500))
+  }
+}
+
 export async function invoke<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (cmd === 'log_emit') return undefined as T; // telemetry no-op (see invokeRaw)
   const id = cfg_().editingId
@@ -97,12 +112,9 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
     // The tab owns document selection; open/save/close are transport facts.
     case 'project_open': case 'project_new_workspace': case 'project_close': return null as T
     case 'project_save': case 'project_save_as': return undefined as T
-    // '+ Footage' import: every workspace media/ video not yet in the pool joins
-    // it (server scan + add_media_item actor op), then the projection refreshes.
-    case 'dsh_import_footage': { const r = await postJson(`/api/editing/${id}/import-footage`); await refreshStore(); return r as T }
-    // Auto-repair: transcode browser-undecodable pool sources (10-bit H.264) to
-    // 8-bit copies; relinks flow to the editor as they land.
-    case 'dsh_normalize_pool': { const r = await postJson(`/api/editing/${id}/normalize-pool`); await refreshStore(); return r as T }
+    // '+ Footage' import / 10-bit repair: DSH-queue jobs with progress polling.
+    case 'dsh_import_footage': return await runQueuedEditingJob(id, 'import-footage') as T
+    case 'dsh_normalize_pool': return await runQueuedEditingJob(id, 'normalize-pool') as T
     case 'project_undo': { const r = await postJson(`/api/editing/${id}/undo`); await refreshStore(); return r as T }
     case 'project_redo': { const r = await postJson(`/api/editing/${id}/redo`); await refreshStore(); return r as T }
     case 'project_create_checkpoint': return await postJson(`/api/editing/${id}/checkpoint`, { label: String(args?.label ?? 'checkpoint') }) as T

@@ -64,6 +64,16 @@ function pump(){
   if(running||!pending.length)return;
   const task=pending.shift();
   running=task;task.status='running';task.started_at=Date.now();persist();
+  // In-process jobs (ffmpeg normalize, footage import): same FIFO queue, same
+  // DSH-queue visibility — no agent worker. The run() closure is intentionally
+  // not persisted; the load() pass marks unfinished rows failed after restarts.
+  if(task.kind==='job'){
+    const run=task._run;
+    Promise.resolve(run?run((p)=>{task.progress=p;}):null).then((r)=>{
+      settle(task,{ok:!r||r.ok!==false,result:r&&r.detail?String(r.detail):'done',code:0,error:r&&r.ok===false?String(r.detail||'job failed'):undefined});
+    }).catch((e)=>settle(task,{ok:false,code:-1,error:String(e&&e.message||e)}));
+    return;
+  }
   if(process.env.DSH_AGENT_TASK_FAKE){setTimeout(()=>settle(task,{ok:true,result:'fake worker: '+String(task.prompt).slice(0,120),code:0}),20);return;}
   const route=task.model;
   if(route)patchHeadlessDefault(route);
@@ -93,7 +103,15 @@ export function createAgentTasks(){
       const task={id:'task-'+(++seq),label:String(label||'task').slice(0,120),prompt:String(prompt),status:'pending',created_at:Date.now(),session_id:sessionId,worker_session_id:null,cwd:cwd?resolve(cwd):undefined,model:sessionModelRoute(sessionId)};
       tasks.push(task);pending.push(task);persist();pump();return task;
     },
-    list(){return tasks.map(({prompt,...t})=>({...t,preview:String(prompt).split('\n')[0].slice(0,120)}));},
+    // Queued in-process job (ffmpeg normalize, footage import...): appears in
+    // the same DSH queue list with the same lifecycle. meta tags rows so
+    // plugin routes can find their latest job; run receives a progress setter.
+    async submitJob({label,run,meta}){
+      const task={id:'task-'+(++seq),label:String(label||'job').slice(0,120),kind:'job',status:'pending',created_at:Date.now(),progress:null,meta:meta||null,_run:run};
+      tasks.push(task);pending.push(task);persist();pump();return {id:task.id,label:task.label,status:task.status};
+    },
+    latest(meta){for(let i=tasks.length-1;i>=0;i--){const t=tasks[i];if(t.meta&&Object.entries(meta).every(([k,v])=>t.meta[k]===v))return {id:t.id,label:t.label,kind:t.kind,status:t.status,progress:t.progress??null,result:t.result??null};}return null;},
+    list(){return tasks.map(({prompt,_run,...t})=>({...t,preview:String(prompt??'').split('\n')[0].slice(0,120)}));},
     cancel(id){const i=pending.findIndex((t)=>t.id===id);if(i<0)return null;const [task]=pending.splice(i,1);task.status='cancelled';task.finished_at=Date.now();persist();return task;},
   };
 }

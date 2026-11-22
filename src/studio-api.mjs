@@ -322,7 +322,7 @@ async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSession
   createReadStream(served).pipe(res);
 }
 
-function createNullAgentTasks(){return {async submit(){throw Error('agent tasks not configured');},list(){return [];},cancel(){return null;}};}
+function createNullAgentTasks(){return {async submit(){throw Error('agent tasks not configured');},async submitJob(){throw Error('agent tasks not configured');},latest(){return null;},list(){return [];},cancel(){return null;}};}
 export function createStudioApiHandler({resolveSession,requestRejection,comfyBaseUrl='http://127.0.0.1:8188',comfyHosts=async()=>[],sessionIndex=defaultSessionIndex,fetchImpl=globalThis.fetch,maxUploadBytes=studioStoreConstants.maxAssetBytes,agentTasks=createNullAgentTasks(),controllers=new Set()}={}){
   return async(req,res)=>{
     const controller=new AbortController();controllers.add(controller);const abort=()=>controller.abort();res.once('close',abort);
@@ -442,7 +442,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       // every save; nobody (UI or agent) hand-writes them. Live at the next harness restart.
       if(path==='/api/editing'&&req.method==='GET'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const tags=(url.searchParams.get('tags')??'').split(',').filter(Boolean);const items=tags.length?await ed.find(tags):Object.values(await ed.catalog());sendJson(res,200,{editing:items});return;}
       if(path==='/api/editing'&&req.method==='POST'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const b=await readJson(req,controller.signal);sendJson(res,201,await ed.create({name:String(b.name??'edit'),note:b.note??null,doc:b.doc}));return;}
-      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink|thumbnail|tile|art-file|import-footage|waveform-levels|waveform-tile|normalize-pool|normalize-status))?$/.exec(path);
+      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink|thumbnail|tile|art-file|import-footage|waveform-levels|waveform-tile|normalize-pool|normalize-status|job-status))?$/.exec(path);
       if(match){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const id=match[1],sub=match[2];
         if(!sub&&req.method==='GET'){const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}sendJson(res,200,got);return;}
         if(!sub&&req.method==='DELETE'){sendJson(res,200,{deleted:await ed.delete(id)});return;}
@@ -509,77 +509,97 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
           }catch(error){sendJson(res,200,{ok:false,error:{code:'not_ready',detail:String(error?.message??error).slice(0,160)}});}
           return;
         }
-        // '+ Footage': every workspace media/ video not already in the pool joins it —
-        // the same add_media_item actor op drags use, through the shared store singleton.
+        // '+ Footage': queued as a DSH-queue job (every background run uses the
+        // queue): scan media/, ONE header ffprobe per candidate, add_media_item
+        // through the shared actor. Dims/audio/normalization stay lazy.
         if(sub==='import-footage'&&req.method==='POST'){
           const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}
-          const root=store.workspaceRoot??join(store.root,'..');
-          const pool=got.doc.media_pool??{};
-          const have=new Set(Object.values(pool).map((item)=>String(item.path_abs??'')));
-          const mediaDir=join(root,'media');
-          const added=[];
-          let entries=[];
-          try{entries=readdirSync(mediaDir,{recursive:true,withFileTypes:true});}catch{}
-          for(const ent of entries){
-            if(!ent.isFile())continue;
-            if(!/\.(mp4|m4v|webm|mov|mkv)$/i.test(ent.name))continue;
-            // rel: workspace-relative 'media/...' — Dirent.path is the ABSOLUTE
-            // directory just scanned, so strip the mediaDir prefix.
-            const rel0='media/'+join(ent.path,ent.name).slice(mediaDir.length+1).split(sep).join('/');
-            if(have.has(rel0)||have.has(join(root,rel0)))continue;
-            if(rel0.startsWith('media/normalized/'))continue; // already-normalized copies are not new candidates
-            const rel=await ensureNormalized(root,rel0); // 10-bit/odd sources pool as 8-bit copies
-            if(have.has(rel))continue;
-            const dur=await videoDuration(join(root,rel));
-            const dims=await ed.probeDims(join(root,rel));
-            const aud=await ed.probeAudio(join(root,rel));
-            const med=await ed.dispatchOp(id,'add_media_item',{media:EditingStore.poolEntry(randomUUID(),rel,Math.round(dur*1e6)||null,dims,aud)});
-            if(med.ok)added.push({path:rel,media_id:med.value});
-          }
-          sendJson(res,200,{ok:true,added});return;
+          const busy=agentTasks.latest({kind:'import-footage',editing_id:id});
+          if(busy&&(busy.status==='pending'||busy.status==='running')){sendJson(res,200,{ok:true,queued:true,task:busy});return;}
+          const task=await agentTasks.submitJob({
+            label:'Timeline: import footage',
+            meta:{kind:'import-footage',editing_id:id},
+            run:async(progress)=>{
+              const root=store.workspaceRoot??join(store.root,'..');
+              const cur=await ed.get(id);
+              const have=new Set(Object.values(cur?.doc.media_pool??{}).map((item)=>String(item.path_abs??'')));
+              const mediaDir=join(root,'media');
+              let entries=[];try{entries=readdirSync(mediaDir,{recursive:true,withFileTypes:true});}catch{}
+              const cands=[];
+              for(const ent of entries){
+                if(!ent.isFile())continue;
+                if(!/\.(mp4|m4v|webm|mov|mkv)$/i.test(ent.name))continue;
+                const rel='media/'+join(ent.path,ent.name).slice(mediaDir.length+1).split(sep).join('/');
+                if(rel.startsWith('media/normalized/'))continue;
+                if(have.has(rel)||have.has(join(root,rel)))continue;
+                cands.push(rel);
+              }
+              let added=0;
+              for(let i=0;i<cands.length;i++){
+                progress({total:cands.length,done:i,current:cands[i]});
+                const abs=join(root,cands[i]);
+                const dur=await videoDuration(abs);
+                const dims=await ed.probeDims(abs);
+                const aud=await ed.probeAudio(abs);
+                const med=await ed.dispatchOp(id,'add_media_item',{media:EditingStore.poolEntry(randomUUID(),cands[i],Math.round(dur*1e6)||null,dims,aud)});
+                if(med.ok)added++;
+              }
+              return {detail:'added '+String(added)+' of '+String(cands.length)};
+            },
+          });
+          sendJson(res,200,{ok:true,queued:true,task});return;
         }
         // Repair route: transcode every pool source the browser cannot decode
-        // (High 10 etc.) that is ACTUALLY USED ON THE TIMELINE (pool posters stay
-        // 10-bit originals — they're server-rendered). Relinks flow to the open
-        // editor one by one. Runs in the background.
+        // (High 10 etc.) that is ACTUALLY USED ON THE TIMELINE — queued through
+        // the DSH queue (ffmpeg never runs off-book); relinks land one by one.
         if(sub==='normalize-pool'&&req.method==='POST'){
           const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}
-          const root=store.workspaceRoot??join(store.root,'..');
+          const busy=agentTasks.latest({kind:'normalize-pool',editing_id:id});
+          if(busy&&(busy.status==='pending'||busy.status==='running')){sendJson(res,200,{ok:true,queued:true,task:busy});return;}
           const jobs=ed.normalizeJobs??(ed.normalizeJobs=new Map());
-          if(jobs.get(id)?.running){sendJson(res,200,{ok:true,already_running:true,progress:jobs.get(id)});return;}
-          const used=new Set();
-          for(const comp of Object.values(got.doc.compositions??{}))for(const tr of comp.tracks??[])for(const l of tr.layers??[])if(l.params&&l.params.media)used.add(String(l.params.media));
-          const need=[];
-          for(const mid of used){
-            const med=got.doc.media_pool?.[mid];
-            const rel=String(med?.path_abs??'');
-            if(!rel||rel.startsWith('media/normalized/'))continue;
-            const abs=med.path_abs&&isAbsolute(med.path_abs)?med.path_abs:join(root,rel);
-            if(!existsSync(abs))continue;
-            const fmt=await probePixfmt(abs);
-            if(!isBrowserDecodable(fmt))need.push({mid,rel,name:basename(rel)});
-          }
-          const progress={running:true,total:need.length,done:0,current:null,failed:0};
-          jobs.set(id,progress);
-          (async()=>{
-            for(const item of need){
-              progress.current=item.rel;
-              try{
-                const nrel=await ensureNormalized(root,item.rel);
-                if(nrel!==item.rel){
-                  const durMs=await videoDuration(join(root,nrel));
-                  const rl=await ed.relinkMedia(id,{media_id:item.mid,path:nrel,duration_us:durMs>0?Math.round(durMs*1e6):undefined});
-                  if(!rl.ok)progress.failed++;
-                } else progress.failed++;
-              }catch{progress.failed++;}
-              progress.done++;
-            }
-            progress.running=false;progress.current=null;
-          })();
-          sendJson(res,200,{ok:true,started:need.length,progress});return;
+          const task=await agentTasks.submitJob({
+            label:'Timeline: normalize media to 8-bit',
+            meta:{kind:'normalize-pool',editing_id:id},
+            run:async(progress)=>{
+              const root=store.workspaceRoot??join(store.root,'..');
+              const cur=await ed.get(id);
+              const used=new Set();
+              for(const comp of Object.values(cur?.doc.compositions??{}))for(const tr of comp.tracks??[])for(const l of tr.layers??[])if(l.params&&l.params.media)used.add(String(l.params.media));
+              const need=[];
+              for(const mid of used){
+                const med=cur?.doc.media_pool?.[mid];
+                const rel=String(med?.path_abs??'');
+                if(!rel||rel.startsWith('media/normalized/'))continue;
+                const abs=med.path_abs&&isAbsolute(med.path_abs)?med.path_abs:join(root,rel);
+                if(!existsSync(abs))continue;
+                const fmt=await probePixfmt(abs);
+                if(!isBrowserDecodable(fmt))need.push({mid,rel});
+              }
+              const p={running:true,total:need.length,done:0,current:null,failed:0};
+              jobs.set(id,p);
+              for(const item of need){
+                p.current=item.rel;progress({total:need.length,done:p.done,current:item.rel});
+                try{
+                  const nrel=await ensureNormalized(root,item.rel);
+                  if(nrel!==item.rel){
+                    const durMs=await videoDuration(join(root,nrel));
+                    const rl=await ed.relinkMedia(id,{media_id:item.mid,path:nrel,duration_us:durMs>0?Math.round(durMs*1e6):undefined});
+                    if(!rl.ok)p.failed++;
+                  } else p.failed++;
+                }catch{p.failed++;}
+                p.done++;
+              }
+              p.running=false;p.current=null;
+              return {detail:'normalized '+String(need.length-p.failed)+'/'+String(need.length)};
+            },
+          });
+          sendJson(res,200,{ok:true,queued:true,task});return;
         }
         if(sub==='normalize-status'&&req.method==='GET'){
-          sendJson(res,200,{ok:true,progress:(ed.normalizeJobs??new Map()).get(id)??{running:false,total:0,done:0,current:null,failed:0}});return;
+          sendJson(res,200,{ok:true,progress:(ed.normalizeJobs??new Map()).get(id)??{running:false,total:0,done:0,current:null,failed:0},task:agentTasks.latest({kind:'normalize-pool',editing_id:id})});return;
+        }
+        if(sub==='job-status'&&req.method==='GET'){
+          sendJson(res,200,{ok:true,task:agentTasks.latest({kind:String(url.searchParams.get('kind')??'normalize-pool'),editing_id:id})});return;
         }
         if(!sub||req.method!=='POST')return void sendJson(res,405,{detail:'method not allowed'});
         const b=await readJson(req,controller.signal);

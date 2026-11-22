@@ -190,10 +190,14 @@ export class EditingStore {
           if (tracks[1] && tracks[1].role === null) { tracks[1].role = 'BRoll'; dirty = true; }
         }
       }
-      // Backfill real video dimensions AND audio presence for pool entries
-      // that predate probing (waveform auto-pair keys off metadata.audio).
-      for (const media of Object.values(doc.media_pool || {})) {
-        if (media.kind !== 'Video') continue;
+      // Backfill video dims + audio presence, but ONLY for pool entries a LAYER
+      // references — a 270-clip pool must not pay 500 ffprobes per open.
+      // Unreferenced media gets metadata when it lands on the timeline.
+      const usedIds = new Set();
+      for (const comp of Object.values(doc.compositions || {})) for (const tr of comp.tracks || []) for (const l of tr.layers || []) if (l.params && l.params.media) usedIds.add(String(l.params.media));
+      for (const mid of usedIds) {
+        const media = (doc.media_pool || {})[mid];
+        if (!media || media.kind !== 'Video') continue;
         const abs = this.mediaAbs(media.path_abs);
         if (!existsSync(abs)) continue;
         if (!(media.metadata && media.metadata.video)) {

@@ -274,11 +274,15 @@ export function createEditingLayout(
   const width = sizeOf(viewport.width) ?? 1_000;
   const height = sizeOf(viewport.height) ?? 720;
   const contextual: PanelId[] = ["attribute", "effect"];
-  const library: PanelId[] = ["media", "transitions"];
+  // DSH: the embedded Footage/Images Studio tabs share the Media Pool group as
+  // additional tabs — the library sits exactly where the pool lives.
+  const library: PanelId[] = ["media", "transitions", "library-footage", "library-images"];
   const placements: PanelPlacements = {
     "quick-actions": { siblings: ["quick-actions"], index: 0 },
     media: { siblings: library, index: 0 },
     transitions: { siblings: library, index: 1 },
+    "library-footage": { siblings: library, index: 2 },
+    "library-images": { siblings: library, index: 3 },
     preview: { siblings: ["preview"], index: 0 },
     timeline: { siblings: ["timeline"], index: 0 },
     playhead: { siblings: ["playhead"], index: 0 },
