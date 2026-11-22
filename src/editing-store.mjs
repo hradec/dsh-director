@@ -311,12 +311,12 @@ export class EditingStore {
   // Media-pool entry for a library clip (shape proven by scripts/coreprobe.mjs).
   // ponytail: path_rel mirrors the absolute path — DSH resolves media through
   // /api/file?path=, the WeftCut workspace-relative scheme is unused here.
-  static poolEntry(id, path, durationUs, dims, audio) {
+  static poolEntry(id, path, durationUs, dims, audio, kind) {
     const p = String(path).replace(/\\/g, '/');
     // path_rel must be project-relative for the validator; the abs path is the
     // DSH source of truth (/api/file), rel just keeps the doc valid + readable.
     const rel = p.split('/').pop();
-    return { id, label: null, path_abs: p, path_rel: rel, kind: 'Video', metadata: { duration_us: durationUs ?? null, video: dims ?? null, audio: audio ?? null, container_format: null }, file_hash_blake3: '0', file_size: 0, file_mtime: 0, imported_at: new Date().toISOString(), decode_route: { route: 'bypass' }, conform_path: null };
+    return { id, label: null, path_abs: p, path_rel: rel, kind: kind === 'Image' ? 'Image' : 'Video', metadata: { duration_us: durationUs ?? null, video: dims ?? null, audio: audio ?? null, container_format: null }, file_hash_blake3: '0', file_size: 0, file_mtime: 0, imported_at: new Date().toISOString(), decode_route: { route: 'bypass' }, conform_path: null };
   }
 
   // Seed an edit from Production shot slots: one Video track, one layer per shot

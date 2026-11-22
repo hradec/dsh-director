@@ -30,6 +30,7 @@ import { useMarqueeAnchor } from "./hooks/useMarqueeAnchor";
 import {
   MEDIA_DRAG_CURSOR_OFFSET_PX,
   MEDIA_DRAG_TYPE,
+  DSH_LIBRARY_DRAG_TYPE,
   mediaDropInvalid,
   parseMediaDrag,
   planMediaDrop,
@@ -285,7 +286,10 @@ export function TrackLane({
 
   const onDragOver = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
-      if (!e.dataTransfer.types.includes(MEDIA_DRAG_TYPE)) return;
+      // DSH feature: library drags (embedded Footage/Images tabs) are accepted
+      // too; their payload is unreadable until drop (browser rule), so the
+      // ghost is skipped and the drop handler plans+pools+places in one go.
+      if (!e.dataTransfer.types.includes(MEDIA_DRAG_TYPE) && !e.dataTransfer.types.includes(DSH_LIBRARY_DRAG_TYPE)) return;
       e.preventDefault();
       if (activeMediaDrag === null) return;
       const rect = e.currentTarget.getBoundingClientRect();

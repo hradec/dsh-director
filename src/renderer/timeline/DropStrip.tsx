@@ -16,6 +16,7 @@ import { placementRefuses, SPAWN_TRACK_ID } from "./placement";
 import {
   MEDIA_DRAG_CURSOR_OFFSET_PX,
   MEDIA_DRAG_TYPE,
+  DSH_LIBRARY_DRAG_TYPE,
   mediaDropInvalid,
   parseMediaDrag,
   planMediaDrop,
@@ -267,7 +268,9 @@ export function DropStrip({
 
   const onDragOver = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
-      if (!e.dataTransfer.types.includes(MEDIA_DRAG_TYPE)) return;
+      // DSH feature: accept library drags (embedded Footage/Images tabs); the
+      // payload is readable only at drop, where this strip plans + pools + places.
+      if (!e.dataTransfer.types.includes(MEDIA_DRAG_TYPE) && !e.dataTransfer.types.includes(DSH_LIBRARY_DRAG_TYPE)) return;
       e.preventDefault();
       if (activeMediaDrag === null) return;
       const rect = e.currentTarget.getBoundingClientRect();

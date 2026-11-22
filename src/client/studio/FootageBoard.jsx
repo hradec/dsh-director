@@ -73,6 +73,10 @@ export function FootageBoard({lib='footage',pickMode=false,onPick}={}){
   const tagAi=(f)=>{const short=f.path.split('/').pop();return runTask(`AI tag ${short}`,()=>post(api('/tag-ai'),'POST',{path:f.path,existing:f.tags??[]}).then((v)=>{if(v?.tags)setData((d)=>({...d,files:(d?.files??[]).map((x)=>x.path===f.path?{...x,tags:v.tags}:x)}));}));};
   useEffect(()=>{
     if(!data)return;
+    // Gate: the tag-ai route needs the gear-panel smart endpoint. Without it
+    // every call 400s, no tag persists, and the whole untagged set re-queues on
+    // every open (the 233-task storm the user saw). Show the hint instead.
+    if(data.smartReady===false){setNotice('AI tagging needs the smart endpoint — set the URL in the gear panel.');return;}
     const fresh=(data.files??[]).filter((f)=>!f.tags?.length&&!seenTag.current.has(f.path));
     for(const f of fresh){seenTag.current.add(f.path);void tagAi(f);}   // the queue serializes them; the toolbar chip shows progress
   },[data]);
@@ -164,7 +168,9 @@ export function FootageBoard({lib='footage',pickMode=false,onPick}={}){
   const fname=filter.trim().toLowerCase();
   const openCard=(f)=>{setPlaying(f);if(f.seen===false){setData((d)=>d?{...d,files:d.files.map((x)=>x.path===f.path?{...x,seen:true}:x)}:d);void post(api('/seen'),'POST',{path:f.path}).catch(()=>{});}};
   const news=((data?.files)??[]).filter((f)=>f.seen===false&&matches(f));
-  const card=(f)=><div key={f.path} className={`footage-card${sel.has(f.path)?' footage-selected':''}${f.seen===false?' footage-new':''}`} role="button" tabIndex={0} title={`Click to ${lib==='images'?'view':'play'} · right-click for the path`}
+  const card=(f)=><div key={f.path} className={`footage-card${sel.has(f.path)?' footage-selected':''}${f.seen===false?' footage-new':''}`} role="button" tabIndex={0} title={`Click to ${lib==='images'?'view':'play'} · drag to the timeline · right-click for the path`}
+    draggable={!pickMode && !f.empty}   // DSH feature: drag into the WeftCut dock — the engine pools the file on drop via application/x-dsh-library
+    onDragStart={(e)=>{if(pickMode||f.empty)return;e.dataTransfer.setData('application/x-dsh-library',JSON.stringify({path:f.path,kind:lib==='images'?'Image':'Video',label:String(f.path).split('/').pop()||f.path}));e.dataTransfer.effectAllowed='copy';}}
     onClick={()=>{if(menu){setMenu(null);return;}if(pickMode){onPick?.(f);return;}openCard(f);}}   // pickMode (ComfyUI pick dialog): click = choose, nothing else
     onKeyDown={(e)=>{if(e.key==='Enter'){if(pickMode){onPick?.(f);return;}openCard(f);}}}
     onContextMenu={(e)=>{if(pickMode)return;e.preventDefault();setMenu({x:e.clientX,y:e.clientY,file:f});}}>

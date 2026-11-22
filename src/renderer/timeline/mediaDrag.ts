@@ -22,6 +22,13 @@ import { resolveTimelineDragSnap } from "./snapping";
 
 export const MEDIA_DRAG_TYPE = "application/x-weftcut-media";
 
+// DSH feature: drags from the embedded Studio Footage/Images tabs carry a
+// library PATH. The drop commit first pools the file into the editing document
+// (dsh_pool_ensure over the DSH bridge), then places a real clip — no mediaId
+// exists at dragStart, so the ghost runs on the fallback durations below and
+// the actor re-times the commit off the pooled entry's own metadata.
+export const DSH_LIBRARY_DRAG_TYPE = "application/x-dsh-library";
+
 // Keep the pointer inside the ghost instead of pinning it to the left edge.
 // This leaves the clip's start, the content immediately before it, and the
 // collision boundary visible while the user is positioning the drop.
@@ -48,6 +55,14 @@ export type MediaDragPayload =
   | {
       source: "composition";
       compositionId: string;
+      label: string;
+      durationUs: number;
+    }
+  | {
+      // DSH feature: a library file not yet in the editing document's pool.
+      source: "dsh-library";
+      path: string;
+      kind: string;
       label: string;
       durationUs: number;
     };
@@ -259,7 +274,24 @@ export function compositionDragPayload(
 export function parseMediaDrag(e: React.DragEvent): MediaDragPayload | null {
   try {
     const raw = e.dataTransfer.getData(MEDIA_DRAG_TYPE);
-    if (!raw) return null;
+    if (!raw) {
+      // DSH feature: a library drag (embedded Footage/Images tabs). Browsers
+      // hide payload data until drop, so dragover preview falls back to the
+      // type list — the commit itself reads the payload here.
+      if (!Array.from(e.dataTransfer.types).includes(DSH_LIBRARY_DRAG_TYPE)) return null;
+      const rawLib = e.dataTransfer.getData(DSH_LIBRARY_DRAG_TYPE);
+      if (!rawLib) return null;
+      const lib = JSON.parse(rawLib) as Record<string, unknown>;
+      if (typeof lib.path !== "string" || typeof lib.kind !== "string") return null;
+      return {
+        source: "dsh-library",
+        path: lib.path,
+        kind: lib.kind,
+        label: typeof lib.label === "string" ? lib.label : lib.path.split("/").pop() ?? lib.path,
+        durationUs: typeof lib.durationUs === "number" ? lib.durationUs
+          : lib.kind === "Image" ? DEFAULT_IMAGE_DURATION_US : FALLBACK_MEDIA_DURATION_US,
+      };
+    }
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     if (
       typeof parsed.label !== "string" ||

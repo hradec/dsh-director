@@ -764,3 +764,17 @@ test('normalize: import pools originals (no transcode at import); normalize-pool
   const layer2 = doc2.compositions[doc2.root_id].tracks.find((tr) => tr.role === 'ARoll').layers[0];
   assert.equal(String(doc2.media_pool[layer2.params.media].path_abs), 'media/normalized/tenbit.mp4', 'the timeline layer relinked onto the playable copy');
 });
+test('pool-ensure: idempotently adds one library file to the editing media pool (library-drag drop support)', async t => {
+  const { base, root } = await setup(t);
+  await mkdir(join(root, 'media'), { recursive: true });
+  execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=green:s=64x64:d=0.4:r=10', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', join(root, 'media', 'dragme.mp4')]);
+  const ed = await (await json(base, '/api/editing', { method: 'POST', body: JSON.stringify({ name: 'drag' }) })).json();
+  const one = await (await json(base, `/api/editing/${ed.id}/pool-ensure`, { method: 'POST', body: JSON.stringify({ path: 'dragme.mp4', kind: 'Video' }) })).json();
+  assert.equal(one.ok, true, JSON.stringify(one));
+  assert.ok(one.mediaId && one.durationUs && one.durationUs > 0, JSON.stringify(one));
+  const two = await (await json(base, `/api/editing/${ed.id}/pool-ensure`, { method: 'POST', body: JSON.stringify({ path: 'media/dragme.mp4', kind: 'Video' }) })).json();
+  assert.equal(two.ok, true);
+  assert.equal(two.mediaId, one.mediaId, 'idempotent: the same file pools once');
+  const raw = await json(base, `/api/editing/${ed.id}/pool-ensure`, { method: 'POST', body: JSON.stringify({ path: 'nope.mp4' }) });
+  assert.equal(raw.status, 404, 'missing library file answers 404 honestly');
+});

@@ -115,6 +115,9 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
     // '+ Footage' import / 10-bit repair: DSH-queue jobs with progress polling.
     case 'dsh_import_footage': return await runQueuedEditingJob(id, 'import-footage') as T
     case 'dsh_normalize_pool': return await runQueuedEditingJob(id, 'normalize-pool') as T
+    // Library drag (embedded Footage/Images tabs): pool one file into the
+    // editing doc (idempotent), then refresh the projection for placement.
+    case 'dsh_pool_ensure': { const r = await postJson(`/api/editing/${id}/pool-ensure`, { path: args?.path, kind: args?.kind }); await refreshStore(); return r as T }
     case 'project_undo': { const r = await postJson(`/api/editing/${id}/undo`); await refreshStore(); return r as T }
     case 'project_redo': { const r = await postJson(`/api/editing/${id}/redo`); await refreshStore(); return r as T }
     case 'project_create_checkpoint': return await postJson(`/api/editing/${id}/checkpoint`, { label: String(args?.label ?? 'checkpoint') }) as T

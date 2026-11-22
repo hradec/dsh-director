@@ -827,6 +827,17 @@ export async function addMediaLayer(
   });
 }
 
+// DSH feature: place a clip whose media item is not yet in the editing doc's
+// pool (dragged from the embedded Footage/Images tabs). The bridge case adds
+// the media item through the shared EditingStore and refreshes the projection,
+// then returns the new mediaId for addMediaLayer to reference.
+export async function dshPoolEnsure(
+  path: string,
+  kind: string,
+): Promise<{ ok: boolean; mediaId?: string; durationUs?: number }> {
+  return invoke("dsh_pool_ensure", { path, kind });
+}
+
 export async function projectUndo(): Promise<void> {
   return invoke<void>("project_undo");
 }

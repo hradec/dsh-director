@@ -11,6 +11,7 @@ import {
 import { useTranslation } from "react-i18next";
 import {
   addMediaLayer,
+  dshPoolEnsure,
   addTransition,
   dropShotMarkers,
   linksCreate,
@@ -1015,25 +1016,52 @@ export const Timeline = memo(function Timeline({
         }
         return;
       }
-      const m = media.find((mm) => mm.id === payload.mediaId);
+      // DSH feature: a library drag from the embedded Footage/Images tabs — the
+      // payload names a workspace file, not a pool id. Pool it first (the
+      // bridge refreshes the projection), then place it as a normal media drop.
+      let effective: MediaDragPayload = payload;
+      if (payload.source === "dsh-library") {
+        try {
+          const ensured = await dshPoolEnsure(payload.path, payload.kind);
+          if (!ensured.ok || !ensured.mediaId) {
+            console.warn(`dsh library drop rejected: could not pool ${payload.path}`);
+            return;
+          }
+          effective = {
+            source: "media",
+            mediaId: ensured.mediaId,
+            kind: payload.kind,
+            label: payload.label,
+            durationUs: ensured.durationUs ?? payload.durationUs,
+          };
+        } catch (err) {
+          logMutationFailure(err, "Library pool");
+          return;
+        }
+      }
+      // The freshly pooled entry lives in the store, not the render closure —
+      // read the live projection, falling back to the closure list.
+      const m = media.find((mm) => mm.id === effective.mediaId)
+        ?? useProjectStore.getState().mediaById.get(effective.mediaId)
+        ?? null;
       if (!m) {
         console.warn(
-          `media drop rejected: ${payload.mediaId} not found in current summary`,
+          `media drop rejected: ${effective.mediaId} not found in current summary`,
         );
         return;
       }
       const readiness = readinessOf(m.id);
       if (!readiness.ready) {
         console.warn(
-          `media drop rejected: ${payload.mediaId} is ${readiness.reason}`,
+          `media drop rejected: ${effective.mediaId} is ${readiness.reason}`,
         );
         return;
       }
       // A subtitle document takes only the drop TIME: its cues pack onto the
       // caption tracks, whichever lane — or the strip — it was released over.
-      if (payload.kind === "Subtitle") {
+      if (effective.kind === "Subtitle") {
         try {
-          await applySubtitlesIn({ compositionId, mediaId: payload.mediaId, tStartUs: plan.rawStartUs });
+          await applySubtitlesIn({ compositionId, mediaId: effective.mediaId, tStartUs: plan.rawStartUs });
           await onMutated();
         } catch (err) {
           logMutationFailure(err, "Subtitle drop");
@@ -1053,7 +1081,7 @@ export const Timeline = memo(function Timeline({
         // the first undo removes the layer and the second removes the lane —
         // each step reversing exactly what it did.
         const trackId = track !== null ? track.id : await addTrackIn(compositionId);
-        await addMediaLayer(trackId, payload.mediaId, plan.rawStartUs);
+        await addMediaLayer(trackId, effective.mediaId, plan.rawStartUs);
         if (track === null) revealSpawnedTrack(trackId);
         await onMutated();
       } catch (err) {

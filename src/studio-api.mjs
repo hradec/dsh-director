@@ -442,7 +442,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       // every save; nobody (UI or agent) hand-writes them. Live at the next harness restart.
       if(path==='/api/editing'&&req.method==='GET'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const tags=(url.searchParams.get('tags')??'').split(',').filter(Boolean);const items=tags.length?await ed.find(tags):Object.values(await ed.catalog());sendJson(res,200,{editing:items});return;}
       if(path==='/api/editing'&&req.method==='POST'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const b=await readJson(req,controller.signal);sendJson(res,201,await ed.create({name:String(b.name??'edit'),note:b.note??null,doc:b.doc}));return;}
-      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink|thumbnail|tile|art-file|import-footage|waveform-levels|waveform-tile|normalize-pool|normalize-status|job-status))?$/.exec(path);
+      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink|thumbnail|tile|art-file|import-footage|waveform-levels|waveform-tile|normalize-pool|normalize-status|job-status|pool-ensure))?$/.exec(path);
       if(match){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const id=match[1],sub=match[2];
         if(!sub&&req.method==='GET'){const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}sendJson(res,200,got);return;}
         if(!sub&&req.method==='DELETE'){sendJson(res,200,{deleted:await ed.delete(id)});return;}
@@ -601,6 +601,34 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         if(sub==='job-status'&&req.method==='GET'){
           sendJson(res,200,{ok:true,task:agentTasks.latest({kind:String(url.searchParams.get('kind')??'normalize-pool'),editing_id:id})});return;
         }
+        // Drag from the embedded Footage/Images tabs onto the timeline: make one
+        // library file exist in the editing doc's media pool (idempotent) and
+        // return its id — the engine drop then places a real clip.
+        if(sub==='pool-ensure'&&req.method==='POST'){
+          const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}
+          const b=await readJson(req,controller.signal);
+          const rel0=String(b.path??'').replaceAll('\\','/');
+          const kind=String(b.kind??'Video')==='Image'?'Image':'Video';
+          if(!rel0){sendJson(res,400,{detail:'path required'});return;}
+          const root=store.workspaceRoot??join(store.root,'..');
+          const libRel=kind==='Image'?(rel0.startsWith('images/')?rel0:'images/'+rel0):(rel0.startsWith('media/')?rel0:'media/'+rel0);
+          const abs=resolve(join(root,libRel));
+          if(abs!==resolve(root)&&!abs.startsWith(resolve(root)+sep)){sendJson(res,400,{detail:'path outside workspace'});return;}
+          if(!existsSync(abs)){sendJson(res,404,{detail:'no such file in the library'});return;}
+          const pool=got.doc.media_pool??{};
+          const rootAbs=resolve(root);
+          for(const m of Object.values(pool)){
+            const p=String(m.path_abs??'');
+            const mAbs=p.startsWith('/')?resolve(p):resolve(join(root,p));
+            if(p===libRel||mAbs===abs){const dur=(m.metadata&&m.metadata.duration_us)??null;sendJson(res,200,{ok:true,mediaId:String(m.id),kind,durationUs:typeof dur==='number'?dur:null});return;}
+          }
+          const dur=kind==='Image'?null:await videoDuration(abs);
+          const dims=await ed.probeDims(abs);
+          const aud=kind==='Image'?null:await ed.probeAudio(abs);
+          const med=await ed.dispatchOp(id,'add_media_item',{media:EditingStore.poolEntry(randomUUID(),libRel,dur!=null?Math.round(dur*1e6):null,dims,aud,kind)});
+          if(!med.ok){sendJson(res,200,{ok:false,error:med.error??med});return;}
+          sendJson(res,200,{ok:true,mediaId:String(med.value),kind,durationUs:dur!=null?Math.round(dur*1e6):null});return;
+        }
         if(!sub||req.method!=='POST')return void sendJson(res,405,{detail:'method not allowed'});
         const b=await readJson(req,controller.signal);
         if(sub==='command')sendJson(res,200,await ed.command(id,String(b.channel??''),b.args??{},String(b.by??'user')));
@@ -635,9 +663,13 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       if(match){
         const seg=match[1],kind=seg==='images'?'images':'footage',sub=match[2]??'';
         if(!sub&&req.method==='GET'){
-          const [library,root,assets]=await Promise.all([store.listLib(kind),store.libRoot(kind),store.listAssets({project_id:project.id,include_unassigned:true})]);
+          const [library,root,assets,appSettings]=await Promise.all([store.listLib(kind),store.libRoot(kind),store.listAssets({project_id:project.id,include_unassigned:true}),store.getAppSettings()]);
           const files=library.files.map(item=>{const abs=join(root,item.path),enc=encodeURIComponent(abs);let size=null,mtime=null;try{const st=statSync(abs);size=st.size;mtime=st.mtimeMs;}catch{}const empty=size===0;return {...item,size,mtime,empty,url:`/director-studio/api/file?path=${enc}&session=${encodeURIComponent(sessionId)}`,thumb:empty||kind==='images'?null:`/director-studio/api/footage/thumb?path=${enc}&session=${encodeURIComponent(sessionId)}`};});
-          sendJson(res,200,{files,groups:library.groups,order:library.order,open:library.open,assets:assets.filter(item=>['actors','scenes','props'].includes(item.kind)).map(item=>({name:item.name,kind:item.kind,id:item.id}))});return;}
+          // smart_ready: the auto-tag pass in the tab only makes sense with the
+          // gear-panel endpoint configured — without it every tag-ai 400s and
+          // untagged files re-queue on every open.
+          const smartReady=String(appSettings?.smart?.url??'').trim().length>0;
+          sendJson(res,200,{files,groups:library.groups,order:library.order,open:library.open,smartReady,assets:assets.filter(item=>['actors','scenes','props'].includes(item.kind)).map(item=>({name:item.name,kind:item.kind,id:item.id}))});return;}
         if(sub==='open'&&req.method==='PUT'){const b=await readJson(req,controller.signal);sendJson(res,200,await store.setLibOpen(kind,{id:b.id,expanded:b.expanded}));return;}
         // Selected files leave the library by going to the OS trash (XDG), one result row per file.
         if(sub==='delete'&&req.method==='POST'){const b=await readJson(req,controller.signal);
