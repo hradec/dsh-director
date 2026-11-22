@@ -696,3 +696,27 @@ test('timeline art routes: poster data URL, filmstrip tile + art-file stream, fo
   const gone = await (await json(base, `/api/editing/${ed.id}/thumbnail?mediaId=${mediaId}`)).json();
   assert.equal(gone.ok, false); assert.equal(gone.error.code, 'not_ready', 'missing media answers honestly, never a crash');
 });
+test('waveform routes: pyramid levels + tile slices for audio media, not_ready for silent media', async t => {
+  const { base, root } = await setup(t);
+  await mkdir(join(root, 'media'), { recursive: true });
+  execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', '-f', 'lavfi', '-i', 'color=c=red:s=64x64:d=1:r=10', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-shortest', join(root, 'media', 'tone.mp4')]);
+  const ed = await (await json(base, '/api/editing', { method: 'POST', body: JSON.stringify({ name: 'wf' }) })).json();
+  const seed = await (await json(base, `/api/editing/${ed.id}/seed`, { method: 'POST', body: JSON.stringify({ shots: [{ shot_id: 'w1', path: 'media/tone.mp4', duration_s: 1 }] }) })).json();
+  assert.equal(seed.ok, true);
+  const got = await (await json(base, `/api/editing/${ed.id}`)).json();
+  const mediaId = Object.keys(got.doc.media_pool)[0];
+  const lv = await (await json(base, `/api/editing/${ed.id}/waveform-levels?mediaId=${mediaId}`)).json();
+  assert.equal(lv.ok, true, JSON.stringify(lv.error));
+  assert.ok(lv.value.channels >= 1 && lv.value.levels.length >= 1 && lv.value.levels[0].peakCount > 1, JSON.stringify(lv.value));
+  const tile = await (await json(base, `/api/editing/${ed.id}/waveform-tile?mediaId=${mediaId}&level=0&channel=0&startPeak=0&count=64`)).json();
+  assert.equal(tile.ok, true);
+  assert.ok(tile.value.min.length > 0 && tile.value.min.length <= 64);
+  assert.ok(tile.value.max.every((v) => v >= -1 && v <= 1) && tile.value.min.every((v) => v >= -1 && v <= 1), 'normalized samples');
+  assert.ok(tile.value.max.some((v) => v > 0.1), 'a 440Hz tone must show real amplitude');
+  // silent video: honest not_ready, no crash
+  execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=64x64:d=0.5:r=10', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', join(root, 'media', 'silent.mp4')]);
+  const imp = await (await json(base, `/api/editing/${ed.id}/import-footage`, { method: 'POST', body: '{}' })).json();
+  const silentId = imp.added.find((item) => item.path === 'media/silent.mp4').media_id;
+  const lv2 = await (await json(base, `/api/editing/${ed.id}/waveform-levels?mediaId=${silentId}`)).json();
+  assert.equal(lv2.ok, false); assert.equal(lv2.error.code, 'not_ready');
+});

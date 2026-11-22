@@ -115,6 +115,18 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
       if (r && r.ok === false) throw new Error('not_ready')
       return r.value as T
     }
+    // Waveform lanes: pyramid peaks (levels header + tile slices), same
+    // 'not_ready' rejection contract as the desktop waveform job.
+    case 'get_waveform_levels': {
+      const r = await getJson(`/api/editing/${id}/waveform-levels?mediaId=${encodeURIComponent(String(args?.mediaId ?? ''))}`)
+      if (r && r.ok === false) throw new Error('not_ready')
+      return r.value as T
+    }
+    case 'get_waveform_tile': {
+      const r = await getJson(`/api/editing/${id}/waveform-tile?mediaId=${encodeURIComponent(String(args?.mediaId ?? ''))}&level=${encodeURIComponent(String(args?.level ?? 0))}&channel=${encodeURIComponent(String(args?.channel ?? 0))}&startPeak=${encodeURIComponent(String(args?.startPeak ?? 0))}&count=${encodeURIComponent(String(args?.count ?? 2048))}`)
+      if (r && r.ok === false) throw new Error('not_ready')
+      return r.value as T
+    }
     default: {
       const r = await postJson(`/api/editing/${id}/command`, { channel: cmd, args: args ?? {} })
       if (r && r.ok === false) {

@@ -2,6 +2,7 @@ import {agentTaskStoreRootFor} from './agent-task.mjs';
 import {StudioStoreError,isStudioAssetKind,studioStoreConstants} from './studio-store.mjs';
 import {storyStoreFor} from './story-store.mjs';
 import {editingStoreFor,EditingStore} from './editing-store.mjs';
+import {ensureWaveform,readWaveformTile} from './media-waveform.mjs';
 import {Readable} from 'node:stream';
 import {createReadStream,statSync,fstatSync,realpathSync,readdirSync,readFileSync,rmSync,existsSync,mkdirSync,writeFileSync,openSync,closeSync,readSync,utimesSync} from 'node:fs';
 import {execFile} from 'node:child_process';
@@ -406,7 +407,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       // every save; nobody (UI or agent) hand-writes them. Live at the next harness restart.
       if(path==='/api/editing'&&req.method==='GET'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const tags=(url.searchParams.get('tags')??'').split(',').filter(Boolean);const items=tags.length?await ed.find(tags):Object.values(await ed.catalog());sendJson(res,200,{editing:items});return;}
       if(path==='/api/editing'&&req.method==='POST'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const b=await readJson(req,controller.signal);sendJson(res,201,await ed.create({name:String(b.name??'edit'),note:b.note??null,doc:b.doc}));return;}
-      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink|thumbnail|tile|art-file|import-footage))?$/.exec(path);
+      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink|thumbnail|tile|art-file|import-footage|waveform-levels|waveform-tile))?$/.exec(path);
       if(match){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const id=match[1],sub=match[2];
         if(!sub&&req.method==='GET'){const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}sendJson(res,200,got);return;}
         if(!sub&&req.method==='DELETE'){sendJson(res,200,{deleted:await ed.delete(id)});return;}
@@ -446,6 +447,32 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
           res.writeHead(200,{'Content-Type':'image/jpeg','X-Content-Type-Options':'nosniff','Cache-Control':'private, max-age=86400','Content-Length':String(info.size)});mediaLog(req,200,'art-file');
           if(req.method==='HEAD'){res.end();return;}
           createReadStream(want).pipe(res);return;
+        }
+        // Waveform lanes: pyramid peaks built once per source with ffmpeg,
+        // cached under .director-studio/waveform (meta JSON + int16 block).
+        if(sub==='waveform-levels'&&req.method==='GET'){
+          const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}
+          const mediaAbs=editingMediaAbs(got.doc,url.searchParams.get('mediaId')??'',store.workspaceRoot??join(store.root,'..'));
+          if(!mediaAbs||!existsSync(mediaAbs.abs)){sendJson(res,200,{ok:false,error:{code:'not_ready',detail:'media file unavailable'}});return;}
+          try{
+            const meta=await ensureWaveform(join(store.root,'waveform'),mediaAbs.abs);
+            sendJson(res,200,{ok:true,value:{channels:meta.channels,levels:meta.levels}});
+          }catch(error){
+            if(String(error?.message).includes('not_ready'))sendJson(res,200,{ok:false,error:{code:'not_ready'}});
+            else sendJson(res,200,{ok:false,error:{code:'not_ready',detail:String(error?.message??error).slice(0,160)}});
+          }
+          return;
+        }
+        if(sub==='waveform-tile'&&req.method==='GET'){
+          const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}
+          const mediaAbs=editingMediaAbs(got.doc,url.searchParams.get('mediaId')??'',store.workspaceRoot??join(store.root,'..'));
+          if(!mediaAbs||!existsSync(mediaAbs.abs)){sendJson(res,200,{ok:false,error:{code:'not_ready',detail:'media file unavailable'}});return;}
+          try{
+            const meta=await ensureWaveform(join(store.root,'waveform'),mediaAbs.abs);
+            const value=readWaveformTile(meta,Number(url.searchParams.get('level')??0),Number(url.searchParams.get('channel')??0),Number(url.searchParams.get('startPeak')??0),Number(url.searchParams.get('count')??2048));
+            sendJson(res,200,{ok:true,value});
+          }catch(error){sendJson(res,200,{ok:false,error:{code:'not_ready',detail:String(error?.message??error).slice(0,160)}});}
+          return;
         }
         // '+ Footage': every workspace media/ video not already in the pool joins it —
         // the same add_media_item actor op drags use, through the shared store singleton.
