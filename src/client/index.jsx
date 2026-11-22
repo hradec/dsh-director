@@ -8,28 +8,14 @@ import {createMediaBody,MEDIA_KINDS} from './MediaBodies.jsx';
 import {startMediaPathFixer} from './markdown-media.mjs';
 import {startMediaFenceTakeover} from './media-fence-enhancer.mjs';
 import css from './media.css';
-import * as React from 'react';
-import {createRoot} from 'react-dom/client';
+import {installStudioTabBridge} from './studio/studio-tab-bridge.jsx';
 export const name='dsh-director-ui';
 export const inject=['slots','conversation','connection','sessions','sidebarRight','sidebarRightTabs','documentPreviews'];
 export function apply(ctx){
-  // Tab bridge for the Timeline dock: the engine bundle (React 19, same document
-  // via the panel host) embeds the EXACT Footage/Images tab components — same
-  // groups, tag filter, right-click actions — with an independent per-panel zoom.
-  if(!globalThis.__DSH_STUDIO_TABS__){
-    const roots=new Map();
-    globalThis.__DSH_STUDIO_TABS__={
-      mount(kind,el,opts={}){
-        if(roots.has(el))return;
-        const Body=kind==='footage'?FootageTab:kind==='images'?ImagesTab:null;
-        if(!Body||!el)return;
-        const root=createRoot(el);
-        roots.set(el,root);
-        root.render(React.createElement(Body,{sessionId:opts.sessionId??globalThis.__DSH_DIRECTOR_SESSION__??'',sendDshRequest:(text,label)=>askDshAgent(text,label)}));
-      },
-      unmount(el){const r=roots.get(el);if(r){roots.delete(el);r.unmount();}},
-    };
-  }
+  // Tab bridge for the Timeline dock (studio/studio-tab-bridge.jsx): the dock
+  // realm gets its own copy when the engine mounts; keeping one on the main
+  // realm covers hosts that embed the dock without an iframe boundary.
+  installStudioTabBridge(globalThis);
   ctx.effect(()=>startMediaPathFixer(document),'director markdown media path repair');
   ctx.effect(()=>startMediaFenceTakeover(document),'director GenUI media fence takeover');
   ctx.effect(()=>{const style=document.createElement('style');style.dataset.director='media';style.textContent=css;document.head.append(style);return ()=>style.remove();},'director media styles');

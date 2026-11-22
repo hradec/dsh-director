@@ -1,6 +1,7 @@
 import {useCallback,useEffect,useRef,useState} from 'react';
 import {fetch as apiFetch} from './fetch-inject.mjs';
 import {TimelineBoard} from './TimelineBoard.jsx';
+import {installStudioTabBridge} from './studio-tab-bridge.jsx';
 
 // The Timeline tab: real WeftCut NLE timeline (vendored engine, own React 19
 // bundle) over the Editing library, with the legacy shot board as a fallback
@@ -42,6 +43,10 @@ export function TimelineStudio(){
     if(win&&!win.DSH_TIMELINE){
       await new Promise((res,rej)=>{const s=doc.createElement('script');s.src='/director-studio/timeline-engine.js';s.onload=res;s.onerror=()=>rej(new Error('engine script unavailable'));doc.head.appendChild(s);});
     }
+    // Same-origin: put the Studio-tab bridge on the HOST realm so the dock's
+    // StudioLibraryPanel (React-19 engine realm) finds the Footage/Images tabs
+    // in its own window.__DSH_STUDIO_TABS__.
+    if(win)installStudioTabBridge(win);
     const api=(win&&win.DSH_TIMELINE)||globalThis.DSH_TIMELINE;
     if(api&&host.isConnected){ // view may have toggled while the script loaded
       unmountEngine(); // previous edit lived on its own element; release it (Pixi tickers keep running on detached nodes)

@@ -32,14 +32,18 @@ import enUS from "@/i18n/locales/en-US";
 // English resource tree from the vendored locale file (the shim stores it; see
 // src/renderer/shims/i18next-shim.jsx) so t() answers with real copy.
 i18n.addResourceBundle("en", "translation", enUS);
-// DSH panel titles for the embedded library tabs (addResourceBundle merges at
-// the namespace level, so pass the dock_workspace subtree whole).
+// DSH panel titles for the embedded library tabs. addResourceBundle merges at
+// the NAMESPACE level, so the subtree must be passed UNDER its dock_workspace
+// key — spreading it bare writes panels onto the translation root where
+// t('dock_workspace.panels.…') can never find them.
 i18n.addResourceBundle("en", "translation", {
-  ...(enUS as Record<string, unknown>).dock_workspace,
-  panels: {
-    ...(((enUS as Record<string, unknown>).dock_workspace as Record<string, unknown>)?.panels as Record<string, string> ?? {}),
-    "library-footage": "Footage",
-    "library-images": "Images",
+  dock_workspace: {
+    ...(enUS as Record<string, unknown>).dock_workspace,
+    panels: {
+      ...(((enUS as Record<string, unknown>).dock_workspace as Record<string, unknown>)?.panels as Record<string, string> ?? {}),
+      "library-footage": "Footage",
+      "library-images": "Images",
+    },
   },
 });
 

@@ -328,6 +328,16 @@ export class DockWorkspaceAdapter implements DockWorkspaceController {
       position: { referencePanel: "media", direction: "within" },
       inactive: true,
     });
+    // DSH feature: the embedded Studio Footage/Images tabs live in the SAME
+    // group as the Media Pool (mirrors createEditingLayout's library array).
+    this.addPanel("library-footage", {
+      position: { referencePanel: "media", direction: "within" },
+      inactive: true,
+    });
+    this.addPanel("library-images", {
+      position: { referencePanel: "media", direction: "within" },
+      inactive: true,
+    });
     this.addPanel("preview", {
       position: { referencePanel: "media", direction: "right" },
       initialWidth: Math.round(bodyWidth * 0.53),
