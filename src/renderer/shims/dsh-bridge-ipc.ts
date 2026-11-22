@@ -97,9 +97,24 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
     // The tab owns document selection; open/save/close are transport facts.
     case 'project_open': case 'project_new_workspace': case 'project_close': return null as T
     case 'project_save': case 'project_save_as': return undefined as T
+    // '+ Footage' import: every workspace media/ video not yet in the pool joins
+    // it (server scan + add_media_item actor op), then the projection refreshes.
+    case 'dsh_import_footage': { const r = await postJson(`/api/editing/${id}/import-footage`); await refreshStore(); return r as T }
     case 'project_undo': { const r = await postJson(`/api/editing/${id}/undo`); await refreshStore(); return r as T }
     case 'project_redo': { const r = await postJson(`/api/editing/${id}/redo`); await refreshStore(); return r as T }
     case 'project_create_checkpoint': return await postJson(`/api/editing/${id}/checkpoint`, { label: String(args?.label ?? 'checkpoint') }) as T
+    // Timeline artwork: pool posters (data URL) + filmstrip tiles ({path,w,h}).
+    // Same 'not_ready' rejection contract the desktop tile producers expect.
+    case 'get_media_thumbnail': {
+      const r = await getJson(`/api/editing/${id}/thumbnail?mediaId=${encodeURIComponent(String(args?.mediaId ?? ''))}`)
+      if (r && r.ok === false) throw new Error('not_ready')
+      return r.value as T
+    }
+    case 'get_filmstrip_tile': {
+      const r = await getJson(`/api/editing/${id}/tile?mediaId=${encodeURIComponent(String(args?.mediaId ?? ''))}&lod=${encodeURIComponent(String(args?.lod ?? 0))}&index=${encodeURIComponent(String(args?.index ?? 0))}`)
+      if (r && r.ok === false) throw new Error('not_ready')
+      return r.value as T
+    }
     default: {
       const r = await postJson(`/api/editing/${id}/command`, { channel: cmd, args: args ?? {} })
       if (r && r.ok === false) {
@@ -115,5 +130,10 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
 // Media bytes for <video>/WebCodecs: DSH serves workspace files with Range
 // support over /api/file (the fork's resolver path).
 export function convertFileSrc(filePath: string): string {
+  // Timeline art cache lives in the .director-studio dot-folder, which /api/file
+  // denies by design; the session-gated art-file streamer serves it instead.
+  if (filePath.includes('/.director-studio/timeline-art/')) {
+    return url(`/api/editing/${cfg_().editingId}/art-file?path=` + encodeURIComponent(filePath))
+  }
   return url('/api/file?path=' + encodeURIComponent(filePath) + (cfg_().session ? '&session=' + encodeURIComponent(cfg_().session) : ''))
 }

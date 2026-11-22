@@ -667,3 +667,32 @@ test('editing routes: create (default + explicit doc), shared-path commands, der
   assert.deepEqual((await (await json(base,`/api/editing/${seeded.id}`)).json()).entry.tags.sort(),['episode-e9','sequence-s9','shot-c10','shot-c9']);
 });
 test('GET /timeline-engine.js serves the engine bundle without a session (script tags cannot send headers)',async t=>{const {base}=await setup(t);const r=await fetch(base+'/timeline-engine.js');assert.equal(r.status,200);assert.match(r.headers.get('content-type')??'',/javascript/);assert.ok((await r.text()).includes('DSH_TIMELINE'));});
+test('timeline art routes: poster data URL, filmstrip tile + art-file stream, footage import, not_ready envelope', async t => {
+  const { base, root } = await setup(t);
+  await mkdir(join(root, 'media'), { recursive: true });
+  execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=64x64:d=1:r=10', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', join(root, 'media', 'arttest.mp4')]);
+  const ed = await (await json(base, '/api/editing', { method: 'POST', body: JSON.stringify({ name: 'art' }) })).json();
+  const seed = await (await json(base, `/api/editing/${ed.id}/seed`, { method: 'POST', body: JSON.stringify({ shots: [{ shot_id: 'a1', path: 'media/arttest.mp4', duration_s: 1 }] }) })).json();
+  assert.equal(seed.ok, true, JSON.stringify(seed.error ?? seed));
+  const got = await (await json(base, `/api/editing/${ed.id}`)).json();
+  const mediaId = Object.keys(got.doc.media_pool)[0];
+  const th = await (await json(base, `/api/editing/${ed.id}/thumbnail?mediaId=${mediaId}`)).json();
+  assert.equal(th.ok, true);
+  assert.ok(th.value.startsWith('data:image/jpeg;base64,'), 'poster is a data URL for MediaPosterCache');
+  const tile = await (await json(base, `/api/editing/${ed.id}/tile?mediaId=${mediaId}&lod=1&index=1`)).json();
+  assert.equal(tile.ok, true);
+  assert.ok(String(tile.value.path).endsWith('.jpg') && tile.value.heightPx > 0, 'TileEngine shape {path,widthPx,heightPx}');
+  const bytes = await json(base, `/api/editing/${ed.id}/art-file?path=${encodeURIComponent(tile.value.path)}`);
+  assert.equal(bytes.status, 200);
+  const buf = Buffer.from(await bytes.arrayBuffer());
+  assert.equal(buf[0], 0xff); assert.equal(buf[1], 0xd8); // JPEG magic — streamed here; dot-folder never via /api/file
+  const outside = await json(base, `/api/editing/${ed.id}/art-file?path=${encodeURIComponent(join(root, 'media', 'arttest.mp4'))}`);
+  assert.equal(outside.status, 404, 'art-file serves ONLY the timeline-art cache dir');
+  execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=64x64:d=0.2:r=10', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', join(root, 'media', 'artmore.mp4')]);
+  const imp = await (await json(base, `/api/editing/${ed.id}/import-footage`, { method: 'POST', body: '{}' })).json();
+  assert.equal(imp.ok, true);
+  assert.deepEqual(imp.added.map((item) => item.path), ['media/artmore.mp4'], 'every not-yet-pooled workspace video joins the pool');
+  await rm(join(root, 'media', 'arttest.mp4'), { force: true });
+  const gone = await (await json(base, `/api/editing/${ed.id}/thumbnail?mediaId=${mediaId}`)).json();
+  assert.equal(gone.ok, false); assert.equal(gone.error.code, 'not_ready', 'missing media answers honestly, never a crash');
+});

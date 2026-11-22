@@ -74,3 +74,30 @@ test('editing store: commands mutate, tags derive, undo re-derives, find-by-tag 
     await rm(ws, { recursive: true, force: true });
   }
 });
+
+test('A/B roll skeleton: new edits get role-stamped lanes, seed lands on A roll, legacy docs migrate on open', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-editing-ab-'));
+  try {
+    const store = new EditingStore(dir, core);
+    const created = await store.create({ name: 'ab' });
+    const got = await store.get(created.id);
+    const comp = got.doc.compositions[got.doc.root_id];
+    assert.deepEqual(comp.tracks.map((t) => t.role), ['ARoll', 'BRoll'], 'reserved skeleton like model.ts newComposition');
+    const seed = await store.seedShots(created.id, [{ shot_id: 'x1', path: 'media/x.mp4', duration_us: 4000000 }]);
+    assert.ok(seed.ok, JSON.stringify(seed.error ?? seed));
+    const sc = store.snapshot(created.id).compositions[got.doc.root_id];
+    assert.equal(sc.tracks[0].layers.length, 1, 'seeded shots land on the A roll');
+    assert.equal(sc.tracks[1].layers.length, 0);
+    // Legacy documents (round-5 seeds) carry no role fields at all: the first
+    // read stamps the first two lanes and persists, so AbRoll view is not empty.
+    const legacy = emptyDoc();
+    legacy.doc.compositions[legacy.ROOT].tracks = [{ id: '44444444-4444-4444-8444-444444444444', label: 't1', enabled: true, locked: false, muted: false, solo: false, removable: true, transient: false, height_px: 64, layers: [] }];
+    const old = await store.create({ name: 'old', doc: legacy.doc });
+    assert.equal((await store.get(old.id)).doc.compositions[legacy.ROOT].tracks[0].role, 'ARoll');
+    assert.equal((await store.get(old.id)).doc.compositions[legacy.ROOT].tracks[0].role, 'ARoll', 'migration persisted, not just in-memory');
+    const reopened = new EditingStore(dir, core); // fresh process view: roles are on disk
+    assert.equal((await reopened.get(old.id)).doc.compositions[legacy.ROOT].tracks[0].role, 'ARoll');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

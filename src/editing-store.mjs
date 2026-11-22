@@ -63,7 +63,9 @@ export class EditingStore {
     this.revision = 0;
     this.viewSeq = 0;
     this.ready = this.#init();
+    this.#migrated = new Set(); // doc ids already role-migrated this process
   }
+  #migrated;
   async #init() {
     await mkdir(this.dir, { recursive: true });
     if (!this.core) this.core = await loadCore();
@@ -117,7 +119,14 @@ export class EditingStore {
     return {
       schema_version: this.core.SCHEMA_VERSION, project_id: randomUUID(),
       metadata: { name: name || 'edit', created_at: new Date().toISOString(), modified_at: new Date().toISOString(), description: null },
-      compositions: { [ROOT]: { id: ROOT, label: null, ordinal: 0, width: 1920, height: 1080, fps: { num: 24, den: 1 }, duration_us: 60000000, duration_pinned: false, sample_rate: 48000, channels: 2, color_space: 'Bt709', background: { r: 0, g: 0, b: 0, a: 255 }, tracks: [], markers: [], transitions: [], links: [] } },
+      // A/B-roll skeleton, same shape as the desktop model's reserved tracks
+      // (model.ts newTrack): role-stamped, non-removable, derived labels. The
+      // timeline's AbRoll display mode shows ONLY role-stamped tracks, so a doc
+      // without these lanes renders an empty timeline in that view.
+      compositions: { [ROOT]: { id: ROOT, label: null, ordinal: 0, width: 1920, height: 1080, fps: { num: 24, den: 1 }, duration_us: 60000000, duration_pinned: false, sample_rate: 48000, channels: 2, color_space: 'Bt709', background: { r: 0, g: 0, b: 0, a: 255 }, tracks: [
+        { id: randomUUID(), label: null, enabled: true, locked: false, muted: false, solo: false, removable: false, role: 'ARoll', transient: false, height_px: 64, layers: [] },
+        { id: randomUUID(), label: null, enabled: true, locked: false, muted: false, solo: false, removable: false, role: 'BRoll', transient: false, height_px: 64, layers: [] },
+      ], markers: [], transitions: [], links: [] } },
       root_id: ROOT, next_group_ordinal: 1, media_pool: {}, audio_roles: {},
       settings: { preview_width: 1280, preview_height: 720, autosave_interval_secs: null, history_capacity: 500, auto_pair_audio_on_import: true, prefer_proxies: false, proxy_overrides: {}, shot_review: null, pause_review: null },
       motifs: {},
@@ -141,7 +150,25 @@ export class EditingStore {
     const cat = await this.catalog();
     const entry = cat[id];
     if (!entry) return null;
-    return { entry, doc: await readJson(join(this.dir, entry.path), null) };
+    const doc = await readJson(join(this.dir, entry.path), null);
+    // One-pass migration for pre-role documents (round 5 seeds): every track
+    // gets an explicit role field, and the first two lanes of a composition
+    // take the reserved A-roll / B-roll identities so AbRoll view shows them.
+    if (doc && !this.#migrated?.has(id)) {
+      if (!this.#migrated) this.#migrated = new Set();
+      this.#migrated.add(id);
+      let dirty = false;
+      for (const comp of Object.values(doc.compositions || {})) {
+        const tracks = comp.tracks || [];
+        for (const track of tracks) if (!('role' in track)) { track.role = null; dirty = true; }
+        if (!tracks.some((t) => t.role === 'ARoll' || t.role === 'BRoll')) {
+          if (tracks[0] && tracks[0].role === null) { tracks[0].role = 'ARoll'; dirty = true; }
+          if (tracks[1] && tracks[1].role === null) { tracks[1].role = 'BRoll'; dirty = true; }
+        }
+      }
+      if (dirty) await this.#save(id, entry, doc);
+    }
+    return { entry, doc };
   }
 
   // find edits by tag query: open "the editing of shot c12" = tags ⊇ [shot-c12]
@@ -258,7 +285,7 @@ export class EditingStore {
     if (!got || !got.doc) return { ok: false, error: { code: 'not_found', detail: 'editing ' + id + ' has no document' } };
     const ROOT = got.doc.root_id;
     await this.#actor(id, got.entry, got.doc); // materialize the cached actor so snapshot() answers
-    let trackId = (this.snapshot(id).compositions[ROOT].tracks.find((t) => t.kind === 'Video') || {}).id;
+    let trackId = (this.snapshot(id).compositions[ROOT].tracks.find((t) => t.role === 'ARoll') || this.snapshot(id).compositions[ROOT].tracks.find((t) => t.kind === 'Video') || {}).id;
     if (!trackId) {
       const r = await this.command(id, 'add_track', { compositionId: ROOT });
       if (!r.ok) return r;

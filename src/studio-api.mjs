@@ -1,14 +1,14 @@
 import {agentTaskStoreRootFor} from './agent-task.mjs';
 import {StudioStoreError,isStudioAssetKind,studioStoreConstants} from './studio-store.mjs';
 import {storyStoreFor} from './story-store.mjs';
-import {editingStoreFor} from './editing-store.mjs';
+import {editingStoreFor,EditingStore} from './editing-store.mjs';
 import {Readable} from 'node:stream';
 import {createReadStream,statSync,fstatSync,realpathSync,readdirSync,readFileSync,rmSync,existsSync,mkdirSync,writeFileSync,openSync,closeSync,readSync,utimesSync} from 'node:fs';
 import {execFile} from 'node:child_process';
-import {isAbsolute,join,sep,extname,basename} from 'node:path';
+import {isAbsolute,join,sep,extname,basename,resolve} from 'node:path';
 import {apiToUi} from './comfy-api-to-ui.mjs';
 import {homedir,tmpdir} from 'node:os';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 
 // ponytail: browsers cannot open server filesystem paths, so dsh-ui media srcs must be URLs; this route streams local media through the GUI origin.
 // Ceiling: single Range only incl. suffix (seeks re-stream tail), media extensions only, roots = homedir + /tmp + session workspace; secret dot-folders denied except director-media/attachments.
@@ -143,6 +143,52 @@ async function embeddedComfyPng(file){const buf=readFileSync(file);
 async function firstOnlineComfy({comfyHosts,store,fetchImpl,signal}){
   const configured=[...await comfyHosts(),...String((await store.getAppSettings()).comfy?.urls??'').split(/[\n,]+/).map(entry=>entry.trim()).filter(Boolean)];
   for(const base of configured){try{const r=await fetchImpl(`${base}/system_stats`,{signal:signal??AbortSignal.timeout(3000)});if(r.ok)return base;}catch{}}return '';}
+// Timeline artwork (pool posters + filmstrip tiles): same cache discipline as
+// footage thumbs, but keys also carry time/height so LOD sweeps never collide.
+// Art is served ONLY through the session-gated art-file route (dot-folder files
+// deliberately never go through /api/file's media allowlist).
+const ART_INFLIGHT=new Map();
+const DIMS_CACHE=new Map();
+function probeDims(source){
+  if(DIMS_CACHE.has(source))return Promise.resolve(DIMS_CACHE.get(source));
+  return new Promise((done)=>{execFile('ffprobe',['-v','error','-select_streams','v:0','-show_entries','stream=width,height','-of','csv=p=0:s=x',source],{timeout:20000},(error,stdout)=>{
+    const m=error?null:/(\d+)x(\d+)/.exec(String(stdout).trim());
+    const dims=m?{w:Number(m[1]),h:Number(m[2])}:{w:16,h:9};
+    DIMS_CACHE.set(source,dims);done(dims);
+  });});
+}
+function ensureArtFrame(store,source,tUs,heightPx){
+  const info=statSync(source);
+  const key=createHash('sha1').update(`art|${source}|${info.mtimeMs}|${info.size}|${String(Math.round(tUs))}|${heightPx}`).digest('hex');
+  const root=join(store.root,'timeline-art');
+  const target=join(root,`${key}.jpg`);
+  if(existsSync(target))return Promise.resolve(target);
+  if(ART_INFLIGHT.has(target))return ART_INFLIGHT.get(target);
+  mkdirSync(root,{recursive:true});
+  const work=new Promise((res2,rej)=>{
+    const args=['-y','-v','error'];
+    if(tUs>0)args.push('-ss',(tUs/1e6).toFixed(6));
+    args.push('-i',source,'-frames:v','1','-vf',`scale=-2:${heightPx}`,'-q:v','3',target);
+    execFile('ffmpeg',args,{timeout:120000},(error,stdout,stderr)=>{
+      ART_INFLIGHT.delete(target);
+      if(error||!existsSync(target)){try{rmSync(target,{force:true});}catch{}rej(new StudioStoreError('Timeline art frame failed: '+String(stderr||error?.message||'no frame written').slice(0,160),502));return;}
+      res2(target);
+    });
+  });
+  ART_INFLIGHT.set(target,work);return work;
+}
+// Media row of an editing document -> absolute workspace path, containment-checked.
+function editingMediaAbs(doc,mediaId,workspaceRoot){
+  const med=(doc&&doc.media_pool)?doc.media_pool[mediaId]:null;
+  if(!med)return null;
+  const p=String(med.path_abs??'');
+  if(!p)return null;
+  const abs=isAbsolute(p)?p:join(workspaceRoot,p);
+  const root=resolve(workspaceRoot);
+  const want=resolve(abs);
+  if(want!==root&&!want.startsWith(root+sep))return null;
+  return {med,abs:want};
+}
 function ensureFootageThumb(store,source){
   const info=statSync(source);
   const key=createHash('sha1').update(`${source}|${info.mtimeMs}|${info.size}`).digest('hex');
@@ -360,12 +406,71 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       // every save; nobody (UI or agent) hand-writes them. Live at the next harness restart.
       if(path==='/api/editing'&&req.method==='GET'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const tags=(url.searchParams.get('tags')??'').split(',').filter(Boolean);const items=tags.length?await ed.find(tags):Object.values(await ed.catalog());sendJson(res,200,{editing:items});return;}
       if(path==='/api/editing'&&req.method==='POST'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const b=await readJson(req,controller.signal);sendJson(res,201,await ed.create({name:String(b.name??'edit'),note:b.note??null,doc:b.doc}));return;}
-      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink))?$/.exec(path);
+      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink|thumbnail|tile|art-file|import-footage))?$/.exec(path);
       if(match){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const id=match[1],sub=match[2];
         if(!sub&&req.method==='GET'){const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}sendJson(res,200,got);return;}
         if(!sub&&req.method==='DELETE'){sendJson(res,200,{deleted:await ed.delete(id)});return;}
         // The renderer reads the WeftCut summary projection, never the raw doc.
         if(sub==='publication'&&req.method==='GET'){const pub=await ed.publication(id);if(!pub){sendJson(res,404,{detail:'no such editing document'});return;}sendJson(res,200,pub);return;}
+        // --- timeline art (renderer TileEngine + MediaPosterCache contracts) ---
+        if(sub==='thumbnail'&&req.method==='GET'){
+          const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}
+          const mediaAbs=editingMediaAbs(got.doc,url.searchParams.get('mediaId')??'',store.workspaceRoot??join(store.root,'..'));
+          if(!mediaAbs||!existsSync(mediaAbs.abs)){sendJson(res,200,{ok:false,error:{code:'not_ready',detail:'media file unavailable'}});return;}
+          const dur=await videoDuration(mediaAbs.abs);
+          const target=await ensureArtFrame(store,mediaAbs.abs,Math.round((dur>0?Math.min(2,dur*0.1):0)*1e6),180);
+          const dataUrl='data:image/jpeg;base64,'+readFileSync(target).toString('base64');
+          sendJson(res,200,{ok:true,value:dataUrl});return;
+        }
+        if(sub==='tile'&&req.method==='GET'){
+          const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}
+          const mediaAbs=editingMediaAbs(got.doc,url.searchParams.get('mediaId')??'',store.workspaceRoot??join(store.root,'..'));
+          if(!mediaAbs||!existsSync(mediaAbs.abs)){sendJson(res,200,{ok:false,error:{code:'not_ready',detail:'media file unavailable'}});return;}
+          // TileEngine contract (FilmstripTileProducer.ts): tUs = index * 250_000 * 2^lod.
+          const lod=Math.max(0,Number(url.searchParams.get('lod')??0)||0);
+          const index=Math.max(0,Number(url.searchParams.get('index')??0)||0);
+          let tUs=index*250_000*(2**lod);
+          const dur=await videoDuration(mediaAbs.abs);
+          if(dur>0&&tUs>=dur*1e6)tUs=Math.max(0,Math.floor(dur*1e6)-40_000);
+          const heightPx=128;
+          const target=await ensureArtFrame(store,mediaAbs.abs,tUs,heightPx);
+          const dims=await probeDims(mediaAbs.abs);
+          const widthPx=Math.max(2,2*Math.round(heightPx*dims.w/dims.h/2));
+          sendJson(res,200,{ok:true,value:{path:target,widthPx,heightPx}});return;
+        }
+        if(sub==='art-file'&&req.method==='GET'){
+          const want=resolve(url.searchParams.get('path')??'');
+          const artRoot=resolve(join(store.root,'timeline-art'));
+          if(want!==artRoot&&!want.startsWith(artRoot+sep)||extname(want)!=='.jpg'){sendJson(res,404,{detail:'not an art cache file'});return;}
+          const info=statSync(want);
+          res.writeHead(200,{'Content-Type':'image/jpeg','X-Content-Type-Options':'nosniff','Cache-Control':'private, max-age=86400','Content-Length':String(info.size)});mediaLog(req,200,'art-file');
+          if(req.method==='HEAD'){res.end();return;}
+          createReadStream(want).pipe(res);return;
+        }
+        // '+ Footage': every workspace media/ video not already in the pool joins it —
+        // the same add_media_item actor op drags use, through the shared store singleton.
+        if(sub==='import-footage'&&req.method==='POST'){
+          const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}
+          const root=store.workspaceRoot??join(store.root,'..');
+          const pool=got.doc.media_pool??{};
+          const have=new Set(Object.values(pool).map((item)=>String(item.path_abs??'')));
+          const mediaDir=join(root,'media');
+          const added=[];
+          let entries=[];
+          try{entries=readdirSync(mediaDir,{recursive:true,withFileTypes:true});}catch{}
+          for(const ent of entries){
+            if(!ent.isFile())continue;
+            if(!/\.(mp4|m4v|webm|mov|mkv)$/i.test(ent.name))continue;
+            // rel: workspace-relative 'media/...' — Dirent.path is the ABSOLUTE
+            // directory just scanned, so strip the mediaDir prefix.
+            const rel='media/'+join(ent.path,ent.name).slice(mediaDir.length+1).split(sep).join('/');
+            if(have.has(rel)||have.has(join(root,rel)))continue;
+            const dur=await videoDuration(join(mediaDir,rel.slice('media/'.length)));
+            const med=await ed.dispatchOp(id,'add_media_item',{media:EditingStore.poolEntry(randomUUID(),rel,Math.round(dur*1e6)||null)});
+            if(med.ok)added.push({path:rel,media_id:med.value});
+          }
+          sendJson(res,200,{ok:true,added});return;
+        }
         if(!sub||req.method!=='POST')return void sendJson(res,405,{detail:'method not allowed'});
         const b=await readJson(req,controller.signal);
         if(sub==='command')sendJson(res,200,await ed.command(id,String(b.channel??''),b.args??{},String(b.by??'user')));
