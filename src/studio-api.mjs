@@ -494,7 +494,8 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
             if(have.has(rel)||have.has(join(root,rel)))continue;
             const dur=await videoDuration(join(mediaDir,rel.slice('media/'.length)));
             const dims=await ed.probeDims(join(mediaDir,rel.slice('media/'.length)));
-            const med=await ed.dispatchOp(id,'add_media_item',{media:EditingStore.poolEntry(randomUUID(),rel,Math.round(dur*1e6)||null,dims)});
+            const aud=await ed.probeAudio(join(mediaDir,rel.slice('media/'.length)));
+            const med=await ed.dispatchOp(id,'add_media_item',{media:EditingStore.poolEntry(randomUUID(),rel,Math.round(dur*1e6)||null,dims,aud)});
             if(med.ok)added.push({path:rel,media_id:med.value});
           }
           sendJson(res,200,{ok:true,added});return;

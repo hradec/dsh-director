@@ -80,6 +80,16 @@ export class EditingStore {
       });
     });
   }
+  // audio stream presence (channels|sample_rate): the actor's video-layer
+  // auto-pair (dialogue Audio layer + waveform lanes) keys off metadata.audio.
+  probeAudio(source) {
+    return new Promise((done) => {
+      execFile('ffprobe', ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=channels,sample_rate', '-of', 'csv=p=0:s=x', source], { timeout: 20000 }, (error, stdout) => {
+        const m = error ? null : /(\d+)x(\d+)/.exec(String(stdout).trim());
+        done(m ? { channels: Number(m[1]), sample_rate: Number(m[2]) } : null);
+      });
+    });
+  }
   async #init() {
     await mkdir(this.dir, { recursive: true });
     if (!this.core) this.core = await loadCore();
@@ -180,13 +190,20 @@ export class EditingStore {
           if (tracks[1] && tracks[1].role === null) { tracks[1].role = 'BRoll'; dirty = true; }
         }
       }
-      // Backfill real video dimensions for pool entries that predate probing.
+      // Backfill real video dimensions AND audio presence for pool entries
+      // that predate probing (waveform auto-pair keys off metadata.audio).
       for (const media of Object.values(doc.media_pool || {})) {
-        if (media.kind !== 'Video' || (media.metadata && media.metadata.video)) continue;
+        if (media.kind !== 'Video') continue;
         const abs = this.mediaAbs(media.path_abs);
         if (!existsSync(abs)) continue;
-        const dims = await this.probeDims(abs);
-        if (dims) { media.metadata = { ...(media.metadata ?? {}), video: dims }; dirty = true; }
+        if (!(media.metadata && media.metadata.video)) {
+          const dims = await this.probeDims(abs);
+          if (dims) { media.metadata = { ...(media.metadata ?? {}), video: dims }; dirty = true; }
+        }
+        if (!(media.metadata && media.metadata.audio)) {
+          const aud = await this.probeAudio(abs);
+          if (aud) { media.metadata = { ...(media.metadata ?? {}), audio: aud }; dirty = true; }
+        }
       }
       if (dirty) await this.#save(id, entry, doc);
     }
@@ -290,12 +307,12 @@ export class EditingStore {
   // Media-pool entry for a library clip (shape proven by scripts/coreprobe.mjs).
   // ponytail: path_rel mirrors the absolute path — DSH resolves media through
   // /api/file?path=, the WeftCut workspace-relative scheme is unused here.
-  static poolEntry(id, path, durationUs, dims) {
+  static poolEntry(id, path, durationUs, dims, audio) {
     const p = String(path).replace(/\\/g, '/');
     // path_rel must be project-relative for the validator; the abs path is the
     // DSH source of truth (/api/file), rel just keeps the doc valid + readable.
     const rel = p.split('/').pop();
-    return { id, label: null, path_abs: p, path_rel: rel, kind: 'Video', metadata: { duration_us: durationUs ?? null, video: dims ?? null, audio: null, container_format: null }, file_hash_blake3: '0', file_size: 0, file_mtime: 0, imported_at: new Date().toISOString(), decode_route: { route: 'bypass' }, conform_path: null };
+    return { id, label: null, path_abs: p, path_rel: rel, kind: 'Video', metadata: { duration_us: durationUs ?? null, video: dims ?? null, audio: audio ?? null, container_format: null }, file_hash_blake3: '0', file_size: 0, file_mtime: 0, imported_at: new Date().toISOString(), decode_route: { route: 'bypass' }, conform_path: null };
   }
 
   // Seed an edit from Production shot slots: one Video track, one layer per shot
@@ -320,7 +337,8 @@ export class EditingStore {
       if (!shot || !shot.path || !shot.shot_id) continue;
       const durUs = Math.round(Number(shot.duration_us ?? Number(shot.duration_s) * 1e6) || 5e6);
       const dims = await this.probeDims(this.mediaAbs(String(shot.path)));
-      const med = await this.dispatchOp(id, 'add_media_item', { media: EditingStore.poolEntry(randomUUID(), String(shot.path), durUs, dims) });
+      const aud = await this.probeAudio(this.mediaAbs(String(shot.path)));
+      const med = await this.dispatchOp(id, 'add_media_item', { media: EditingStore.poolEntry(randomUUID(), String(shot.path), durUs, dims, aud) });
       if (!med.ok) return { ok: false, error: med.error ?? med, added };
       const layer = await this.command(id, 'add_media_layer', { trackId, mediaId: med.value, tStartUs: tUs });
       if (!layer.ok) return { ok: false, error: layer.error ?? layer, added };
@@ -355,7 +373,8 @@ export class EditingStore {
     for (const old of uniq) {
       const newId = randomUUID();
       const dims = await this.probeDims(this.mediaAbs(String(path)));
-      const add = await this.dispatchOp(id, 'add_media_item', { media: EditingStore.poolEntry(newId, String(path), durUs, dims) });
+      const aud = await this.probeAudio(this.mediaAbs(String(path)));
+      const add = await this.dispatchOp(id, 'add_media_item', { media: EditingStore.poolEntry(newId, String(path), durUs, dims, aud) });
       if (!add.ok) return { ok: false, error: add.error ?? add, relinked };
       for (const comp of Object.values(this.snapshot(id).compositions)) for (const tr of comp.tracks) for (const l of tr.layers) {
         if (!l.params || l.params.media !== old) continue;
