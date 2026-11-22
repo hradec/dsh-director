@@ -720,3 +720,32 @@ test('waveform routes: pyramid levels + tile slices for audio media, not_ready f
   const lv2 = await (await json(base, `/api/editing/${ed.id}/waveform-levels?mediaId=${silentId}`)).json();
   assert.equal(lv2.ok, false); assert.equal(lv2.error.code, 'not_ready');
 });
+test('normalize: 10-bit imports pool as 8-bit copies; normalize-pool relinks legacy entries', async t => {
+  const { base, root } = await setup(t);
+  await mkdir(join(root, 'media'), { recursive: true });
+  execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=64x64:d=0.3:r=10', '-f', 'lavfi', '-i', 'sine=frequency=300:duration=0.3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p10le', '-c:a', 'aac', '-shortest', join(root, 'media', 'tenbit.mp4')]);
+  const ed = await (await json(base, '/api/editing', { method: 'POST', body: JSON.stringify({ name: 'norm' }) })).json();
+  const imp = await (await json(base, `/api/editing/${ed.id}/import-footage`, { method: 'POST', body: '{}' })).json();
+  assert.equal(imp.ok, true);
+  assert.equal(imp.added[0].path, 'media/normalized/tenbit.mp4', '10-bit source pools as an 8-bit copy');
+  const fmt = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=pix_fmt', '-of', 'csv=p=0', join(root, 'media', 'normalized', 'tenbit.mp4')]).toString().trim();
+  assert.equal(fmt, 'yuv420p');
+  // legacy path: seed points the pool AT the 10-bit original — normalize-pool must repair + relink
+  const ed2 = await (await json(base, '/api/editing', { method: 'POST', body: JSON.stringify({ name: 'legacy' }) })).json();
+  const seed = await (await json(base, `/api/editing/${ed2.id}/seed`, { method: 'POST', body: JSON.stringify({ shots: [{ shot_id: 't1', path: 'media/tenbit.mp4', duration_s: 0.3 }] }) })).json();
+  assert.equal(seed.ok, true);
+  const start = await (await json(base, `/api/editing/${ed2.id}/normalize-pool`, { method: 'POST', body: '{}' })).json();
+  assert.equal(start.ok, true);
+  assert.equal(start.started, 1, JSON.stringify(start));
+  for (let i = 0; i < 60; i++) {
+    const st = await (await json(base, `/api/editing/${ed2.id}/normalize-status`)).json();
+    if (!st.progress.running) break;
+    await new Promise((res2) => setTimeout(res2, 500));
+  }
+  const done = await (await json(base, `/api/editing/${ed2.id}`)).json();
+  const paths = Object.values(done.doc.media_pool).map((m) => String(m.path_abs));
+  assert.ok(paths.some((p) => p === 'media/normalized/tenbit.mp4'), 'normalized entry exists: ' + paths.join(','));
+  const layerMedia = done.doc.compositions[done.doc.root_id].tracks.find((tr) => tr.role === 'ARoll').layers[0].params.media;
+  const med = done.doc.media_pool[layerMedia];
+  assert.equal(String(med.path_abs), 'media/normalized/tenbit.mp4', 'the layer relinked onto the playable copy');
+});

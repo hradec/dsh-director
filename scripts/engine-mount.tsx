@@ -228,6 +228,10 @@ export function mount(el: Element, opts: MountOpts): void {
             <Shell />
           </ShortcutBindingsProvider>,
         );
+        // Self-heal the pool: Comfy renders are H.264 High 10, which WebCodecs
+        // rejects outright ('Operation is not supported') — the server transcodes
+        // copies to 8-bit and relinks; each relink refreshes this open editor.
+        void invoke("dsh_normalize_pool").catch(() => {});
       })
       .catch((err) => {
         el.textContent = "Timeline failed to load: " + String(err && err.message ? err.message : err);

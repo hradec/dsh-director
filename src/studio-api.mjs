@@ -4,7 +4,7 @@ import {storyStoreFor} from './story-store.mjs';
 import {editingStoreFor,EditingStore} from './editing-store.mjs';
 import {ensureWaveform,readWaveformTile} from './media-waveform.mjs';
 import {Readable} from 'node:stream';
-import {createReadStream,statSync,fstatSync,realpathSync,readdirSync,readFileSync,rmSync,existsSync,mkdirSync,writeFileSync,openSync,closeSync,readSync,utimesSync} from 'node:fs';
+import {createReadStream,statSync,fstatSync,realpathSync,readdirSync,readFileSync,rmSync,existsSync,mkdirSync,writeFileSync,openSync,closeSync,readSync,utimesSync,renameSync} from 'node:fs';
 import {execFile} from 'node:child_process';
 import {isAbsolute,join,sep,extname,basename,resolve} from 'node:path';
 import {apiToUi} from './comfy-api-to-ui.mjs';
@@ -189,6 +189,41 @@ function editingMediaAbs(doc,mediaId,workspaceRoot){
   const want=resolve(abs);
   if(want!==root&&!want.startsWith(root+sep))return null;
   return {med,abs:want};
+}
+// WebCodecs (any browser) refuses H.264 High 10 / non-420 pixel formats — the
+// Comfy renders are all 10-bit. Normalize such sources to 8-bit yuv420p copies
+// under media/normalized/ (originals untouched) so preview + filmstrip +
+// waveform pipelines can decode them. Returns the workspace-relative path to pool.
+const NORM_INFLIGHT=new Map();
+function probePixfmt(source){
+  return new Promise((done)=>{execFile('ffprobe',['-v','error','-select_streams','v:0','-show_entries','stream=pix_fmt,profile','-of','csv=p=0',source],{timeout:20000},(error,stdout)=>{const line=String(stdout).trim().split('\n')[0]??'';done(error?'':line);});});
+}
+// ffprobe csv field order is NOT the request order (profile first here), so
+// find the pix_fmt token by shape: exactly 'yuv420p' = 8-bit planar = WebCodecs
+// decodable; 'yuv420p10le' (High 10) and anything else are not.
+function isBrowserDecodable(probeLine){
+  const toks=String(probeLine).split(',').map((s)=>s.trim());
+  const fmt=toks.find((t)=>/^(yuv|rgb|gbr|gray)/.test(t))??'';
+  return fmt==='yuv420p';
+}
+async function ensureNormalized(workspaceRoot,rel){
+  const abs=join(workspaceRoot,rel);
+  const fmt=await probePixfmt(abs);
+  if(isBrowserDecodable(fmt))return rel;
+  const name=basename(rel).replace(/\.[^.]+$/,'')+'.mp4';
+  const nrel='media/normalized/'+name;
+  const nabs=join(workspaceRoot,nrel);
+  if(existsSync(nabs))return nrel;
+  if(NORM_INFLIGHT.has(nabs))return NORM_INFLIGHT.get(nabs);
+  mkdirSync(join(workspaceRoot,'media','normalized'),{recursive:true});
+  const work=new Promise((res2,rej)=>{execFile('ffmpeg',['-y','-v','error','-i',abs,'-c:v','libx264','-pix_fmt','yuv420p','-profile:v','high','-crf','20','-preset','veryfast','-c:a','copy',nabs+'.tmp.mp4'],{timeout:3600000},(error,stdout,stderr)=>{
+    NORM_INFLIGHT.delete(nabs);
+    if(error){try{rmSync(nabs+'.tmp.mp4',{force:true});}catch{}res2(rel);return;} // transcode failure: pool the original honestly
+    try{renameSync(nabs+'.tmp.mp4',nabs);}catch{res2(rel);return;}
+    res2(nrel);
+  });});
+  NORM_INFLIGHT.set(nabs,work);
+  return work;
 }
 function ensureFootageThumb(store,source){
   const info=statSync(source);
@@ -407,7 +442,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       // every save; nobody (UI or agent) hand-writes them. Live at the next harness restart.
       if(path==='/api/editing'&&req.method==='GET'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const tags=(url.searchParams.get('tags')??'').split(',').filter(Boolean);const items=tags.length?await ed.find(tags):Object.values(await ed.catalog());sendJson(res,200,{editing:items});return;}
       if(path==='/api/editing'&&req.method==='POST'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const b=await readJson(req,controller.signal);sendJson(res,201,await ed.create({name:String(b.name??'edit'),note:b.note??null,doc:b.doc}));return;}
-      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink|thumbnail|tile|art-file|import-footage|waveform-levels|waveform-tile))?$/.exec(path);
+      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink|thumbnail|tile|art-file|import-footage|waveform-levels|waveform-tile|normalize-pool|normalize-status))?$/.exec(path);
       if(match){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const id=match[1],sub=match[2];
         if(!sub&&req.method==='GET'){const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}sendJson(res,200,got);return;}
         if(!sub&&req.method==='DELETE'){sendJson(res,200,{deleted:await ed.delete(id)});return;}
@@ -490,15 +525,61 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
             if(!/\.(mp4|m4v|webm|mov|mkv)$/i.test(ent.name))continue;
             // rel: workspace-relative 'media/...' — Dirent.path is the ABSOLUTE
             // directory just scanned, so strip the mediaDir prefix.
-            const rel='media/'+join(ent.path,ent.name).slice(mediaDir.length+1).split(sep).join('/');
-            if(have.has(rel)||have.has(join(root,rel)))continue;
-            const dur=await videoDuration(join(mediaDir,rel.slice('media/'.length)));
-            const dims=await ed.probeDims(join(mediaDir,rel.slice('media/'.length)));
-            const aud=await ed.probeAudio(join(mediaDir,rel.slice('media/'.length)));
+            const rel0='media/'+join(ent.path,ent.name).slice(mediaDir.length+1).split(sep).join('/');
+            if(have.has(rel0)||have.has(join(root,rel0)))continue;
+            if(rel0.startsWith('media/normalized/'))continue; // already-normalized copies are not new candidates
+            const rel=await ensureNormalized(root,rel0); // 10-bit/odd sources pool as 8-bit copies
+            if(have.has(rel))continue;
+            const dur=await videoDuration(join(root,rel));
+            const dims=await ed.probeDims(join(root,rel));
+            const aud=await ed.probeAudio(join(root,rel));
             const med=await ed.dispatchOp(id,'add_media_item',{media:EditingStore.poolEntry(randomUUID(),rel,Math.round(dur*1e6)||null,dims,aud)});
             if(med.ok)added.push({path:rel,media_id:med.value});
           }
           sendJson(res,200,{ok:true,added});return;
+        }
+        // Repair route: transcode every pool source the browser cannot decode
+        // (High 10 etc.) that is ACTUALLY USED ON THE TIMELINE (pool posters stay
+        // 10-bit originals — they're server-rendered). Relinks flow to the open
+        // editor one by one. Runs in the background.
+        if(sub==='normalize-pool'&&req.method==='POST'){
+          const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}
+          const root=store.workspaceRoot??join(store.root,'..');
+          const jobs=ed.normalizeJobs??(ed.normalizeJobs=new Map());
+          if(jobs.get(id)?.running){sendJson(res,200,{ok:true,already_running:true,progress:jobs.get(id)});return;}
+          const used=new Set();
+          for(const comp of Object.values(got.doc.compositions??{}))for(const tr of comp.tracks??[])for(const l of tr.layers??[])if(l.params&&l.params.media)used.add(String(l.params.media));
+          const need=[];
+          for(const mid of used){
+            const med=got.doc.media_pool?.[mid];
+            const rel=String(med?.path_abs??'');
+            if(!rel||rel.startsWith('media/normalized/'))continue;
+            const abs=med.path_abs&&isAbsolute(med.path_abs)?med.path_abs:join(root,rel);
+            if(!existsSync(abs))continue;
+            const fmt=await probePixfmt(abs);
+            if(!isBrowserDecodable(fmt))need.push({mid,rel,name:basename(rel)});
+          }
+          const progress={running:true,total:need.length,done:0,current:null,failed:0};
+          jobs.set(id,progress);
+          (async()=>{
+            for(const item of need){
+              progress.current=item.rel;
+              try{
+                const nrel=await ensureNormalized(root,item.rel);
+                if(nrel!==item.rel){
+                  const durMs=await videoDuration(join(root,nrel));
+                  const rl=await ed.relinkMedia(id,{media_id:item.mid,path:nrel,duration_us:durMs>0?Math.round(durMs*1e6):undefined});
+                  if(!rl.ok)progress.failed++;
+                } else progress.failed++;
+              }catch{progress.failed++;}
+              progress.done++;
+            }
+            progress.running=false;progress.current=null;
+          })();
+          sendJson(res,200,{ok:true,started:need.length,progress});return;
+        }
+        if(sub==='normalize-status'&&req.method==='GET'){
+          sendJson(res,200,{ok:true,progress:(ed.normalizeJobs??new Map()).get(id)??{running:false,total:0,done:0,current:null,failed:0}});return;
         }
         if(!sub||req.method!=='POST')return void sendJson(res,405,{detail:'method not allowed'});
         const b=await readJson(req,controller.signal);

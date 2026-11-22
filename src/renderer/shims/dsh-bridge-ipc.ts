@@ -100,6 +100,9 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
     // '+ Footage' import: every workspace media/ video not yet in the pool joins
     // it (server scan + add_media_item actor op), then the projection refreshes.
     case 'dsh_import_footage': { const r = await postJson(`/api/editing/${id}/import-footage`); await refreshStore(); return r as T }
+    // Auto-repair: transcode browser-undecodable pool sources (10-bit H.264) to
+    // 8-bit copies; relinks flow to the editor as they land.
+    case 'dsh_normalize_pool': { const r = await postJson(`/api/editing/${id}/normalize-pool`); await refreshStore(); return r as T }
     case 'project_undo': { const r = await postJson(`/api/editing/${id}/undo`); await refreshStore(); return r as T }
     case 'project_redo': { const r = await postJson(`/api/editing/${id}/redo`); await refreshStore(); return r as T }
     case 'project_create_checkpoint': return await postJson(`/api/editing/${id}/checkpoint`, { label: String(args?.label ?? 'checkpoint') }) as T
