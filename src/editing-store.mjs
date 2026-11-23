@@ -94,6 +94,32 @@ export class EditingStore {
     await mkdir(this.dir, { recursive: true });
     if (!this.core) this.core = await loadCore();
     await this.core.initEval();
+    // Pool-file facts for buildProjectSummary (the poolFiles.ts contract). The
+    // old static provider claimed conform:false, which hid conform_path from
+    // the preview audio mixer. Cache keyed by the item OBJECT — a replaced
+    // record re-stats, mirroring createPoolFiles semantics.
+    this.filesCache = new WeakMap();
+  }
+  #filesProvider() {
+    const facts = (p) => {
+      if (!p) return null;
+      try { const st = statSync(String(p)); return { size: st.size, mtimeSecs: Math.floor(st.mtimeMs / 1000) }; }
+      catch { return null; }
+    };
+    return (item) => {
+      const hit = this.filesCache.get(item);
+      if (hit) return hit;
+      // path_abs is workspace-relative in DSH docs; conform paths are absolute.
+      const src = facts(this.mediaAbs(item.path_abs));
+      const v = {
+        source: src === null ? 'missing' : (item.file_size ? (src.size !== item.file_size ? 'changed' : 'present') : 'present'),
+        quick_proxy: false,
+        full_proxy: false,
+        conform: facts(item.conform_path) !== null,
+      };
+      this.filesCache.set(item, v);
+      return v;
+    };
   }
 
   async catalog() {
@@ -284,7 +310,7 @@ export class EditingStore {
     const w = await this.#actor(id, got.entry, got.doc);
     // ponytail: static "present" verdicts — DSH media resolves through /api/file
     // at play time; upgrade path wires createPoolFiles fs existence gating.
-    const summary = this.core.buildProjectSummary(w.handle.snapshot(), w.handle.historyStatus(), () => ({ source: 'present', quick_proxy: false, full_proxy: false, conform: false }));
+    const summary = this.core.buildProjectSummary(w.handle.snapshot(), w.handle.historyStatus(), this.#filesProvider());
     return { version: { session: this.session, revision: this.revision }, viewId: ++this.viewSeq, summary };
   }
   async undo(id) { return this.#historyOp(id, 'undo'); }
