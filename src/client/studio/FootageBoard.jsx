@@ -168,10 +168,13 @@ export function FootageBoard({lib='footage',pickMode=false,onPick}={}){
   const fname=filter.trim().toLowerCase();
   const openCard=(f)=>{setPlaying(f);if(f.seen===false){setData((d)=>d?{...d,files:d.files.map((x)=>x.path===f.path?{...x,seen:true}:x)}:d);void post(api('/seen'),'POST',{path:f.path}).catch(()=>{});}};
   const news=((data?.files)??[]).filter((f)=>f.seen===false&&matches(f));
+  // DSH: engine drag-store bridge. StudioRoot nests this board in a srcdoc
+  // iframe, so the bridge usually lives on the parent (dock realm) window.
+  const libDrag=()=>{try{return window.__DSH_LIBRARY_DRAG__||(window.parent&&window.parent.__DSH_LIBRARY_DRAG__)||null;}catch{return null;}};
   const card=(f)=><div key={f.path} className={`footage-card${sel.has(f.path)?' footage-selected':''}${f.seen===false?' footage-new':''}`} role="button" tabIndex={0} title={`Click to ${lib==='images'?'view':'play'} · drag to the timeline · right-click for the path`}
     draggable={!pickMode && !f.empty}   // DSH feature: drag into the WeftCut dock — the engine pools the file on drop via application/x-dsh-library
-    onDragStart={(e)=>{if(pickMode||f.empty)return;const kind=lib==='images'?'Image':'Video';const label=String(f.path).split('/').pop()||f.path;e.dataTransfer.setData('application/x-dsh-library',JSON.stringify({path:f.path,kind,label}));e.dataTransfer.effectAllowed='copy';const r=e.currentTarget.getBoundingClientRect();window.__DSH_LIBRARY_DRAG__?.begin({path:f.path,kind,label,visual:{clientX:e.clientX,clientY:e.clientY,width:r.width,height:r.height,pointerOffsetX:e.clientX-r.left,pointerOffsetY:e.clientY-r.top}});}}   // begin feeds the engine's drag store so the lane ghost/collision preview works like a pool drag (same-document bridge)
-    onDragEnd={()=>{window.__DSH_LIBRARY_DRAG__?.end();}}
+    onDragStart={(e)=>{if(pickMode||f.empty)return;const kind=lib==='images'?'Image':'Video';const label=String(f.path).split('/').pop()||f.path;e.dataTransfer.setData('application/x-dsh-library',JSON.stringify({path:f.path,kind,label}));e.dataTransfer.effectAllowed='copy';const r=e.currentTarget.getBoundingClientRect();libDrag()?.begin({path:f.path,kind,label,visual:{clientX:e.clientX,clientY:e.clientY,width:r.width,height:r.height,pointerOffsetX:e.clientX-r.left,pointerOffsetY:e.clientY-r.top}});}}   // begin feeds the engine's drag store so the lane ghost/collision preview works like a pool drag
+    onDragEnd={()=>{libDrag()?.end();}}
     onClick={()=>{if(menu){setMenu(null);return;}if(pickMode){onPick?.(f);return;}openCard(f);}}   // pickMode (ComfyUI pick dialog): click = choose, nothing else
     onKeyDown={(e)=>{if(e.key==='Enter'){if(pickMode){onPick?.(f);return;}openCard(f);}}}
     onContextMenu={(e)=>{if(pickMode)return;e.preventDefault();setMenu({x:e.clientX,y:e.clientY,file:f});}}>
