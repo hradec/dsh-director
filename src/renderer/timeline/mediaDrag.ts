@@ -256,6 +256,23 @@ export function mediaDragPayload(media: MediaSummary): MediaDragPayload {
   };
 }
 
+/// DSH feature: payload for a drag started in the embedded Studio Footage/
+/// Images tabs (client realm). The file is not pooled yet, so the ghost uses
+/// fallback durations; the drop commit re-times off the pooled entry.
+export function libraryDragPayload(
+  path: string,
+  kind: string,
+  label: string,
+): MediaDragPayload {
+  return {
+    source: "dsh-library",
+    path,
+    kind,
+    label,
+    durationUs: kind === "Image" ? DEFAULT_IMAGE_DURATION_US : FALLBACK_MEDIA_DURATION_US,
+  };
+}
+
 /// A composition drag. `label` is the name the pool row shows — derived or set,
 /// resolved by the caller, because deriving `Group N` needs the whole
 /// composition set and the locale bundle.

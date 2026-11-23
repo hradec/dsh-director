@@ -23,6 +23,7 @@ import { useShortcuts, type HandlerMap } from "@/shortcuts/useShortcuts"; // key
 import { deleteLayers, rippleDeleteLayers, projectUndo, projectRedo } from "@/ipc";
 import { currentSelection, layerIdsOf, clearLayerSelection } from "@/state/selectionStore";
 import { settleProjectStore } from "@/state/projectStore";
+import { useMediaDragStore, libraryDragPayload } from "@/timeline/mediaDrag";
 import { Ticker } from "pixi.js";
 import type { PreviewSurfaceHandle } from "@/preview/PreviewSurface";
 import dockviewCss from "dockview/dist/styles/dockview.css";
@@ -225,6 +226,13 @@ export function mount(el: Element, opts: MountOpts): void {
   // StudioLibraryPanel hands this to the tab bridge so the embedded Footage/
   // Images tabs talk to the same studio session as the editor.
   (globalThis as unknown as { __DSH_TIMELINE_SESSION__?: string }).__DSH_TIMELINE_SESSION__ = opts.session;
+  // Library-drag ghost bridge: the embedded Footage/Images cards (client realm)
+  // start the drag; feeding the engine's own drag store makes the lane preview
+  // (ghost clip, collision coloring, snapping) behave exactly like a pool drag.
+  (globalThis as unknown as { __DSH_LIBRARY_DRAG__?: { begin(p: { path: string; kind: string; label: string; visual?: { clientX: number; clientY: number; width: number; height: number; pointerOffsetX: number; pointerOffsetY: number } }): void; end(): void } }).__DSH_LIBRARY_DRAG__ = {
+    begin: (p) => useMediaDragStore.getState().begin(libraryDragPayload(p.path, p.kind, p.label), p.visual ?? undefined),
+    end: () => useMediaDragStore.getState().end(),
+  };
   // Publication barrier: desktop wires a push-driven client (wireProjectStore);
   // DSH's HTTP bridge already re-reads and applies the full projection after
   // EVERY command (refreshStore in dsh-bridge-ipc), so the barrier is
