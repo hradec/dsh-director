@@ -52,6 +52,8 @@ interface MountOpts { editingId: string; apiBase: string; session: string }
 
 // Debounce handle for post-edit media normalization (see Workspace onMutated).
 let normalizeTimer: ReturnType<typeof setTimeout> | null = null;
+// Strong refs to ancestor windows carrying the library-drag bridge (see mount).
+const libDragAnchors: Window[] = [];
 
 // DSH has no Electron secondary windows. PerfHUD's telemetry bridge asks
 // SecondaryWindow.getByLabel on mount; without this the passive effect throws
@@ -229,10 +231,28 @@ export function mount(el: Element, opts: MountOpts): void {
   // Library-drag ghost bridge: the embedded Footage/Images cards (client realm)
   // start the drag; feeding the engine's own drag store makes the lane preview
   // (ghost clip, collision coloring, snapping) behave exactly like a pool drag.
-  (globalThis as unknown as { __DSH_LIBRARY_DRAG__?: { begin(p: { path: string; kind: string; label: string; visual?: { clientX: number; clientY: number; width: number; height: number; pointerOffsetX: number; pointerOffsetY: number } }): void; end(): void } }).__DSH_LIBRARY_DRAG__ = {
-    begin: (p) => useMediaDragStore.getState().begin(libraryDragPayload(p.path, p.kind, p.label), p.visual ?? undefined),
+  // Published UP the same-origin frame chain too — the sidebar Studio tabs sit
+  // deeper (srcdoc inside srcdoc), and a card must find the bridge from any
+  // nesting level.
+  const libDragBridge = {
+    begin: (p: { path: string; kind: string; label: string; visual?: { clientX: number; clientY: number; width: number; height: number; pointerOffsetX: number; pointerOffsetY: number } }) =>
+      useMediaDragStore.getState().begin(libraryDragPayload(p.path, p.kind, p.label), p.visual ?? undefined),
     end: () => useMediaDragStore.getState().end(),
   };
+  const publishLibDrag = (w: Window): void => {
+    (w as unknown as { __DSH_LIBRARY_DRAG__?: typeof libDragBridge }).__DSH_LIBRARY_DRAG__ = libDragBridge;
+  };
+  publishLibDrag(window);
+  libDragAnchors.length = 0;
+  try {
+    let anc = window.parent;
+    while (anc && anc !== window) {
+      try { void anc.document; } catch { break } // cross-origin wall
+      publishLibDrag(anc);
+      libDragAnchors.push(anc); // strong refs: GC could otherwise collect the chain
+      anc = anc.parent;
+    }
+  } catch { /* frame walk best-effort */ }
   // Publication barrier: desktop wires a push-driven client (wireProjectStore);
   // DSH's HTTP bridge already re-reads and applies the full projection after
   // EVERY command (refreshStore in dsh-bridge-ipc), so the barrier is
