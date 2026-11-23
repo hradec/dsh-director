@@ -67,9 +67,12 @@ export function StudioLibraryPanel({ tab }: { tab: "footage" | "images" }): Reac
           <span className="opacity-60">{t("dock_workspace.panels.library_missing", { defaultValue: "Studio tabs bridge not loaded yet — reopen this panel." })}</span>
         ) : null}
       </div>
-      <div className="min-h-0 flex-1 overflow-hidden">
-        {/* scale the embedded tab, grow its box by 1/z so the VISUAL size fills
-            the panel; the panel clips the overflow. Independent of dock zoom. */}
+      <div className="min-h-0 flex-1 overflow-auto">
+        {/* scale the embedded tab; grow its layout box by 1/z so the VISUAL
+            size fills the panel while THIS container scrolls the enlarged box.
+            The board is mounted directly (no srcdoc body to scroll in), so
+            this div is the scroller — overflow-hidden here once made the
+            library unscrollable. */}
         <div
           ref={hostRef}
           style={{ transform: `scale(${scale})`, transformOrigin: "0 0", width: `${100 / scale}%`, height: `${100 / scale}%` }}

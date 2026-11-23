@@ -31,6 +31,7 @@ import {
   MEDIA_DRAG_CURSOR_OFFSET_PX,
   MEDIA_DRAG_TYPE,
   DSH_LIBRARY_DRAG_TYPE,
+  libraryDragPayload,
   mediaDropInvalid,
   parseMediaDrag,
   planMediaDrop,
@@ -287,16 +288,24 @@ export function TrackLane({
   const onDragOver = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
       // DSH feature: library drags (embedded Footage/Images tabs) are accepted
-      // too; their payload is unreadable until drop (browser rule), so the
-      // ghost is skipped and the drop handler plans+pools+places in one go.
+      // too; their payload is unreadable until drop (browser rule). If the
+      // card's dragstart never reached our drag store (any cross-realm miss),
+      // ARM A PLACEHOLDER here — the lane preview then works no matter which
+      // frame started the drag; the drop parses the real payload for placement.
       if (!e.dataTransfer.types.includes(MEDIA_DRAG_TYPE) && !e.dataTransfer.types.includes(DSH_LIBRARY_DRAG_TYPE)) return;
       e.preventDefault();
-      if (activeMediaDrag === null) return;
+      if (activeMediaDrag === null && e.dataTransfer.types.includes(DSH_LIBRARY_DRAG_TYPE)) {
+        useMediaDragStore.getState().begin(libraryDragPayload("", "Video", ""), {
+          clientX: e.clientX, clientY: e.clientY, width: 1, height: 1, pointerOffsetX: 0, pointerOffsetY: 0,
+        });
+      }
+      const active = useMediaDragStore.getState().active;
+      if (active === null) return;
       const rect = e.currentTarget.getBoundingClientRect();
       const plan = planMediaDrop({
         compositionId,
         track,
-        media: activeMediaDrag,
+        media: active,
         pointerXPx: e.clientX - rect.left,
         pxPerSec,
         fpsNum,

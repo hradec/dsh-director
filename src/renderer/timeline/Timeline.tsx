@@ -111,6 +111,7 @@ import { canReorderTrack } from "./trackReorder";
 import { trackDisplayName } from "../lib/trackName";
 import { TrackLane } from "./TrackLane";
 import type { MediaDragPayload, MediaDropPlan } from "./mediaDrag";
+import { useMediaDragStore } from "./mediaDrag";
 import {
   KeyframeLane,
   KeyframeLaneHeaders,
@@ -982,6 +983,17 @@ export const Timeline = memo(function Timeline({
   // timeline it was released on. Nothing focuses that timeline: the drop is a
   // local act, and stealing the keyboard would take the inspector and — while
   // the preview follows focus — the picture along with it (ADR 0053 decision 4).
+  // DSH: a placeholder library drag armed at dragover must not outlive the
+  // gesture — real drops end the store via endMediaDrag; cancelled drags end here.
+  useEffect(() => {
+    const settlePlaceholder = () => {
+      const st = useMediaDragStore.getState();
+      if (st.active && st.active.source === "dsh-library" && st.active.path === "") st.end();
+    };
+    window.addEventListener("dragend", settlePlaceholder, true);
+    return () => window.removeEventListener("dragend", settlePlaceholder, true);
+  }, []);
+
   const onMediaDrop = useCallback(
     async (
       // null = the drop strip: no lane exists yet, so one is created first.

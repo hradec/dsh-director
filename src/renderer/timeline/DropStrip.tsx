@@ -17,6 +17,7 @@ import {
   MEDIA_DRAG_CURSOR_OFFSET_PX,
   MEDIA_DRAG_TYPE,
   DSH_LIBRARY_DRAG_TYPE,
+  libraryDragPayload,
   mediaDropInvalid,
   parseMediaDrag,
   planMediaDrop,
@@ -268,11 +269,17 @@ export function DropStrip({
 
   const onDragOver = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
-      // DSH feature: accept library drags (embedded Footage/Images tabs); the
-      // payload is readable only at drop, where this strip plans + pools + places.
+      // DSH feature: accept library drags; arm a placeholder if the card never
+      // reached the drag store, so the strip preview is realm-independent. The
+      // drop parses the real payload for the placement.
       if (!e.dataTransfer.types.includes(MEDIA_DRAG_TYPE) && !e.dataTransfer.types.includes(DSH_LIBRARY_DRAG_TYPE)) return;
       e.preventDefault();
-      if (activeMediaDrag === null) return;
+      if (activeMediaDrag === null && e.dataTransfer.types.includes(DSH_LIBRARY_DRAG_TYPE)) {
+        useMediaDragStore.getState().begin(libraryDragPayload("", "Video", ""), {
+          clientX: e.clientX, clientY: e.clientY, width: 1, height: 1, pointerOffsetX: 0, pointerOffsetY: 0,
+        });
+      }
+      if (useMediaDragStore.getState().active === null) return;
       const rect = e.currentTarget.getBoundingClientRect();
       const plan = planFor(activeMediaDrag, e.clientX - rect.left, e);
       e.dataTransfer.dropEffect = mediaDropInvalid(plan.validity) ? "none" : "copy";
