@@ -258,18 +258,20 @@ export function mediaDragPayload(media: MediaSummary): MediaDragPayload {
 
 /// DSH feature: payload for a drag started in the embedded Studio Footage/
 /// Images tabs (client realm). The file is not pooled yet, so the ghost uses
-/// fallback durations; the drop commit re-times off the pooled entry.
+/// fallback durations until the bridge resolves the true one (media-duration);
+/// the drop commit always re-times off the pooled entry's metadata.
 export function libraryDragPayload(
   path: string,
   kind: string,
   label: string,
+  durationUs?: number,
 ): MediaDragPayload {
   return {
     source: "dsh-library",
     path,
     kind,
     label,
-    durationUs: kind === "Image" ? DEFAULT_IMAGE_DURATION_US : FALLBACK_MEDIA_DURATION_US,
+    durationUs: durationUs ?? (kind === "Image" ? DEFAULT_IMAGE_DURATION_US : FALLBACK_MEDIA_DURATION_US),
   };
 }
 

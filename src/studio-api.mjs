@@ -150,6 +150,7 @@ async function firstOnlineComfy({comfyHosts,store,fetchImpl,signal}){
 // Art is served ONLY through the session-gated art-file route (dot-folder files
 // deliberately never go through /api/file's media allowlist).
 const ART_INFLIGHT=new Map();
+const DURATION_CACHE=new Map(); // abs path -> {ck,us}: ghost-sizing probe cache
 const DIMS_CACHE=new Map();
 function probeDims(source){
   if(DIMS_CACHE.has(source))return Promise.resolve(DIMS_CACHE.get(source));
@@ -443,7 +444,7 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       // every save; nobody (UI or agent) hand-writes them. Live at the next harness restart.
       if(path==='/api/editing'&&req.method==='GET'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const tags=(url.searchParams.get('tags')??'').split(',').filter(Boolean);const items=tags.length?await ed.find(tags):Object.values(await ed.catalog());sendJson(res,200,{editing:items});return;}
       if(path==='/api/editing'&&req.method==='POST'){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const b=await readJson(req,controller.signal);sendJson(res,201,await ed.create({name:String(b.name??'edit'),note:b.note??null,doc:b.doc}));return;}
-      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink|thumbnail|tile|art-file|conform-file|import-footage|waveform-levels|waveform-tile|normalize-pool|normalize-status|job-status|pool-ensure))?$/.exec(path);
+      match=/^\/api\/editing\/([A-Za-z0-9_-]{1,64})(?:\/(command|undo|redo|checkpoint|publication|seed|relink|thumbnail|tile|art-file|conform-file|import-footage|waveform-levels|waveform-tile|normalize-pool|normalize-status|job-status|pool-ensure|media-duration))?$/.exec(path);
       if(match){const ed=editingStoreFor(store.workspaceRoot??join(store.root,'..'));const id=match[1],sub=match[2];
         if(!sub&&req.method==='GET'){const got=await ed.get(id);if(!got){sendJson(res,404,{detail:'no such editing document'});return;}sendJson(res,200,got);return;}
         if(!sub&&req.method==='DELETE'){sendJson(res,200,{deleted:await ed.delete(id)});return;}
@@ -682,6 +683,25 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
             }
           }catch{}
           sendJson(res,200,{ok:true,mediaId:String(med.value),kind,durationUs:dur!=null?Math.round(dur*1e6):null});return;
+        }
+        // Library-drag ghost sizing: true duration of a not-yet-pooled library
+        // file (cached ffprobe keyed by path|mtime|size; images answer a span).
+        if(sub==='media-duration'&&req.method==='GET'){
+          const rel0=String(url.searchParams.get('path')??'').replaceAll('\\','/');
+          const kind=String(url.searchParams.get('kind')??'Video')==='Image'?'Image':'Video';
+          if(!rel0){sendJson(res,400,{detail:'path required'});return;}
+          const root=store.workspaceRoot??join(store.root,'..');
+          const libRel=kind==='Image'?(rel0.startsWith('images/')?rel0:'images/'+rel0):(rel0.startsWith('media/')?rel0:'media/'+rel0);
+          const abs=resolve(join(root,libRel));
+          if(abs!==resolve(root)&&!abs.startsWith(resolve(root)+sep)){sendJson(res,400,{detail:'path outside workspace'});return;}
+          if(!existsSync(abs)){sendJson(res,404,{detail:'no such file'});return;}
+          const st=statSync(abs);const ck=`${abs}|${st.mtimeMs}|${st.size}`;
+          const hit=DURATION_CACHE.get(abs);
+          if(hit&&hit.ck===ck){sendJson(res,200,{ok:true,durationUs:hit.us,kind});return;}
+          const du=kind==='Image'?0:await videoDuration(abs);
+          const us=kind==='Image'?3_000_000:(du>0?Math.round(du*1e6):2_000_000);
+          DURATION_CACHE.set(abs,{ck,us});
+          sendJson(res,200,{ok:true,durationUs:us,kind});return;
         }
         if(!sub||req.method!=='POST')return void sendJson(res,405,{detail:'method not allowed'});
         const b=await readJson(req,controller.signal);

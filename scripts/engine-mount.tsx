@@ -235,8 +235,24 @@ export function mount(el: Element, opts: MountOpts): void {
   // deeper (srcdoc inside srcdoc), and a card must find the bridge from any
   // nesting level.
   const libDragBridge = {
-    begin: (p: { path: string; kind: string; label: string; visual?: { clientX: number; clientY: number; width: number; height: number; pointerOffsetX: number; pointerOffsetY: number } }) =>
-      useMediaDragStore.getState().begin(libraryDragPayload(p.path, p.kind, p.label), p.visual ?? undefined),
+    begin: (p: { path: string; kind: string; label: string; visual?: { clientX: number; clientY: number; width: number; height: number; pointerOffsetX: number; pointerOffsetY: number } }) => {
+      // Exact ghost sizing: use the pool entry's duration when the file is
+      // already pooled; otherwise start with the fallback span and UPGRADE the
+      // active drag as soon as the cached server probe answers (same path,
+      // same gesture — the width snaps to true length within a frame or two).
+      const wantRel = p.path.startsWith("media/") || p.path.startsWith("images/") ? p.path : `${p.kind === "Image" ? "images" : "media"}/${p.path}`;
+      const pooled = (useProjectStore.getState().summary?.media ?? []).find((mm) => mm.path === wantRel);
+      useMediaDragStore.getState().begin(libraryDragPayload(p.path, p.kind, p.label, pooled?.duration_us ?? undefined), p.visual ?? undefined);
+      if (pooled?.duration_us == null && p.kind !== "Image") {
+        void invoke<{ ok?: boolean; durationUs?: number | null }>("dsh_media_duration", { path: p.path, kind: p.kind })
+          .then((r) => {
+            const st = useMediaDragStore.getState();
+            if (!r?.ok || !r.durationUs || !st.active || st.active.source !== "dsh-library" || st.active.path !== p.path) return;
+            st.begin(libraryDragPayload(p.path, p.kind, p.label, r.durationUs), st.visual ?? undefined);
+          })
+          .catch(() => {});
+      }
+    },
     end: () => useMediaDragStore.getState().end(),
   };
   const publishLibDrag = (w: Window): void => {

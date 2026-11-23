@@ -118,6 +118,9 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
     // Library drag (embedded Footage/Images tabs): pool one file into the
     // editing doc (idempotent), then refresh the projection for placement.
     case 'dsh_pool_ensure': { const r = await postJson(`/api/editing/${id}/pool-ensure`, { path: args?.path, kind: args?.kind }); await refreshStore(); return r as T }
+    // Ghost sizing for library drags: cached server-side duration probe, no
+    // write side effects (the drop itself pools + times from real metadata).
+    case 'dsh_media_duration': return (await getJson(`/api/editing/${id}/media-duration?path=${encodeURIComponent(String(args?.path ?? ''))}&kind=${encodeURIComponent(String(args?.kind ?? 'Video'))}`)) as T
     case 'project_undo': { const r = await postJson(`/api/editing/${id}/undo`); await refreshStore(); return r as T }
     case 'project_redo': { const r = await postJson(`/api/editing/${id}/redo`); await refreshStore(); return r as T }
     case 'project_create_checkpoint': return await postJson(`/api/editing/${id}/checkpoint`, { label: String(args?.label ?? 'checkpoint') }) as T
