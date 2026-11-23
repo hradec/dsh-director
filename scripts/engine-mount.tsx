@@ -245,8 +245,11 @@ export function mount(el: Element, opts: MountOpts): void {
   publishLibDrag(window);
   libDragAnchors.length = 0;
   try {
+    // STOP AT TOP: window.top.parent === window.top — without that third
+    // condition this loop spun forever at the frame top and froze the whole
+    // browser tab (exactly the freeze the user reported).
     let anc = window.parent;
-    while (anc && anc !== window) {
+    while (anc && anc !== window && anc !== anc.parent) {
       try { void anc.document; } catch { break } // cross-origin wall
       publishLibDrag(anc);
       libDragAnchors.push(anc); // strong refs: GC could otherwise collect the chain
