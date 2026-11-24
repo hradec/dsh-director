@@ -162,5 +162,9 @@
 .book .content .input-panel,.book .content .output-panel,.book .content .lore-page,.book .content .lineage-page{max-height:calc(880px * var(--s));overflow:auto}
 /* Lorekeeper/Lineage fill the right page instead of ending mid-sheet. */
 .book .content .lore-page,.book .content .lineage-page{height:calc(880px * var(--s));display:flex;flex-direction:column;gap:calc(10px * var(--s))}
-.book .lore-page>div,.book .lineage-page>div{flex:1 1 auto;display:flex;flex-direction:column;min-height:0}
+.book .lore-page:not(.lineage-page)>div{flex:0 0 auto}
+.book .lineage-page>.family-scroll{flex:1 1 auto;min-height:0;overflow:auto}
 .book .lore-viewer{flex:1 1 auto;min-height:calc(360px * var(--s))}
+/* Family tree fits the page width instead of clipping bars under the bookmarks. */
+.book .family-tree{max-width:100%;height:auto}
+.book .family-scroll > p{color:#5a3a22;font-style:italic}
