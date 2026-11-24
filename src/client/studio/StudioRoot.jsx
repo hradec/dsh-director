@@ -122,7 +122,7 @@ function StudioContent({area,sendDshRequest}){
     globalThis.__DSH_STUDIO_JOB__=(kind,job)=>sendDshRequest?.(studioJobPrompt(kind,job));
     return()=>{delete globalThis.__DSH_STUDIO_JOB__;};
   },[sendDshRequest]);
-  return <div className={`app dsh-director-studio-app${railOpen?" media-rail-open":""}`} data-theme="oat-walnut" style={{position:'relative'}}>
+  return <div className={`app dsh-director-studio-app area-${area}${railOpen?" media-rail-open":""}`} data-theme="oat-walnut" style={{position:'relative'}}>
     <button className="btn ghost corner-media" title="Studio media rail" aria-label="Studio media rail" aria-pressed={railOpen} onClick={()=>setRailOpen((v)=>!v)}>🎞</button>
     <button className="btn ghost corner-settings" title="Studio settings" aria-label="Studio settings" onClick={()=>setSettingsOpen(true)}>⚙</button>
     {settingsOpen?<AppSettingsPanel onClose={()=>setSettingsOpen(false)}/>:null}

@@ -1,7 +1,7 @@
 /* Layered Director Studio Book UI — port of layered_book_ui_v10 book.css.
    Art is served by studio-api from /director-studio/book/* (copied by scripts/build.mjs).
    Resting pages and turning leaves share ONE buildSurface() path. */
-.book-viewport{position:relative;height:100%;min-height:0;overflow:auto;background:#160b0e;color:#efd5a0}
+.book-viewport{position:absolute;inset:0;min-height:0;overflow:auto;background:#160b0e;color:#efd5a0}
 .book{--s:1;position:relative;isolation:isolate;margin:auto;width:100%;min-width:680px;height:940px}
 .paper,.frame,.decoration{position:absolute;inset:0;pointer-events:none}
 .paper{background:#fcdaa1 url(/director-studio/book/texture/parchment-tile.png) repeat;background-size:512px 512px;z-index:0}
@@ -40,9 +40,19 @@
 .side-tabs button[aria-pressed=true]{filter:brightness(1.35) saturate(1.1)}
 .marker-grid{position:absolute;inset:0;display:grid;grid-template-columns:calc(10px * var(--s)) minmax(0,1fr) calc(10px * var(--s));grid-template-rows:calc(12px * var(--s)) minmax(0,1fr) calc(12px * var(--s));pointer-events:none}
 .marker-grid i{display:block;background-repeat:repeat;background-position:top left;background-size:calc(var(--tile-w) * var(--s)) calc(var(--tile-h) * var(--s));min-width:0;min-height:0}
+/* The frame band is dark leather; a shadow separates the ribbons from it (human: right bookmarks read as missing). */
+.side-tabs button{filter:drop-shadow(0 2px 4px rgba(0,0,0,.65))}
+.side-tabs button:disabled{filter:drop-shadow(0 2px 4px rgba(0,0,0,.65)) saturate(.6) brightness(.8)}
+/* 0.2.152: content sits ON the paper — the app's flat grey backgrounds are removed inside the book. */
+.book .mobile-library-group{background:#fff5db35;border:1px solid #a88760;border-radius:8px}
+.book .input-panel{background:transparent;border-right:0}
+.book .output-panel{background:transparent}
+.book .panel{box-shadow:none}
+/* The queue bookmark replaces the floating queue pill on this page. */
+.app.area-assets .dsh-agent-toggle{display:none}
 /* The content spread lives between the pages; the existing workspace panels are
    display:contents so their own sections land in the two page columns directly. */
-.content{position:absolute;z-index:3;inset:calc(210px * var(--s)) calc(150px * var(--s)) calc(285px * var(--s));display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:calc(106px * var(--s));color:#4b2914;font:15px system-ui,sans-serif}
+.content{position:absolute;z-index:3;inset:calc(186px * var(--s)) calc(140px * var(--s)) calc(238px * var(--s));display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:calc(106px * var(--s));color:#4b2914;font:15px system-ui,sans-serif}
 .content[hidden]{display:none}
 .content section,.content aside{min-width:0;overflow:auto;padding:0 3px 6px}
 .asset-preparation-panel,.asset-preparation-panel>main.workspace,.asset-library-overview-panel,.content .asset-category-content{display:contents}
@@ -53,7 +63,7 @@
 .book[data-chapter="lorekeeper"] .panel.output-panel,.book[data-chapter="lineage"] .panel.output-panel{display:none}
 .content .asset-guidance-card{grid-column:1/-1}
 .asset-library-overview-panel>*{grid-column:1/-1}
-.asset-book{height:100%;min-height:0;padding:0!important}
+.asset-book{position:relative;height:100%;min-height:0;padding:0!important;background:#160b0e}
 .book .asset-workflow-toolbar{display:none}
 .book .page-bookmark{display:none}
 .book .asset-category-rail,.book .asset-workspace-header{display:none}

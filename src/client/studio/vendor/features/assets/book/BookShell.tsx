@@ -31,7 +31,9 @@ const MARKERS: { id: string; color: string; label: string }[] = [
 const OUTLINE: number[][] = [[108,112],[110,101],[115,92],[124,84],[138,79],[155,77],[210,77],[350,78],[500,79],[610,78],[670,79],[705,83],[726,90],[744,102],[756,116],[761,126],[761,838],[750,827],[737,816],[723,807],[706,800],[688,796],[665,793],[640,793],[610,795],[570,799],[510,803],[450,804],[350,804],[250,804],[165,804],[144,803],[129,800],[118,792],[112,782],[108,769]];
 
 interface PageRect { left: number; top: number; width: number; height: number; clip: string; }
-interface SideSnap { rect: PageRect; clones: HTMLElement[]; }
+// Clones keep their ORIGINAL boxes: each is re-positioned absolutely in the face,
+// so the snapshot can never reflow to a different size than the resting page (blink fix).
+interface SideSnap { rect: PageRect; clones: HTMLElement[]; boxes: { left: number; top: number; width: number; height: number }[]; }
 
 function mapAxis(v: number, src: number[], dst: number[]): number {
   for (let i = 0; i < src.length - 1; i++) if (v <= src[i + 1]) return dst[i] + ((v - src[i]) * (dst[i + 1] - dst[i])) / (src[i + 1] - src[i]);
@@ -64,10 +66,11 @@ function snapshot(el: HTMLElement): HTMLElement {
 
 function snapSide(items: HTMLElement[]): SideSnap | null {
   if (!items.length) return null;
+  const boxes = items.map((el) => { const q = el.getBoundingClientRect(); return { left: q.left, top: q.top, width: q.width, height: q.height }; });
   const clones = items.map(snapshot);
   let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
-  for (const el of items) { const q = el.getBoundingClientRect(); l = Math.min(l, q.left); t = Math.min(t, q.top); r = Math.max(r, q.right); b = Math.max(b, q.bottom); }
-  return { rect: { left: l, top: t, width: r - l, height: b - t, clip: "" }, clones };
+  for (const q of boxes) { l = Math.min(l, q.left); t = Math.min(t, q.top); r = Math.max(r, q.left + q.width); b = Math.max(b, q.top + q.height); }
+  return { rect: { left: l, top: t, width: r - l, height: b - t, clip: "" }, clones, boxes };
 }
 
 export interface BookShellHandle { navigate: (category: BookCategory, chapter?: BookChapter) => void; }
@@ -92,7 +95,7 @@ export const BookShell = forwardRef<BookShellHandle, {
   const turningRef = useRef(false);
   const finishRef = useRef<null | (() => void)>(null);
   const queuedRef = useRef<BookView | null>(null);
-  const pendingRef = useRef<SideSnap | null>(null);
+  const pendingRef = useRef<{ front: SideSnap | null; hold: SideSnap | null } | null>(null);
   const lastRef = useRef<BookView>(view);
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -177,14 +180,19 @@ export const BookShell = forwardRef<BookShellHandle, {
       const rect = pageRectsRef.current[side === "left" ? 0 : 1];
       const c = document.createElement("div");
       c.className = "content leaf-content";
-      Object.assign(c.style, { left: (snap.rect.left - rect.left) + "px", top: (snap.rect.top - rect.top) + "px", width: snap.rect.width + "px", height: snap.rect.height + "px" });
-      for (const clone of snap.clones) { clone.inert = true; c.append(clone); }
+      Object.assign(c.style, { display: "block", position: "absolute", left: "0px", top: "0px", width: rect.width + "px", height: rect.height + "px" });
+      snap.clones.forEach((clone, i) => {
+        clone.inert = true;
+        const q = snap.boxes[i];
+        Object.assign(clone.style, { position: "absolute", left: (q.left - rect.left) + "px", top: (q.top - rect.top) + "px", width: q.width + "px", height: q.height + "px", margin: "0", overflow: "hidden" });
+        c.append(clone);
+      });
       face.append(c);
     }
     return face;
   }
 
-  function runTurn(prev: BookView, next: BookView, frontSnap: SideSnap) {
+  function runTurn(prev: BookView, next: BookView, frontSnap: SideSnap | null, holdSnap: SideSnap | null) {
     const book = bookRef.current!;
     // ponytail: every bookmark flips the right leaf leftward (v10 geometry); a
     // back-ward flip would need the left page to carry the outgoing chapter.
@@ -212,6 +220,17 @@ export const BookShell = forwardRef<BookShellHandle, {
     const world = document.createElement("div");
     world.className = "turn-world";
     layer.append(world);
+    // The left page in a real book stays OLD until the flipped leaf lands on it:
+    // hold a snapshot of the previous left side over the committed new content.
+    // makeFace gives it the opaque paper surface, so the new page cannot bleed through.
+    let hold: HTMLElement | null = null;
+    if (holdSnap) {
+      const lb = rects[0];
+      hold = makeFace(backSide, holdSnap);
+      hold.classList.add("hold-layer");
+      Object.assign(hold.style, { zIndex: "19", pointerEvents: "none", left: (lb.left - b.left) + "px", top: (lb.top - b.top) + "px" });
+      book.append(hold);
+    }
     const front = makeFace(side, frontSnap), back = makeFace(backSide, backSnap);
     const N = 22, dx = W / N, strips: { el: HTMLElement; front: HTMLElement; back: HTMLElement }[] = [];
     for (let i = 0; i < N; i++) {
@@ -238,6 +257,7 @@ export const BookShell = forwardRef<BookShellHandle, {
       finished = true;
       finishRef.current = null;
       layer.remove();
+      if (hold) hold.remove();
       book.removeAttribute("aria-busy");
       turningRef.current = false;
       if (queuedRef.current) { const q = queuedRef.current; queuedRef.current = null; navigate(q.category, q.chapter); }
@@ -287,10 +307,11 @@ export const BookShell = forwardRef<BookShellHandle, {
     const rects = book.getBoundingClientRect();
     const spine = rects.left + rects.width / 2;
     const items = gridItems(content);
+    const right = items.filter((el) => { const q = el.getBoundingClientRect(); return q.left + q.width / 2 > spine; });
+    const left = items.filter((el) => { const q = el.getBoundingClientRect(); return q.left + q.width / 2 <= spine; });
     // Library/voices cards span both pages: if the flip side is empty, the leaf
     // carries the whole spread instead of skipping the turn animation.
-    const snap = snapSide(items.filter((el) => { const q = el.getBoundingClientRect(); return q.left + q.width / 2 > spine; })) || snapSide(items);
-    pendingRef.current = snap;
+    pendingRef.current = { front: snapSide(right) || snapSide(items), hold: snapSide(left) };
     lastRef.current = prev;
     onView({ category, chapter });
   }
@@ -301,7 +322,7 @@ export const BookShell = forwardRef<BookShellHandle, {
     if (!pendingRef.current || prev.category === view.category && prev.chapter === view.chapter) return;
     const snap = pendingRef.current;
     pendingRef.current = null;
-    runTurn(prev, view, snap);
+    runTurn(prev, view, snap.front, snap.hold);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.category, view.chapter]);
 
