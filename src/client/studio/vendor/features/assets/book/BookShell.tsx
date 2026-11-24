@@ -38,15 +38,17 @@ function mapAxis(v: number, src: number[], dst: number[]): number {
   return dst[dst.length - 1];
 }
 
-// A resting content element = visible grid item (panels use display:contents).
+// A resting content element = visible grid item; panels and their <main> wrappers
+// are display:contents, so recurse through every contents level.
 function gridItems(container: HTMLElement): HTMLElement[] {
   const out: HTMLElement[] = [];
-  const visible = (el: HTMLElement) => !!(el.offsetParent || getComputedStyle(el).position === "fixed");
-  for (const el of Array.from(container.children) as HTMLElement[]) {
-    if (getComputedStyle(el).display === "contents") {
-      for (const c of Array.from(el.children) as HTMLElement[]) if (visible(c)) out.push(c);
-    } else if (visible(el)) out.push(el);
-  }
+  const walk = (el: HTMLElement) => {
+    for (const c of Array.from(el.children) as HTMLElement[]) {
+      if (getComputedStyle(c).display === "contents") walk(c);
+      else if (c.offsetParent) out.push(c);
+    }
+  };
+  walk(container);
   return out;
 }
 
@@ -193,7 +195,7 @@ export const BookShell = forwardRef<BookShellHandle, {
     const content = contentRef.current!;
     const items = gridItems(content);
     const spine = book.getBoundingClientRect().left + book.getBoundingClientRect().width / 2;
-    const backSnap = snapSide(items.filter((el) => (el.getBoundingClientRect().left + el.getBoundingClientRect().width / 2) > spine === (side === "left")));
+    const backSnap = snapSide(items.filter((el) => (el.getBoundingClientRect().left + el.getBoundingClientRect().width / 2 > spine) === (side === "left"))) || snapSide(items);
     const rects = pageRectsRef.current;
     const b = book.getBoundingClientRect();
     const W = rects[0].width, H = rects[0].height, Y = rects[0].top - b.top;
@@ -285,7 +287,9 @@ export const BookShell = forwardRef<BookShellHandle, {
     const rects = book.getBoundingClientRect();
     const spine = rects.left + rects.width / 2;
     const items = gridItems(content);
-    const snap = snapSide(items.filter((el) => { const q = el.getBoundingClientRect(); return q.left + q.width / 2 > spine; }));
+    // Library/voices cards span both pages: if the flip side is empty, the leaf
+    // carries the whole spread instead of skipping the turn animation.
+    const snap = snapSide(items.filter((el) => { const q = el.getBoundingClientRect(); return q.left + q.width / 2 > spine; })) || snapSide(items);
     pendingRef.current = snap;
     lastRef.current = prev;
     onView({ category, chapter });

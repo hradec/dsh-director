@@ -1,10 +1,7 @@
 import { useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { useEffect } from "react";
 import { useProject } from "../../shared/project/ProjectContext";
 import type { LibraryKind } from "../library/api";
-import { GenerationSettings } from "../../shared/components/GenerationSettings";
-import { getGenerationSettings, saveGenerationSettings } from "../casting/api";
 import { LibraryOverview } from "./LibraryOverview";
 import { AssetImportDialog } from "../library/AssetImportDialog";
 import { CastingPage } from "../casting/CastingPage";
@@ -54,13 +51,12 @@ function requestPrompt(kind: PreparedAssetCategory, projectName: string, name: s
   ].join("\n");
 }
 
-export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: string, label?: string) => Promise<void> }) {
+export function AssetWorkspace({ sendAssetRequest, openSettings }: { sendAssetRequest: (text: string, label?: string) => Promise<void>; openSettings?: () => void }) {
   // 0.2.65: every DSH ask goes through the single agent door (shared queue window bottom-right).
   const askRequest = (text: string, label: string) => void sendAssetRequest(text, label);
   const { projectId, project } = useProject();
   const [view, setView] = useState<BookView>({ category: "library", chapter: "references" });
   const bookNav = useRef<BookShellHandle>(null);
-  const [gearOpen, setGearOpen] = useState(false);
   const [importKind, setImportKind] = useState<PreparedAssetCategory | null>(null);
   const [requestKind, setRequestKind] = useState<PreparedAssetCategory>("actors");
   const [requestOpen, setRequestOpen] = useState(false);
@@ -70,11 +66,6 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
   const [busy, setBusy] = useState(false);
   // Library "Edit" jumps to the kind's studio page with this asset pre-selected.
   const [editTarget, setEditTarget] = useState<{ kind: "actors" | "scenes" | "props"; id: string } | null>(null);
-  // Plugin: per-kind DSH generation instructions, opened by the book's settings bookmark.
-  const [genSettings, setGenSettings] = useState<Record<string, string> | null>(null);
-  useEffect(() => {
-    getGenerationSettings().then(setGenSettings).catch(() => setGenSettings({}));
-  }, []);
 
   const openRequest = (kind: PreparedAssetCategory = "actors") => {
     setRequestKind(kind);
@@ -113,7 +104,8 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
         onView={setView}
         askDsh={() => openRequest(currentKind)}
         importActor={() => setImportKind(currentKind)}
-        settings={() => setGearOpen(true)}
+        // 0.2.151: the gear bookmark IS the Director Studio global settings panel.
+        settings={() => openSettings?.()}
         queue={() => openAgentQueue()}
       >
         <section className="asset-category-content" aria-live="polite">
@@ -137,28 +129,6 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
           ))}
         </section>
       </BookShell>
-
-      {gearOpen && projectId ? (
-        <div className="folder-modal" role="dialog" aria-modal="true" onClick={() => setGearOpen(false)}>
-          <div className="folder-modal-panel" onClick={(event) => event.stopPropagation()}>
-            <div className="folder-modal-head">
-              <div>
-                <span className="mobile-eyebrow">DSH generation instructions</span>
-                <h2 className="folder-modal-title">Settings — {view.category === "library" ? "every kind" : view.category}</h2>
-              </div>
-              <button type="button" className="btn secondary sm" onClick={() => setGearOpen(false)}>Close</button>
-            </div>
-            {view.category !== "library" && view.category !== "voices" && genSettings ? (
-              <GenerationSettings
-                initial={genSettings[view.category] ?? ""}
-                onSave={(t) => saveGenerationSettings(view.category, t).then(() => setGenSettings({ ...genSettings, [view.category]: t }))}
-              />
-            ) : (
-              <p className="field-hint">Standing generation instructions are set per kind on the Actors, Scenes and Props pages.</p>
-            )}
-          </div>
-        </div>
-      ) : null}
 
       {requestOpen ? (
         <div className="folder-modal asset-import-modal" role="dialog" aria-modal="true" aria-labelledby="dsh-asset-request-title" onClick={() => !busy && setRequestOpen(false)}>

@@ -12,17 +12,7 @@ import {fetch as apiFetch} from './fetch-inject.mjs';
 import css from './vendor/shared/styles.css';
 import bookCss from './vendor/features/assets/book/book.css';
 
-// The DSH session workspace IS the project: no picker, no "New project". The host auto-creates the single project named after the folder.
-function WorkspaceHeader(){
-  const {project,loading,error}=useProject();
-  return <header className="topbar" aria-label="Director Studio project">
-    <div className="topbar-row">
-      <div className="brand"><div className="brand-text"><div className="brand-title">Director Studio</div></div></div>
-      <div className="muted tiny project-scope-hint">{loading?'Loading workspace…':project?`Session workspace: ${project.name}`:'This session has no workspace folder.'}</div>
-    </div>
-    {error?<div className="banner error" role="alert">{error}</div>:null}
-  </header>;
-}
+// 0.2.151: the Director Studio topbar header was removed — the book's bookmarks carry navigation.
 
 // A queued Casting/Set/Props job becomes a structured request in the DSH conversation; the agent generates with a reviewed local ComfyUI workflow and imports the result carrying the same job token, which flips the page's job to succeeded.
 function studioJobPrompt(kind,job){
@@ -136,9 +126,8 @@ function StudioContent({area,sendDshRequest}){
     <button className="btn ghost corner-media" title="Studio media rail" aria-label="Studio media rail" aria-pressed={railOpen} onClick={()=>setRailOpen((v)=>!v)}>🎞</button>
     <button className="btn ghost corner-settings" title="Studio settings" aria-label="Studio settings" onClick={()=>setSettingsOpen(true)}>⚙</button>
     {settingsOpen?<AppSettingsPanel onClose={()=>setSettingsOpen(false)}/>:null}
-    <WorkspaceHeader/>
     <AgentTaskWindow/>
-    {area==='story'?<StoryWall sendDshRequest={sendDshRequest}/>:area==='timeline'?<TimelineStudio/>:area==='previz'?<PrevizStudio/>:area==='footage'?<FootageBoard/>:area==='images'?<FootageBoard lib="images"/>:area==='assets'?<AssetWorkspace sendAssetRequest={sendDshRequest}/>:<ProductionPage requestProduction={sendDshRequest}/>}
+    {area==='story'?<StoryWall sendDshRequest={sendDshRequest}/>:area==='timeline'?<TimelineStudio/>:area==='previz'?<PrevizStudio/>:area==='footage'?<FootageBoard/>:area==='images'?<FootageBoard lib="images"/>:area==='assets'?<AssetWorkspace sendAssetRequest={sendDshRequest} openSettings={()=>setSettingsOpen(true)}/>:<ProductionPage requestProduction={sendDshRequest}/>}
     {railOpen?<MediaRail onClose={()=>setRailOpen(false)}/>:null}
   </div>;
 }
