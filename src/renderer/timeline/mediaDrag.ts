@@ -275,6 +275,55 @@ export function libraryDragPayload(
   };
 }
 
+/// DSH: the companion mime a library card stamps with its path URI-encoded IN
+/// THE TYPE NAME — types stay readable during dragover even though payload data
+/// does not, so the preview can know which file is in flight mid-drag.
+const DSH_PATH_TYPE_PREFIX = "application/x-dsh-lib-";
+// The client hex-encodes the UTF-8 path into the type (mime types are
+// lowercased by browsers, so encodeURIComponent capitals would corrupt).
+function hexDecodeTypePath(hex: string): string | null {
+  if (hex.length % 2 !== 0 || /[^0-9a-f]/.test(hex)) return null;
+  try {
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    return new TextDecoder().decode(bytes);
+  } catch { return null; }
+}
+export function dshPathFromDragTypes(types: readonly string[]): { path: string; kind: string } | null {
+  for (const t of types) {
+    if (!t.startsWith(DSH_PATH_TYPE_PREFIX)) continue;
+    const path = hexDecodeTypePath(t.slice(DSH_PATH_TYPE_PREFIX.length));
+    if (!path) return null;
+    return { path, kind: /\.(png|jpe?g|webp|gif|bmp)$/i.test(path) ? "Image" : "Video" };
+  }
+  return null;
+}
+
+/// DSH: arm the drag store from a dragover when the card's dragstart never
+/// reached begin() (any cross-realm miss). With the path type present, the
+/// ghost ALSO upgrades to the true duration mid-drag via the cached server
+/// probe — no dependence on the drag having been seen at dragstart.
+export function armDshLibraryDrag(e: { clientX: number; clientY: number; dataTransfer: DataTransfer }): void {
+  const st = useMediaDragStore.getState();
+  if (st.active !== null) return;
+  const visual = { clientX: e.clientX, clientY: e.clientY, width: 1, height: 1, pointerOffsetX: 0, pointerOffsetY: 0 };
+  const found = dshPathFromDragTypes(Array.from(e.dataTransfer.types));
+  if (found === null) { st.begin(libraryDragPayload("", "Video", ""), visual); return; }
+  const label = found.path.split("/").pop() ?? found.path;
+  st.begin(libraryDragPayload(found.path, found.kind, label), visual);
+  if (found.kind === "Video") {
+    void import("../bridge/ipc")
+      .then(({ invoke }) => invoke<{ ok?: boolean; durationUs?: number | null }>("dsh_media_duration", { path: found.path, kind: found.kind }))
+      .then((r) => {
+        if (!r || r.ok !== true || typeof r.durationUs !== "number") return;
+        const cur = useMediaDragStore.getState();
+        if (!cur.active || cur.active.source !== "dsh-library" || cur.active.path !== found.path) return;
+        cur.begin(libraryDragPayload(found.path, found.kind, label, r.durationUs), cur.visual ?? visual);
+      })
+      .catch(() => {});
+  }
+}
+
 /// A composition drag. `label` is the name the pool row shows — derived or set,
 /// resolved by the caller, because deriving `Group N` needs the whole
 /// composition set and the locale bundle.

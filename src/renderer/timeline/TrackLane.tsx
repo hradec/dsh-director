@@ -31,7 +31,7 @@ import {
   MEDIA_DRAG_CURSOR_OFFSET_PX,
   MEDIA_DRAG_TYPE,
   DSH_LIBRARY_DRAG_TYPE,
-  libraryDragPayload,
+  armDshLibraryDrag,
   mediaDropInvalid,
   parseMediaDrag,
   planMediaDrop,
@@ -294,11 +294,7 @@ export function TrackLane({
       // frame started the drag; the drop parses the real payload for placement.
       if (!e.dataTransfer.types.includes(MEDIA_DRAG_TYPE) && !e.dataTransfer.types.includes(DSH_LIBRARY_DRAG_TYPE)) return;
       e.preventDefault();
-      if (activeMediaDrag === null && e.dataTransfer.types.includes(DSH_LIBRARY_DRAG_TYPE)) {
-        useMediaDragStore.getState().begin(libraryDragPayload("", "Video", ""), {
-          clientX: e.clientX, clientY: e.clientY, width: 1, height: 1, pointerOffsetX: 0, pointerOffsetY: 0,
-        });
-      }
+      armDshLibraryDrag(e);
       const active = useMediaDragStore.getState().active;
       if (active === null) return;
       const rect = e.currentTarget.getBoundingClientRect();
@@ -336,7 +332,7 @@ export function TrackLane({
           height: targetHeight,
         },
       });
-      setDropPreview({ media: activeMediaDrag, plan });
+      setDropPreview({ media: active, plan });
     },
     [
       activeMediaDrag,

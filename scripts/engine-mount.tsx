@@ -255,6 +255,11 @@ export function mount(el: Element, opts: MountOpts): void {
     },
     end: () => useMediaDragStore.getState().end(),
   };
+  // Support diagnostic: what (if anything) the drag store currently holds.
+  (globalThis as unknown as { __DSH_DRAG_STATE__?: () => unknown }).__DSH_DRAG_STATE__ = () => {
+    const a = useMediaDragStore.getState().active;
+    return a ? { source: a.source, path: (a as { path?: string }).path ?? null, durationUs: (a as { durationUs?: number }).durationUs ?? null } : null;
+  };
   const publishLibDrag = (w: Window): void => {
     (w as unknown as { __DSH_LIBRARY_DRAG__?: typeof libDragBridge }).__DSH_LIBRARY_DRAG__ = libDragBridge;
   };

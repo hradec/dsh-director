@@ -17,7 +17,7 @@ import {
   MEDIA_DRAG_CURSOR_OFFSET_PX,
   MEDIA_DRAG_TYPE,
   DSH_LIBRARY_DRAG_TYPE,
-  libraryDragPayload,
+  armDshLibraryDrag,
   mediaDropInvalid,
   parseMediaDrag,
   planMediaDrop,
@@ -274,14 +274,13 @@ export function DropStrip({
       // drop parses the real payload for the placement.
       if (!e.dataTransfer.types.includes(MEDIA_DRAG_TYPE) && !e.dataTransfer.types.includes(DSH_LIBRARY_DRAG_TYPE)) return;
       e.preventDefault();
-      if (activeMediaDrag === null && e.dataTransfer.types.includes(DSH_LIBRARY_DRAG_TYPE)) {
-        useMediaDragStore.getState().begin(libraryDragPayload("", "Video", ""), {
-          clientX: e.clientX, clientY: e.clientY, width: 1, height: 1, pointerOffsetX: 0, pointerOffsetY: 0,
-        });
-      }
-      if (useMediaDragStore.getState().active === null) return;
+      armDshLibraryDrag(e);
+      // Read the store LIVE — the hook value lags one render behind the begin
+      // above, and planFor(null) once crashed the whole tab.
+      const active = useMediaDragStore.getState().active;
+      if (active === null) return;
       const rect = e.currentTarget.getBoundingClientRect();
-      const plan = planFor(activeMediaDrag, e.clientX - rect.left, e);
+      const plan = planFor(active, e.clientX - rect.left, e);
       e.dataTransfer.dropEffect = mediaDropInvalid(plan.validity) ? "none" : "copy";
       // Collapse the floating media card into a chip inside the strip, the same
       // way a lane absorbs it. Not cosmetic here: at full size the card covers
@@ -308,7 +307,7 @@ export function DropStrip({
           height,
         },
       });
-      setDropPreview({ media: activeMediaDrag, plan });
+      setDropPreview({ media: active, plan });
     },
     [activeMediaDrag, claimDropTarget, compositionId, planFor, pxPerSec],
   );
