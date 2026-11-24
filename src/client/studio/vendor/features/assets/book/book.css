@@ -28,6 +28,9 @@
 .top-tabs{position:absolute;left:10%;right:9%;top:0;display:flex;justify-content:space-between;align-items:start;gap:3px;z-index:4}
 .bookmark,.top-tabs button,.side-tabs button{position:relative;appearance:none;border:0;background:none;padding:0;cursor:pointer;color:#ffe1a0}
 .top-tabs button{flex:0 1 calc(172px * var(--s));min-width:0;aspect-ratio:172/105}
+/* On top of the demo baseline: left-page section ribbons pulled closer, lightly overlapping; freed space absorbed so actions keep demo positions. */
+.top-tabs button:nth-child(2),.top-tabs button:nth-child(3),.top-tabs button:nth-child(4){margin-left:calc(-20px * var(--s))}
+.top-tabs button.action:nth-last-child(3){margin-left:auto}
 .top-tabs img{display:block;width:100%;height:100%;object-fit:contain}
 .top-tabs button[aria-pressed=false],.top-tabs button.action{clip-path:inset(0 0 38% 0)}
 .bookmark img,.side-tabs img{display:block;width:100%;height:auto}
