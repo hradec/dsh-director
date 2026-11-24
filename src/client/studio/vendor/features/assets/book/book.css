@@ -24,10 +24,13 @@
 .right .s2{left:auto;right:0;bottom:14%;width:280px}
 /* Section ribbons live over the LEFT page, shingling into each other; the action
    tabs stay right of the spine. Voices (4th) never crosses the book's center. */
-.top-tabs{position:absolute;left:calc(92px * var(--s));right:calc(84px * var(--s));top:calc(46px * var(--s));display:flex;justify-content:flex-start;align-items:start;gap:calc(-10px * var(--s));z-index:4}
+.top-tabs{position:absolute;left:10%;right:9%;top:0;display:flex;justify-content:space-between;align-items:start;gap:3px;z-index:4}
 .bookmark,.top-tabs button,.side-tabs button{position:relative;appearance:none;border:0;background:none;padding:0;cursor:pointer;color:#ffe1a0}
-.top-tabs button{flex:0 0 auto;width:calc(108px * var(--s));min-width:0;aspect-ratio:172/105}
+/* Same rendered size and edges as before; only the LEFT group is pulled into a light shingle. */
+.top-tabs button{flex:0 0 auto;width:calc(128px * var(--s));min-width:0;aspect-ratio:172/105;transition:transform .2s ease}
+.top-tabs button:nth-child(2),.top-tabs button:nth-child(3),.top-tabs button:nth-child(4){margin-left:calc(-26px * var(--s))}
 .top-tabs button.action:nth-last-child(3){margin-left:auto}
+.top-tabs button[aria-pressed=true]:not(.action){z-index:3;transform:translateY(calc(8px * var(--s)))}
 .top-tabs img{display:block;width:100%;height:100%;object-fit:contain}
 .top-tabs button[aria-pressed=false],.top-tabs button.action{clip-path:inset(0 0 38% 0)}
 .bookmark img,.side-tabs img{display:block;width:100%;height:auto}
