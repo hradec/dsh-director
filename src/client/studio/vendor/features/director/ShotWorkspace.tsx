@@ -11,10 +11,12 @@ import { LayoutReferenceList } from "./LayoutReferenceList";
 import { ShotMaterialEditor } from "./ShotMaterialEditor";
 import { materialReviewMessage } from "./materialReview";
 import { VideoContextPanel } from "./VideoContextPanel";
+import { PrevizStudio } from "../../../PrevizStudio.jsx";
 
 const DOCUMENT_SECTIONS = [
   { id: "shot-brief", label: "Brief" },
   { id: "shot-references", label: "References" },
+  { id: "shot-previz", label: "Previz" },
   { id: "shot-layouts", label: "Layouts" },
   { id: "shot-prompt", label: "Prompt" },
   { id: "shot-production", label: "Production" },
@@ -260,9 +262,17 @@ export function ShotWorkspace({
                   ) : <p className="empty-copy">No assets cast for this Shot.</p>}
                 </section>
 
+                <section id="shot-previz" className="shot-document-section">
+                  <header className="shot-document-section-header">
+                    <span>03 / Motion blocking</span>
+                    <h4>Previz</h4>
+                  </header>
+                  <PrevizStudio boundShotId={selected.id} sendDshRequest={onSend} />
+                </section>
+
                 <section id="shot-layouts" className="shot-document-section">
                   <header className="shot-document-section-header">
-                    <span>03 / Visual studies</span>
+                    <span>04 / Visual studies</span>
                     <h4>Layout studies</h4>
                   </header>
                   {selected.layout_refs.length ? (
@@ -303,7 +313,7 @@ export function ShotWorkspace({
 
                 <section id="shot-prompt" className="shot-document-section">
                   <header className="shot-document-section-header">
-                    <span>04 / Model direction</span>
+                    <span>05 / Model direction</span>
                     <h4>Generation prompt</h4>
                   </header>
                   <div className="shot-prompt-panel">
@@ -319,7 +329,7 @@ export function ShotWorkspace({
 
                 <section id="shot-production" className="shot-document-section">
                   <header className="shot-document-section-header">
-                    <span>05 / Record</span>
+                    <span>06 / Record</span>
                     <h4>Production record</h4>
                   </header>
                   <div className="shot-run-panel">

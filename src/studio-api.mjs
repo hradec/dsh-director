@@ -5,6 +5,7 @@ import {editingStoreFor,EditingStore} from './editing-store.mjs';
 import {normalizeScene,frameCount} from './previz-format.mjs';
 import {bakeStandaloneHtml,readEmbeddedScene} from './previz-standalone.mjs';
 import {createPrevizRenderJobs,extractSceneFromMp4} from './previz-render.mjs';
+import {h3ReferenceSet,h3ReferenceText,seedScene} from './previz-h3refs.mjs';
 import {ensureWaveform,readWaveformTile} from './media-waveform.mjs';
 import {ensureConform,readConformRange} from './media-conform.mjs';
 import {Readable} from 'node:stream';
@@ -965,6 +966,17 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
       match=/^\/api\/shots\/([A-Za-z0-9_-]{1,128})$/.exec(path);
       if(match&&req.method==='GET'){sendJson(res,200,await store.getShot(match[1]));return;}
       if(match&&req.method==='PATCH'){sendJson(res,200,await store.patchShot(match[1],await readJson(req,controller.signal)));return;}
+      // Cast & continuity: the vendored "Edit materials" editor sends [{role,asset_id,file_key}];
+      // Picture indices are assigned in the order sent (layout_ref_frame last, as the editor sorts).
+      // The H3 graph's socket addressing (ref_image_0..8) is enforced by the store's index rule and
+      // surfaces there verbatim — no extra local cap.
+      match=/^\/api\/shots\/([A-Za-z0-9_-]{1,128})\/materials$/.exec(path);
+      if(match&&req.method==='PUT'){
+        const body=await readJson(req,controller.signal);
+        const materials=Array.isArray(body.materials)?body.materials:[];
+        const refs=materials.map((m,index)=>({role:String(m?.role??'other'),asset_id:String(m?.asset_id??''),picture_index:index+1,...(m?.file_key!=null?{file_key:String(m.file_key)}:{})}));
+        sendJson(res,200,await store.patchShot(match[1],{refs}));return;
+      }
       match=/^\/api\/shots\/([A-Za-z0-9_-]{1,128})\/approve$/.exec(path);
       if(match&&req.method==='POST'){sendJson(res,200,await store.approveShot(match[1]));return;}
       match=/^\/api\/shots\/([A-Za-z0-9_-]{1,128})\/submit$/.exec(path);
@@ -1025,6 +1037,20 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         const footage=await store.addLib('footage',{path:mp4,tags,subfolder:'previz'});
         const image=existsSync(frame0)?await store.addLib('images',{path:frame0,tags,subfolder:'previz'}):null;
         sendJson(res,201,{footage,image});return;
+      }
+      // The shot's full H3 reference contract: cast Pictures (asset-derived) + previz frame0/playblast (new refs).
+      if(path==='/api/previz/refs'&&req.method==='GET'){
+        const shotId=slugOf(url.searchParams.get('shot_id')??'');
+        const shot=await store.getShot(shotId);
+        const row=(await listPreviz(store)).find((r)=>r.shot_id===shotId)??null;
+        sendJson(res,200,h3ReferenceSet(shot,row));return;
+      }
+      // Starter scene built from the shot's cast — returned unsaved so the human/agent edits before baking.
+      if(path==='/api/previz/seed'&&req.method==='POST'){
+        const body=await readJson(req,controller.signal);
+        const shotId=slugOf(body.shot_id??'');
+        const shot=await store.getShot(shotId);
+        sendJson(res,200,{shot_id:shotId,scene:normalizeScene(seedScene(shot))});return;
       }
       if(path==='/api/previz/recover'&&req.method==='POST'){
         const body=await readJson(req,controller.signal);

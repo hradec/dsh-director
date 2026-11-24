@@ -142,7 +142,7 @@ export function ShotMaterialEditor({
   };
   const add = (asset: LibraryAsset, fileKey: string) => {
     const role = ROLE_BY_KIND[asset.kind as LibraryKind];
-    if (!role || materials.length >= 9) return;
+    if (!role) return;
     const next: ShotMaterialSelection = {
       role,
       asset_id: asset.id,
@@ -257,7 +257,6 @@ export function ShotMaterialEditor({
         <div className="shot-material-editor-library" aria-label="Project Library materials">
           <div className="shot-material-library-heading">
             <div><span>Project inventory</span><h3>Library</h3></div>
-            {materials.length >= 9 ? <strong>Picture limit reached</strong> : null}
           </div>
           {error ? <div className="banner error">{error}</div> : null}
           {!error && assets.length === 0 ? <p className="empty-copy">Loading project materials…</p> : null}
@@ -317,7 +316,7 @@ export function ShotMaterialEditor({
                             type="button"
                             className="shot-material-add"
                             aria-label={selected ? `${label} selected` : `Add ${label}`}
-                            disabled={selected || materials.length >= 9 || saving}
+                            disabled={selected || saving}
                             onClick={() => add(asset, fileKey)}
                           >
                             {selected ? "Selected" : "Add"}

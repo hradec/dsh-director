@@ -1,19 +1,23 @@
-// Previz tab — review surface for single-file animated previs. The LLM authors the scene
+// Previz — review surface for single-file animated previs. The LLM authors the scene
 // JSON (chat or POST /api/previz/scene); the human scrubs the live three.js stage, renders
 // a playblast mp4, and registers it into the Footage/Images libraries. Deliberately no
 // drag-and-drop editor: every scene is plain JSON in a .previz.html that plays standalone.
+// Two mounts: the standalone tab (shot picker) and the Shot setup "Previz" section
+// (boundShotId — the shot is already known; cast + H3 reference set shown inline).
 import {useEffect,useRef,useState} from 'react';
 import {createStage} from './previz-player.js';
 import {normalizeScene,previzPromptNotes} from '../../previz-format.mjs';
+import {h3ReferenceText} from '../../previz-h3refs.mjs';
 import {fetch as apiFetch} from './fetch-inject.mjs';
 
-export function PrevizStudio(){
+export function PrevizStudio({boundShotId=null,sendDshRequest=null}={}){
   const [shots,setShots]=useState([]);
   const [rows,setRows]=useState([]);
-  const [shotId,setShotId]=useState('');
+  const [shotId,setShotId]=useState(boundShotId??'');
   const [scene,setScene]=useState(null);
   const [draft,setDraft]=useState('');
   const [status,setStatus]=useState('');
+  const [refsText,setRefsText]=useState('');
   const [playblast,setPlayblast]=useState('');
   const [playing,setPlaying]=useState(false);
   const [t,setT]=useState(0);
@@ -49,23 +53,44 @@ export function PrevizStudio(){
   },[playing,scene]);
 
   async function openRow(id){
-    setShotId(id);setPlaying(false);setT(0);setPlayblast('');setStatus('');
+    setShotId(id);setPlaying(false);setT(0);setPlayblast('');setStatus('');setRefsText('');
     try{
       const v=await (await apiFetch(`api/previz/scene?shot_id=${encodeURIComponent(id)}`)).json();
       setScene(v.scene);setDraft(JSON.stringify(v.scene,null,2));
       const row=rows.find((r)=>r.shot_id===id);
       if(row?.playblast)setPlayblast('/director-studio/api/file?path='+encodeURIComponent(row.playblast));
+      loadRefs(id);
     }catch(e){setStatus(String(e.message??e));setScene(null);setDraft('');}
   }
+  async function loadRefs(id){
+    try{
+      const set=await (await apiFetch(`api/previz/refs?shot_id=${encodeURIComponent(id)}`)).json();
+      setRefsText(h3ReferenceText(set));
+    }catch(e){setRefsText(String(e.message??e));}
+  }
+  // Bound to a shot (Production tab): open it as soon as the shot id arrives.
+  useEffect(()=>{
+    if(!boundShotId)return;
+    if(shotId===boundShotId&&scene)return;
+    openRow(boundShotId);
+  },[boundShotId,rows]);
+
+  // "New from cast": the server seeds a starter scene straight from the Shot's cast refs,
+  // so actor ids line up with the assets before anyone edits a coordinate.
   async function createNew(){
     const shot=shots.find((s)=>s.id===shotId)??shots[0];
     const id=shot?shot.id:(shotId||'untitled');
-    const dur=Number(shot?.duration_s)||6;
-    const scene={shot_id:id,title:shot?.title??'',duration_s:dur,fps:24,width:1280,height:720,
-      camera:{fov:40,keys:[{t:0,pos:[0,1.6,6],look:[0,1,0]},{t:dur,pos:[-2,1.4,4],look:[0,1,0]}]},
-      actors:[{id:'actor',shape:'biped',color:'#c8bfae',scale:1.8,keys:[{t:0,pos:[0,0,0]}]}],props:[]};
+    let scene;
+    try{
+      scene=(await (await apiFetch('api/previz/seed',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({shot_id:id})})).json()).scene;
+    }catch{
+      const dur=Number(shot?.duration_s)||6;
+      scene={shot_id:id,title:shot?.title??'',duration_s:dur,fps:24,width:1280,height:720,
+        camera:{fov:40,keys:[{t:0,pos:[0,1.6,6],look:[0,1,0]},{t:dur,pos:[-2,1.4,4],look:[0,1,0]}]},
+        actors:[{id:'actor',shape:'biped',color:'#c8bfae',scale:1.8,keys:[{t:0,pos:[0,0,0]}]}],props:[]};
+    }
     await apiFetch('api/previz/scene',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({shot_id:id,scene})});
-    await reload();openRow(id);setStatus('New previz baked — edit the JSON here or ask the agent to author the scene.');
+    await reload();openRow(id);setStatus('New previz seeded from the Shot cast — edit the JSON here or ask the agent to author the scene.');
   }
   async function saveDraft(){
     try{
@@ -80,7 +105,7 @@ export function PrevizStudio(){
     const poll=async()=>{
       const s=await (await apiFetch(`api/previz/render/${job.id}`)).json();
       if(s.status==='running'){setTimeout(poll,2000);return;}
-      if(s.status==='done'){setStatus(`Playblast: ${s.result.mp4}`);setPlayblast('/director-studio/api/file?path='+encodeURIComponent(s.result.mp4));reload();}
+      if(s.status==='done'){setStatus(`Playblast: ${s.result.mp4}`);setPlayblast('/director-studio/api/file?path='+encodeURIComponent(s.result.mp4));reload();loadRefs(shotId);}
       else setStatus('Render failed: '+s.error);
     };
     poll();
@@ -88,18 +113,22 @@ export function PrevizStudio(){
   async function register(){
     const v=await (await apiFetch('api/previz/register',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({shot_id:shotId})})).json();
     setStatus(`Registered: Footage ${v.footage?.path??''}${v.image?`, Images ${v.image.path}`:''}.`);
-    reload();
+    reload();loadRefs(shotId);
+  }
+  function sendRefs(){
+    if(!sendDshRequest||!refsText)return;
+    sendDshRequest(`Shot ${shotId} — complete H3 reference set (cast assets + previz):\n${refsText}\nBuild the H3 prompt for this shot from these references: stage the Pictures, use the playblast mp4 as <Video 1> (cut and pacing structure, weak_reference) and the frame0 png as the input still for the hi-res H3 Image first frame. Previz timing wording to fold in is in the shot's previz notes.`);
   }
 
   const scene0=scene?normalizeScene(scene):null;
   return <div className="dsh-director-previz" style={{display:'flex',flexDirection:'column',gap:10,padding:12}}>
     <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
-      <select value={shotId} onChange={(e)=>openRow(e.target.value)} style={{minWidth:200}}>
+      {boundShotId?null:<select value={shotId} onChange={(e)=>openRow(e.target.value)} style={{minWidth:200}}>
         <option value="">— shot —</option>
         {shots.map((s)=><option key={s.id} value={s.id}>{s.id} · {s.title??''}</option>)}
         {rows.filter((r)=>!shots.some((s)=>s.id===r.shot_id)).map((r)=><option key={r.shot_id} value={r.shot_id}>{r.shot_id} (previz only)</option>)}
-      </select>
-      <button className="btn" onClick={createNew}>New previz</button>
+      </select>}
+      <button className="btn" onClick={createNew}>{scene?'Replace from cast':'New from cast'}</button>
       {scene?<>
         <button className="btn primary" onClick={()=>setPlaying((v)=>!v)}>{playing?'Pause':'Play'}</button>
         <button className="btn" onClick={saveDraft}>Save JSON</button>
@@ -110,6 +139,7 @@ export function PrevizStudio(){
       </>:null}
     </div>
     {status?<div className="muted" style={{fontSize:12}}>{status}</div>:null}
+    {!scene&&boundShotId?<div className="muted" style={{fontSize:12}}>No previz for this shot yet — “New from cast” seeds one from the assets you cast under References.</div>:null}
     {scene?<div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'flex-start'}}>
       <canvas ref={canvasRef} style={{border:'1px solid #2c3546',maxWidth:'100%'}}/>
       <div style={{minWidth:260,flex:1}}>
@@ -118,7 +148,12 @@ export function PrevizStudio(){
         {playblast?<video src={playblast} controls style={{width:'100%',marginTop:8}}/>:null}
       </div>
     </div>:null}
+    {refsText?<div>
+      <div className="muted" style={{fontSize:12,marginBottom:4}}>Minimax H3 references for this shot (cast + previz):</div>
+      <pre style={{whiteSpace:'pre-wrap',fontSize:12,margin:0}}>{refsText}</pre>
+      {sendDshRequest?<button className="btn" onClick={sendRefs} style={{marginTop:4}}>Hand reference set to the agent</button>:null}
+    </div>:null}
     {scene?<textarea rows={14} value={draft} onChange={(e)=>setDraft(e.target.value)} style={{fontFamily:'ui-monospace,monospace',fontSize:12,width:'100%'}}/>:null}
-    <div className="muted" style={{fontSize:12}}>previz files: {rows.map((r)=><span key={r.shot_id} style={{marginRight:8}}>{r.shot_id}{r.playblast?' (mp4)':''}</span>)}</div>
+    {boundShotId?null:<div className="muted" style={{fontSize:12}}>previz files: {rows.map((r)=><span key={r.shot_id} style={{marginRight:8}}>{r.shot_id}{r.playblast?' (mp4)':''}</span>)}</div>}
   </div>;
 }

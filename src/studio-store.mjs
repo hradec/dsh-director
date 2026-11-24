@@ -68,7 +68,7 @@ function validateVideoContext(s,shot,value){
 }
 function promptSections(value){if(value===undefined)return Object.fromEntries(PROMPT_KEYS.map(key=>[key,'']));if(!value||typeof value!=='object'||Array.isArray(value))throw new StudioStoreError('prompt_sections must be an object.');for(const key of Object.keys(value))if(!PROMPT_KEYS.includes(key))throw new StudioStoreError(`Unknown prompt section: ${key}.`);return Object.fromEntries(PROMPT_KEYS.map(key=>[key,safeText(value[key],10000)]));}
 function validateShotRefs(s,projectId,refs,voiceRefs){
-  if(!Array.isArray(refs)||refs.length>9)throw new StudioStoreError('refs must be an array with at most 9 entries.');
+  if(!Array.isArray(refs))throw new StudioStoreError('refs must be an array.');
   const pictures=new Set();const validRefs=refs.map(ref=>{
     if(!ref||typeof ref!=='object'||Array.isArray(ref)||!['actor','costume','scene','prop','layout_ref_frame','other'].includes(ref.role))throw new StudioStoreError('Each visual ref needs a supported role.');
     if(typeof ref.asset_id!=='string'||!ref.asset_id)throw new StudioStoreError('Each visual ref needs an asset_id.');
@@ -78,7 +78,7 @@ function validateShotRefs(s,projectId,refs,voiceRefs){
     if(ref.file_key!==undefined&&ref.file_key!==null&&!Object.hasOwn(asset.files,ref.file_key))throw new StudioStoreError('Visual ref file_key does not exist on that asset.');
     return {role:ref.role,asset_id:ref.asset_id,picture_index:ref.picture_index,...(ref.file_key!=null?{file_key:safeText(ref.file_key,100)}:{}),...(ref.notes?{notes:safeText(ref.notes,2000)}:{})};
   });
-  if(!Array.isArray(voiceRefs)||voiceRefs.length>9)throw new StudioStoreError('voice_refs must be an array with at most 9 entries.');
+  if(!Array.isArray(voiceRefs))throw new StudioStoreError('voice_refs must be an array.');
   const audios=new Set();const validVoiceRefs=voiceRefs.map(ref=>{
     if(!ref||typeof ref!=='object'||Array.isArray(ref)||typeof ref.asset_id!=='string'||!ref.asset_id)throw new StudioStoreError('Each voice ref needs an asset_id.');
     if(!Number.isInteger(ref.audio_index)||ref.audio_index<1||ref.audio_index>9||audios.has(ref.audio_index))throw new StudioStoreError('Audio indices must be unique integers from 1 through 9.');audios.add(ref.audio_index);

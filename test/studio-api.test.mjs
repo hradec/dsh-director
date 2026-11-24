@@ -814,3 +814,28 @@ test('previz scene bake, read-back and register routes',async(t)=>{
   const reread=await (await json(base,'/api/previz/scene?shot_id=c99')).json();
   assert.equal(reread.scene.title,'x</script>y');
 });
+
+test('shot casting: materials PUT assigns Picture indices; previz seed + refs yield the full H3 reference set',async t=>{
+  const {base,store,project,root}=await setup(t);
+  const shot=await store.saveShot(project.id,{title:'Flight',duration_s:5.5});
+  const actor=await store.saveAsset({kind:'actors',name:'Nelare',project_id:project.id,filename:'sheet.png',bytes:png});
+  const costume=await store.saveAsset({kind:'costumes',name:'Harness',project_id:project.id,filename:'ref.png',bytes:png});
+  const materials=JSON.stringify({materials:[{role:'actor',asset_id:actor.id,file_key:'master'},{role:'costume',asset_id:costume.id}]});
+  const casted=await (await json(base,`/api/shots/${shot.id}/materials`,{method:'PUT',body:materials})).json();
+  assert.deepEqual(casted.refs.map((r)=>r.picture_index),[1,2],'Picture indices assigned in send order');
+  // The external H3 socket addressing surfaces at the store verbatim — no local array cap.
+  const over=await json(base,`/api/shots/${shot.id}/materials`,{method:'PUT',body:JSON.stringify({materials:Array.from({length:10},()=>({role:'actor',asset_id:actor.id}))})});
+  assert.equal(over.status,400);assert.match((await over.json()).detail,/unique integers from 1 through 9/);
+  await json(base,`/api/shots/${shot.id}/materials`,{method:'PUT',body:materials});
+  const seed=await (await json(base,'/api/previz/seed',{method:'POST',body:JSON.stringify({shot_id:shot.id})})).json();
+  assert.equal(seed.scene.actors.length,2,'one actor entry per casted character/costume asset');
+  assert.equal(seed.scene.duration_s,5.5,'seed follows the shot duration');
+  await json(base,'/api/previz/scene',{method:'POST',body:JSON.stringify({shot_id:shot.id,scene:seed.scene})});
+  const dir=join(root,'previz');
+  writeFileSync(join(dir,`${shot.id}.previz.mp4`),Buffer.concat([Buffer.alloc(4),Buffer.from('ftyp'),Buffer.alloc(8)]));
+  writeFileSync(join(dir,`${shot.id}.frame0.png`),png);
+  const refs=await (await json(base,`/api/previz/refs?shot_id=${shot.id}`)).json();
+  assert.deepEqual(refs.pictures.map((p)=>[p.picture_index,p.asset_id,p.file_key]),[[1,actor.id,'master'],[2,costume.id,undefined]],'cast Pictures keep their indices');
+  assert.equal(refs.extras[0].path,join(dir,`${shot.id}.frame0.png`),'previz frame0 is the non-asset Picture candidate');
+  assert.equal(refs.video.path,join(dir,`${shot.id}.previz.mp4`),'playblast is Video 1');
+});
