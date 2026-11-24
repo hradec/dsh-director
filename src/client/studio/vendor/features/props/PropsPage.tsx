@@ -100,10 +100,6 @@ export function PropsPage({ initialEditId, sendRequest, chapter }: Props) {
               ))}
             </select>
           </label>
-          <p className="field-hint">
-            New props come from “Ask DSH” or “Import prop” in the toolbar above; every
-            stored image of this prop is a reference in the board on the right.
-          </p>
         </div>
 
         {prop ? (
