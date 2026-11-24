@@ -22,9 +22,12 @@
 .s3{right:0;top:29%;width:195px}
 .right .s1{top:0;left:0;width:240px}
 .right .s2{left:auto;right:0;bottom:14%;width:280px}
-.top-tabs{position:absolute;left:10%;right:9%;top:0;display:flex;justify-content:space-between;align-items:start;gap:3px;z-index:4}
+/* Section ribbons live over the LEFT page, shingling into each other; the action
+   tabs stay right of the spine. Voices (4th) never crosses the book's center. */
+.top-tabs{position:absolute;left:calc(92px * var(--s));right:calc(84px * var(--s));top:calc(46px * var(--s));display:flex;justify-content:flex-start;align-items:start;gap:calc(-10px * var(--s));z-index:4}
 .bookmark,.top-tabs button,.side-tabs button{position:relative;appearance:none;border:0;background:none;padding:0;cursor:pointer;color:#ffe1a0}
-.top-tabs button{flex:0 1 calc(172px * var(--s));min-width:0;aspect-ratio:172/105}
+.top-tabs button{flex:0 0 auto;width:calc(108px * var(--s));min-width:0;aspect-ratio:172/105}
+.top-tabs button.action:nth-last-child(3){margin-left:auto}
 .top-tabs img{display:block;width:100%;height:100%;object-fit:contain}
 .top-tabs button[aria-pressed=false],.top-tabs button.action{clip-path:inset(0 0 38% 0)}
 .bookmark img,.side-tabs img{display:block;width:100%;height:auto}
@@ -60,6 +63,11 @@
 /* Library asset tiles: image + name only — no box, no wash (they sit printed). */
 .book .content .folder-file-thumb,.book .content .folder-file-thumb button,.book .content button.folder-file-thumb{background:transparent;border:0}
 .book .content .folder-file-thumb>*{background-color:transparent!important;border:0}
+/* Exception: Approve/Disapprove pills float on tiles — restore the vendor's
+   green/red fills that the no-wash tile reset had erased. */
+.book .content .tile-corner{border:1px solid rgba(255,255,255,.4)!important;color:#fff}
+.book .content .tile-corner-approve{background:rgba(63,125,78,.92)!important}
+.book .content .tile-corner-disapprove{background:rgba(164,68,58,.9)!important}
 /* Structural buttons (group headers, collapse carets, chip ×) must not get their
    own box inside a group — fills and borders belong to real actions only. */
 .book .content .mobile-library-group-main,.book .content .mobile-library-group-collapse,.book .content .reference-chip-x,.book .content .lore-toggle,.book .content .lineage-toggle{background:transparent;border:0}
@@ -144,3 +152,15 @@
 .hide-stains .edge-aging,.hide-stains .stain{display:none}
 .hide-art .art{display:none}
 @media(prefers-reduced-motion:reduce){.turn-layer{display:none}}
+/* ---- 0.2.164 batch ---- */
+/* Library preview tiles: the vendor's dark frame was the black line — warm demo border. */
+.book .content .mobile-library-preview{background:rgba(255,245,219,.5);border:1px solid #ab8658;border-radius:5px}
+.book .content .mobile-library-preview.empty span{color:#6b4a2f}
+/* Brainstorm heading must read like Approved's — a plain heading, not a boxed button. */
+.book .content .reference-board-toggle{background:transparent!important;border:0!important;border-radius:0;padding:0;margin:0;font:700 calc(15px * var(--s)) Georgia,serif;color:#3f2412}
+/* Nothing may spill past the printed page: panels scroll inside their sheet area. */
+.book .content .input-panel,.book .content .output-panel,.book .content .lore-page,.book .content .lineage-page{max-height:calc(880px * var(--s));overflow:auto}
+/* Lorekeeper/Lineage fill the right page instead of ending mid-sheet. */
+.book .content .lore-page,.book .content .lineage-page{height:calc(880px * var(--s));display:flex;flex-direction:column;gap:calc(10px * var(--s))}
+.book .lore-page>div,.book .lineage-page>div{flex:1 1 auto;display:flex;flex-direction:column;min-height:0}
+.book .lore-viewer{flex:1 1 auto;min-height:calc(360px * var(--s))}
