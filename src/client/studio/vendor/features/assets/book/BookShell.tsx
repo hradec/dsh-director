@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { subscribeAgentTasks } from "../../../../agent-queue.jsx";
 
 const B = "/director-studio/book";
-const TURN_MS = 850;
+const TURN_MS = 1275; // 50% slower than the demo default
 
 export type BookCategory = "library" | "actors" | "scenes" | "props" | "voices";
 export type BookChapter = "references" | "lorekeeper" | "lineage";
