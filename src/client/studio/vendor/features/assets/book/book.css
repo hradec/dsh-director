@@ -52,7 +52,7 @@
 .app.area-assets .dsh-agent-toggle{display:none}
 /* The content spread lives between the pages; the existing workspace panels are
    display:contents so their own sections land in the two page columns directly. */
-.content{position:absolute;z-index:3;inset:calc(186px * var(--s)) calc(140px * var(--s)) calc(238px * var(--s));display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:calc(106px * var(--s));color:#4b2914;font:15px system-ui,sans-serif}
+.content{position:absolute;z-index:3;inset:calc(215px * var(--s)) calc(140px * var(--s)) calc(238px * var(--s));display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:calc(106px * var(--s));color:#4b2914;font:15px system-ui,sans-serif}
 .content[hidden]{display:none}
 .content section,.content aside{min-width:0;overflow:auto;padding:0 3px 6px}
 .asset-preparation-panel,.asset-preparation-panel>main.workspace,.asset-library-overview-panel,.content .asset-category-content{display:contents}

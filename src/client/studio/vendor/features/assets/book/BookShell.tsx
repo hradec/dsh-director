@@ -95,7 +95,7 @@ export const BookShell = forwardRef<BookShellHandle, {
   const turningRef = useRef(false);
   const finishRef = useRef<null | (() => void)>(null);
   const queuedRef = useRef<BookView | null>(null);
-  const pendingRef = useRef<{ front: SideSnap | null; hold: SideSnap | null } | null>(null);
+  const pendingRef = useRef<{ front: SideSnap | null; holdLeft: SideSnap | null; holdRight: SideSnap | null } | null>(null);
   const lastRef = useRef<BookView>(view);
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -192,7 +192,7 @@ export const BookShell = forwardRef<BookShellHandle, {
     return face;
   }
 
-  function runTurn(prev: BookView, next: BookView, frontSnap: SideSnap | null, holdSnap: SideSnap | null) {
+  function runTurn(prev: BookView, next: BookView, frontSnap: SideSnap | null, holdLeft: SideSnap | null, holdRight: SideSnap | null) {
     const book = bookRef.current!;
     // ponytail: every bookmark flips the right leaf leftward (v10 geometry); a
     // back-ward flip would need the left page to carry the outgoing chapter.
@@ -220,16 +220,17 @@ export const BookShell = forwardRef<BookShellHandle, {
     const world = document.createElement("div");
     world.className = "turn-world";
     layer.append(world);
-    // The left page in a real book stays OLD until the flipped leaf lands on it:
-    // hold a snapshot of the previous left side over the committed new content.
-    // makeFace gives it the opaque paper surface, so the new page cannot bleed through.
-    let hold: HTMLElement | null = null;
-    if (holdSnap) {
-      const lb = rects[0];
-      hold = makeFace(backSide, holdSnap);
-      hold.classList.add("hold-layer");
-      Object.assign(hold.style, { zIndex: "19", pointerEvents: "none", left: (lb.left - b.left) + "px", top: (lb.top - b.top) + "px" });
-      book.append(hold);
+    // Both resting pages keep the OLD spread (opaque paper + old clones) for the whole
+    // turn; the NEW view rides ONLY on the leaf's back face and lands over the old UI.
+    const holds: HTMLElement[] = [];
+    for (const [i, side, snap] of [[0, "left", holdLeft], [1, "right", holdRight]] as const) {
+      if (!snap) continue;
+      const lb = rects[i];
+      const h = makeFace(side, snap);
+      h.classList.add("hold-layer");
+      Object.assign(h.style, { zIndex: "19", pointerEvents: "none", left: (lb.left - b.left) + "px", top: (lb.top - b.top) + "px" });
+      book.append(h);
+      holds.push(h);
     }
     const front = makeFace(side, frontSnap), back = makeFace(backSide, backSnap);
     const N = 22, dx = W / N, strips: { el: HTMLElement; front: HTMLElement; back: HTMLElement }[] = [];
@@ -257,7 +258,7 @@ export const BookShell = forwardRef<BookShellHandle, {
       finished = true;
       finishRef.current = null;
       layer.remove();
-      if (hold) hold.remove();
+      for (const h of holds) h.remove();
       book.removeAttribute("aria-busy");
       turningRef.current = false;
       if (queuedRef.current) { const q = queuedRef.current; queuedRef.current = null; navigate(q.category, q.chapter); }
@@ -309,9 +310,11 @@ export const BookShell = forwardRef<BookShellHandle, {
     const items = gridItems(content);
     const right = items.filter((el) => { const q = el.getBoundingClientRect(); return q.left + q.width / 2 > spine; });
     const left = items.filter((el) => { const q = el.getBoundingClientRect(); return q.left + q.width / 2 <= spine; });
-    // Library/voices cards span both pages: if the flip side is empty, the leaf
-    // carries the whole spread instead of skipping the turn animation.
-    pendingRef.current = { front: snapSide(right) || snapSide(items), hold: snapSide(left) };
+    // Book physics (v10 demo): the NEW view exists ONLY on the turning leaf's back face;
+    // both resting pages keep holding the OLD spread (paper + old clones) until the leaf lands.
+    // Library/voices cards span both pages: the leaf carries the whole spread instead of skipping.
+    const frontSrc = right.length ? right : items;
+    pendingRef.current = { front: snapSide(frontSrc), holdLeft: snapSide(left), holdRight: snapSide(frontSrc) };
     lastRef.current = prev;
     onView({ category, chapter });
   }
@@ -322,7 +325,7 @@ export const BookShell = forwardRef<BookShellHandle, {
     if (!pendingRef.current || prev.category === view.category && prev.chapter === view.chapter) return;
     const snap = pendingRef.current;
     pendingRef.current = null;
-    runTurn(prev, view, snap.front, snap.hold);
+    runTurn(prev, view, snap.front, snap.holdLeft, snap.holdRight);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.category, view.chapter]);
 
