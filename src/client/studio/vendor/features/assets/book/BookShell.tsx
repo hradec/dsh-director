@@ -61,6 +61,8 @@ function snapshot(el: HTMLElement): HTMLElement {
   copy.querySelectorAll("[id]").forEach((e) => e.removeAttribute("id"));
   const from = el.querySelectorAll("input,textarea,select"), to = copy.querySelectorAll("input,textarea,select");
   from.forEach((e, i) => { const c = to[i] as HTMLInputElement; if ("value" in c) { c.value = (e as HTMLInputElement).value; c.checked = (e as HTMLInputElement).checked; } });
+  // Lazy clones paint black until they intersect; the face must be ready at turn start.
+  (copy as HTMLElement).querySelectorAll("img").forEach((i) => { i.loading = "eager"; i.decoding = "sync"; });
   return copy;
 }
 
@@ -333,11 +335,24 @@ export const BookShell = forwardRef<BookShellHandle, {
     for (let r = 1; r <= 3; r++) for (let c = 1; c <= 5; c++) { const img = document.createElement("img"); img.src = `${B}/frame/r${r}-c${c}.png`; img.alt = ""; frame.append(img); }
     // The resting sheets are replaced by the contour-clipped surfaces.
     (decoRef.current!.querySelectorAll(".sheet") as NodeListOf<HTMLElement>).forEach((el) => { el.style.visibility = "hidden"; });
+    // Panels live hidden until their category shows: lazy images would paint black
+    // the moment they're uncovered mid-turn. Eager everything — the book is small.
+    const content = contentRef.current!;
+    const warm = (root: ParentNode) => { root.querySelectorAll('img[loading="lazy"]').forEach((i) => { i.loading = "eager"; }); };
+    warm(content);
+    const warmMo = new MutationObserver((ms) => {
+      for (const m of ms) for (const n of m.addedNodes) {
+        if (!(n instanceof HTMLElement)) continue;
+        if (n.tagName === "IMG") n.loading = "eager";
+        warm(n);
+      }
+    });
+    warmMo.observe(content, { childList: true, subtree: true });
     refreshSurfaces();
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(wrapRef.current!);
-    return () => ro.disconnect();
+    return () => { ro.disconnect(); warmMo.disconnect(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
