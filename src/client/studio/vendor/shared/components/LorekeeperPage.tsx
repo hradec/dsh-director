@@ -27,7 +27,7 @@ interface CanonEvent {
 
 // Same localhost-remap trick as the dwarf plugin's LegendsTab: when the GUI is
 // opened from another device (iPad) the viewer's 127.0.0.1 URL must become this host.
-function remapViewer(url: string): string {
+export function remapViewer(url: string): string {
   try {
     const parsed = new URL(url);
     if (["localhost", "127.0.0.1", "0.0.0.0"].includes(parsed.hostname)) {
@@ -40,7 +40,7 @@ function remapViewer(url: string): string {
   }
 }
 
-async function getJson(path: string): Promise<Record<string, unknown>> {
+export async function getJson(path: string): Promise<Record<string, unknown>> {
   const response = await fetch(path);
   if (response.ok) return response.json();
   let detail = String(response.status);

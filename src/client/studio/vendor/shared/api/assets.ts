@@ -35,6 +35,22 @@ export interface LibraryRef {
   brainstorming: boolean;
   url: string;
   thumb: string | null;
+  abs?: string | null;
+  /** Per-reference note stored on the LIBRARY entry (identity contracts the video model must obey). */
+  note?: string;
+}
+
+export interface LibRefUpdateResult {
+  path: string;
+  tags: string[];
+  note: string;
+}
+
+/** Tag/note writes for library-linked tiles (same editor the own-file refs get). */
+export async function setLibraryRef(seg: "images" | "footage", body: { path: string; tags_add?: string[]; tags_remove?: string[]; note?: string }): Promise<LibRefUpdateResult> {
+  const res = await fetch(`/api/${seg}/refs`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
 }
 
 export interface RefUpdateResult {

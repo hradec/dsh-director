@@ -216,6 +216,13 @@ test('library refs by tag (0.2.58): library files tagged with the asset name joi
   assert.equal(widgeon.library_refs[1].approved,false);assert.equal(widgeon.library_refs[1].brainstorming,true);
   assert.deepEqual(mira.library_refs,[],'untagged library files connect to nothing');
   assert.ok(!widgeon.library_refs.some(r=>r.path==='widge-plain.png'),'asset-name tag alone groups in the tab but does not link the board — needs approved or brainstorming');
+  // Library refs carry notes: the Assets board edits them exactly like own-file refs.
+  const noted=await (await json(base,'/api/images/refs',{method:'PUT',body:JSON.stringify({path:'widge-hero.png',note:'arms are wings; never draw separate arms'})})).json();
+  assert.equal(noted.note,'arms are wings; never draw separate arms','PUT refs echoes the saved note');
+  const relisted=await (await json(base,'/api/library?kind=actors')).json();
+  assert.equal(relisted.find(item=>item.id===asset.id).library_refs[0].note,'arms are wings; never draw separate arms','note reaches the asset board');
+  const tab=await (await json(base,'/api/images')).json();
+  assert.equal(tab.files.find(f=>f.path==='widge-hero.png').note,'arms are wings; never draw separate arms','note visible in the Images tab listing');
 });
 
 test('footage playback: suffix Range 206, moov-at-end served faststart, ffmpeg poster thumb',async t=>{

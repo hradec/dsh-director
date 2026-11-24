@@ -7477,3 +7477,19 @@ select {
 .lore-events{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:.82rem}
 .lore-event-year{display:inline-block;min-width:3.4em;font-weight:700;color:#8a3b2f}
 .lore-viewer{flex:1;min-height:320px;width:100%;border:1px solid #c9b28a;border-radius:10px;background:#fff}
+/* lineage bookmark: the second ribbon sits under the lorekeeper's; its page is a shared-year-scale timeline */
+.page-bookmark.lineage{top:54%;background:#40563a}
+.page-bookmark.lineage:hover{background:#4f6a46}
+.page-bookmark.lineage.open{background:#2c3d28}
+.family-scroll{overflow-x:auto;flex:1;padding:4px 12px 12px}
+.family-tree{display:block}
+.family-name{fill:#3d2f1c;font-size:12px;font-weight:600}
+.family-years{fill:#6b5738;font-size:10.5px}
+.family-bar{cursor:pointer}
+.family-bar:hover{filter:brightness(1.15)}
+.family-bar.alive{opacity:.55}
+.family-link{fill:none;stroke:#a38a63;stroke-width:1.4}
+.family-spouse-link{stroke-dasharray:3 3}
+.family-grid{stroke:#d9c7a3;stroke-width:1}
+.family-axis{fill:#6b5738;font-size:10px}
+.family-hint{margin:6px 0 0;color:#6b5738;font-size:.72rem}

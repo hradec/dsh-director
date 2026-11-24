@@ -6,6 +6,7 @@ import {
   refNoteOf,
   refTagsOf,
   setAssetRef,
+  setLibraryRef,
   type RefMetaEntry,
   type ReferenceAsset,
 } from "../../shared/api/assets";
@@ -175,22 +176,26 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
   );
 
   // Tag = connection: library pictures/clips tagged with this asset's name sit on the same board.
-  // Their tags are edited in the Images/Footage tab, so these tiles are read-only here (lightbox works).
+  // They are editable here exactly like own-file refs; writes land on the LIBRARY entry (images/footage refs route).
   const librarySlots = useMemo<BoardSlot[]>(
     () =>
-      (asset.library_refs ?? []).map((ref) => ({
-        key: `lib:${ref.library}:${ref.path}`,
-        label: ref.name,
-        filename: `${ref.library}/${ref.path}`,
-        url: ref.url,
-        abs: ref.abs ?? null,
-        libKind: ref.library as "images" | "footage",
-        libPath: ref.path,
-        tags: ref.tags,
-        note: "",
-        thumb: ref.thumb,
-      })),
-    [asset.library_refs],
+      (asset.library_refs ?? []).map((ref) => {
+        const key = `lib:${ref.library}:${ref.path}`;
+        const local = refMeta[key];
+        return {
+          key,
+          label: ref.name,
+          filename: `${ref.library}/${ref.path}`,
+          url: ref.url,
+          abs: ref.abs ?? null,
+          libKind: ref.library as "images" | "footage",
+          libPath: ref.path,
+          tags: local?.tags ?? ref.tags,
+          note: local?.note ?? ref.note ?? "",
+          thumb: ref.thumb,
+        };
+      }),
+    [asset, refMeta],
   );
   const allSlots = [...slots, ...librarySlots];
   const approvedSlots = allSlots.filter((slot) => slot.tags.includes("approved"));
@@ -213,6 +218,17 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
     }));
   }
 
+  // One writer for both tile kinds: own files → asset ref_meta; library tiles → the library entry.
+  async function writeRef(key: string, body: { tags_add?: string[]; tags_remove?: string[]; note?: string }) {
+    if (!key.startsWith("lib:")) return setAssetRef(kind, asset.id, key, body);
+    const m = /^lib:(images|footage):(.*)$/.exec(key);
+    if (!m) throw new Error("Malformed library reference key.");
+    const v = await setLibraryRef(m[1] as "images" | "footage", { path: m[2], ...body });
+    // A server that predates the note lane answers without `note` — keep the typed/current note instead of blanking it.
+    const kept = v.note ?? noteDrafts[key] ?? (asset.library_refs ?? []).find((r) => `lib:${r.library}:${r.path}` === key)?.note ?? refMeta[key]?.note ?? "";
+    return { key, tags: v.tags, note: kept };
+  }
+
   async function addTag(key: string) {
     const tag = (tagDrafts[key] ?? "").trim();
     if (!tag) return;
@@ -220,7 +236,7 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
     setError(null);
     try {
       // Rely on server exclusivity (approved ↔ brainstorming) and refresh from the returned tags.
-      const result = await setAssetRef(kind, asset.id, key, { tags_add: [tag] });
+      const result = await writeRef(key, { tags_add: [tag] });
       applyRef(key, result);
       setTagDrafts((drafts) => ({ ...drafts, [key]: "" }));
     } catch (e) {
@@ -234,7 +250,7 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
     setBusyKey(key);
     setError(null);
     try {
-      const result = await setAssetRef(kind, asset.id, key, { tags_remove: [tag] });
+      const result = await writeRef(key, { tags_remove: [tag] });
       applyRef(key, result);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -248,7 +264,7 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
     if (draft === undefined || draft === (entryFor(key).note ?? "")) return;
     setError(null);
     try {
-      const result = await setAssetRef(kind, asset.id, key, { note: draft });
+      const result = await writeRef(key, { note: draft });
       applyRef(key, result);
       setNoteDrafts((drafts) => {
         const next = { ...drafts };
@@ -271,75 +287,10 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
     }
   }
 
-  function libTile(slot: BoardSlot) {
-    const video = /\.(mp4|mov|webm)$/i.test(slot.filename ?? "");
-    const src = slot.thumb ?? (video ? null : slot.url);
+  // Chips + tag input + approve + note editor — identical affordance for own-file and library tiles.
+  function refControls(slot: BoardSlot) {
     return (
-      <div key={slot.key} className="reference-tile reference-tile-library" title="Linked by tag from the Images/Footage library — edit its tags in that tab" onContextMenu={openMenu(slot)}>
-        <button
-          type="button"
-          className="folder-file-card"
-          title="Open in lightbox"
-          onClick={() => setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)))}
-        >
-          <div className="folder-file-thumb">{src ? <img loading="lazy" src={src} alt={slot.label} /> : <div className="output-empty">🎞</div>}</div>
-          <div className="folder-file-label ellipsis" title={slot.filename}>{slot.filename}</div>
-        </button>
-        <div className="reference-chips">
-          {slot.tags.map((tag) => (
-            <span key={tag} className={`reference-chip${tag === "approved" ? " approved" : ""}`}>{tag}</span>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  async function approveSlot(key: string) {
-    setBusyKey(key);
-    setError(null);
-    try {
-      const result = await setAssetRef(kind, asset.id, key, { tags_add: ["approved"] });
-      applyRef(key, result);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusyKey(null);
-    }
-  }
-
-  function askNote(slot: BoardSlot, instruction: string) {
-    const fence = String.fromCharCode(34, 34, 34);
-    const message = `Director Studio — rewrite the note of the reference "${slot.key}" of the ${kind} "${asset.name}" (asset_id ${asset.id}). Current note:\n${fence}\n${noteDrafts[slot.key] ?? slot.note ?? ""}\n${fence}\nHuman request: ${instruction}\nApply the new note with the director_studio asset.tag action (note = …) and state the result in one line.`;
-    sendRequest?.(message, `note ${slot.filename ?? slot.key}`);
-    setNoteAskKey(null);
-  }
-
-  function tile(slot: BoardSlot) {
-    if (slot.key.startsWith("lib:")) return libTile(slot);
-    return (
-      <div key={slot.key} className="reference-tile" onContextMenu={openMenu(slot)}>
-        <button
-          type="button"
-          className="folder-file-card"
-          title="Open in lightbox"
-          onClick={() => setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)))}
-        >
-          <div className="folder-file-thumb">
-            {slot.url ? <img loading="lazy" src={slot.url} alt={slot.label} /> : <div className="output-empty">—</div>}
-          </div>
-          <div className="folder-file-label ellipsis" title={slot.filename || slot.key}>
-            {slot.filename || slot.key}
-          </div>
-        </button>
-        <button
-          type="button"
-          className="btn ghost sm reference-delete"
-          title="Delete file"
-          aria-label={`Delete ${slot.label}`}
-          onClick={() => void removeFile(slot.key)}
-        >
-          ✕
-        </button>
+      <>
         <div className="reference-chips">
           {slot.tags.map((tag) => (
             <span key={tag} className={`reference-chip${tag === "approved" ? " approved" : ""}`}>
@@ -390,7 +341,9 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
               aria-label="DSH auto-tag this reference"
               onClick={() =>
                 sendRequest(
-                  `Director Studio — auto-tag the reference "QKEY" of the QKIND "QNAME" (asset_id QID). View the image at QPATH with read_image, then add 3-8 tags that actually fit with the director_studio asset.tag action (tags_add; content words like head, body, full body, frontal, side, calm, roaring) — never add or remove "approved"/"brainstorming" yourself. Report the tags you added.`.replace("QKEY", slot.key).replace("QKIND", kind).replace("QNAME", asset.name).replace("QID", asset.id).replace("QPATH", slot.abs ?? slot.path ?? slot.key),
+                  slot.libKind && slot.libPath
+                    ? `Director Studio — auto-tag the ${slot.libKind} library file "${slot.libPath}" (shown as a reference of the ${kind} "${asset.name}"). View it at QPATH with read_image, then add 3-8 tags that actually fit with the director_studio ${slot.libKind}.tag action (path = "${slot.libPath}", tags_add; content words like head, body, full body, frontal, side, calm, roaring) — never add or remove "approved"/"brainstorming" yourself. Report the tags you added.`.replace("QPATH", slot.abs ?? slot.libPath)
+                    : `Director Studio — auto-tag the reference "QKEY" of the QKIND "QNAME" (asset_id QID). View the image at QPATH with read_image, then add 3-8 tags that actually fit with the director_studio asset.tag action (tags_add; content words like head, body, full body, frontal, side, calm, roaring) — never add or remove "approved"/"brainstorming" yourself. Report the tags you added.`.replace("QKEY", slot.key).replace("QKIND", kind).replace("QNAME", asset.name).replace("QID", asset.id).replace("QPATH", slot.abs ?? slot.path ?? slot.key),
                   `auto-tag ${slot.filename ?? slot.key}`,
                 )
               }
@@ -442,6 +395,79 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
             </button>
           </div>
         ) : null}
+      </>
+    );
+  }
+
+  function libTile(slot: BoardSlot) {
+    const video = /\.(mp4|mov|webm)$/i.test(slot.filename ?? "");
+    const src = slot.thumb ?? (video ? null : slot.url);
+    return (
+      <div key={slot.key} className="reference-tile reference-tile-library" title="Linked by tag from the Images/Footage library — edits write to the library entry itself" onContextMenu={openMenu(slot)}>
+        <button
+          type="button"
+          className="folder-file-card"
+          title="Open in lightbox"
+          onClick={() => setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)))}
+        >
+          <div className="folder-file-thumb">{src ? <img loading="lazy" src={src} alt={slot.label} /> : <div className="output-empty">🎞</div>}</div>
+          <div className="folder-file-label ellipsis" title={slot.filename}>{slot.filename}</div>
+        </button>
+        {refControls(slot)}
+      </div>
+    );
+  }
+
+  async function approveSlot(key: string) {
+    setBusyKey(key);
+    setError(null);
+    try {
+      const result = await writeRef(key, { tags_add: ["approved"] });
+      applyRef(key, result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  function askNote(slot: BoardSlot, instruction: string) {
+    const fence = String.fromCharCode(34, 34, 34);
+    const current = noteDrafts[slot.key] ?? slot.note ?? "";
+    const message = slot.libKind && slot.libPath
+      ? `Director Studio — rewrite the note of the library ${slot.libKind} file "${slot.libPath}" (shown as a reference of the ${kind} "${asset.name}"). Current note:\n${fence}\n${current}\n${fence}\nHuman request: ${instruction}\nApply the new note with the director_studio ${slot.libKind}.tag action (path = "${slot.libPath}", note = …) and state the result in one line.`
+      : `Director Studio — rewrite the note of the reference "${slot.key}" of the ${kind} "${asset.name}" (asset_id ${asset.id}). Current note:\n${fence}\n${current}\n${fence}\nHuman request: ${instruction}\nApply the new note with the director_studio asset.tag action (note = …) and state the result in one line.`;
+    sendRequest?.(message, `note ${slot.filename ?? slot.key}`);
+    setNoteAskKey(null);
+  }
+
+  function tile(slot: BoardSlot) {
+    if (slot.key.startsWith("lib:")) return libTile(slot);
+    return (
+      <div key={slot.key} className="reference-tile" onContextMenu={openMenu(slot)}>
+        <button
+          type="button"
+          className="folder-file-card"
+          title="Open in lightbox"
+          onClick={() => setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)))}
+        >
+          <div className="folder-file-thumb">
+            {slot.url ? <img loading="lazy" src={slot.url} alt={slot.label} /> : <div className="output-empty">—</div>}
+          </div>
+          <div className="folder-file-label ellipsis" title={slot.filename || slot.key}>
+            {slot.filename || slot.key}
+          </div>
+        </button>
+        <button
+          type="button"
+          className="btn ghost sm reference-delete"
+          title="Delete file"
+          aria-label={`Delete ${slot.label}`}
+          onClick={() => void removeFile(slot.key)}
+        >
+          ✕
+        </button>
+        {refControls(slot)}
       </div>
     );
   }

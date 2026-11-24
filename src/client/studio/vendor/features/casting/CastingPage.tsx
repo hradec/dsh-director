@@ -3,6 +3,7 @@ import { patchAsset } from "../../shared/api/assets";
 import { useProject } from "../../shared/project/ProjectContext";
 import { AskDshField } from "../../shared/components/AskDshField";
 import { LorekeeperPage } from "../../shared/components/LorekeeperPage";
+import { FamilyTreePage } from "../../shared/components/FamilyTreePage";
 import { ReferenceBoard } from "../assets/ReferenceBoard";
 import { listActors, type ActorRecord } from "./api";
 
@@ -225,6 +226,7 @@ export function CastingPage({ initialEditId, sendRequest }: Props) {
       </section>
 
       {actor ? <LorekeeperPage key={actor.id} kind="figure" queries={[character, name]} label={actor.name} /> : null}
+      {actor ? <FamilyTreePage key={`lineage-${actor.id}`} queries={[character, name]} label={actor.name} /> : null}
     </main>
   );
 }

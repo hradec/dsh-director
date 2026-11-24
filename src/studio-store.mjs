@@ -278,7 +278,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
           // Only trust tags connect to the board: approved = ready, brainstorming = candidate. Asset-name tag alone groups in the tab but does not link.
           const approved=tags.includes('approved'),brainstorming=tags.includes('brainstorming')&&!approved;
           if(!approved&&!brainstorming)continue;
-          refs.push({library,path:rel,name:rel.split('/').pop(),abs:join(libRootDir(library),rel),tags,approved,brainstorming});}
+          refs.push({library,path:rel,name:rel.split('/').pop(),abs:join(libRootDir(library),rel),tags,approved,brainstorming,...(typeof meta.note==='string'&&meta.note?{note:meta.note}:{})});}
         refs.sort((a,b)=>Number(b.approved)-Number(a.approved)||a.path.localeCompare(b.path));item.library_refs=refs;}
       return clone(items);},
     async saveAsset(input={}){
@@ -390,7 +390,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
     async listLib(kind){const spec=libSpec(kind),stored=await readLibJson(kind),rels=await listLibraryFiles(kind),files=[];
       for(const rel of rels){let info;try{info=await stat(join(libRootDir(kind),rel));}catch{continue;}
         const meta=stored.files[rel]??{};
-        files.push({path:rel,name:rel.split('/').pop(),tags:normFootageTags(meta.tags),seen:meta.seen!==false,added_at:typeof meta.added_at==='string'?meta.added_at:info.mtime.toISOString(),size:info.size,mtime:info.mtime.toISOString()});}
+        files.push({path:rel,name:rel.split('/').pop(),tags:normFootageTags(meta.tags),note:typeof meta.note==='string'?meta.note:'',seen:meta.seen!==false,added_at:typeof meta.added_at==='string'?meta.added_at:info.mtime.toISOString(),size:info.size,mtime:info.mtime.toISOString()});}
       files.sort((a,b)=>b.mtime.localeCompare(a.mtime));return {files,groups:stored.groups,order:stored.order,open:stored.open};},
     async libRoot(kind){return libRootDir(kind);},
     async addLib(kind,input={}){const spec=libSpec(kind),raw=String(input.path??'').trim();if(!raw)throw new StudioStoreError(`A source ${spec.type==='image'?'image':'video'} path is required.`);
@@ -421,7 +421,7 @@ export function createStudioStore({root,maxAssetBytes=64*1024*1024,workspaceRoot
         const stored=await readLibJson(kind),meta=stored.files[rel]??{tags:[],added_at:stamp()};
         const add=normFootageTags(input.tags_add),remove=new Set(normFootageTags(input.tags_remove));
         const tags=[...new Set([...(Array.isArray(meta.tags)?meta.tags.map(tag=>String(tag).trim().toLowerCase()).filter(Boolean):[]),...add])].filter(tag=>!remove.has(tag));
-        stored.files[rel]={...meta,tags};await writeLibJson(kind,stored);return {path:rel,tags};});},
+        stored.files[rel]={...meta,tags,...(input.note!==undefined?{note:safeText(input.note,4000)}:{})};await writeLibJson(kind,stored);return {path:rel,tags,note:stored.files[rel].note??''};});},
     async addLibGroup(kind,input={}){const name=safeText(input.name,80).toLowerCase();if(!name)throw new StudioStoreError('A group name is required.');
       return change(async()=>{const stored=await readLibJson(kind);if(!stored.groups.includes(name))stored.groups=[...stored.groups,name];await writeLibJson(kind,stored);return {groups:stored.groups};});},
     async removeLibGroup(kind,input={}){const name=safeText(input.name,80).toLowerCase();
