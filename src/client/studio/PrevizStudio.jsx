@@ -18,6 +18,7 @@ export function PrevizStudio({boundShotId=null,sendDshRequest=null}={}){
   const [draft,setDraft]=useState('');
   const [status,setStatus]=useState('');
   const [refsText,setRefsText]=useState('');
+  const [versions,setVersions]=useState([]);
   const [playblast,setPlayblast]=useState('');
   const [playing,setPlaying]=useState(false);
   const [t,setT]=useState(0);
@@ -65,8 +66,13 @@ export function PrevizStudio({boundShotId=null,sendDshRequest=null}={}){
   async function loadRefs(id){
     try{
       const set=await (await apiFetch(`api/previz/refs?shot_id=${encodeURIComponent(id)}`)).json();
-      setRefsText(h3ReferenceText(set));
-    }catch(e){setRefsText(String(e.message??e));}
+      setRefsText(h3ReferenceText(set));setVersions(set.versions??[]);
+    }catch(e){setRefsText(String(e.message??e));setVersions([]);}
+  }
+  // Approving one playblast makes it THE shot previz: refs/Video 1 and the agent handoff follow it.
+  async function approve(path){
+    await apiFetch('api/previz/approve',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({shot_id:shotId,path})});
+    setStatus(`Approved previz version: ${path}`);loadRefs(shotId);
   }
   // Bound to a shot (Production tab): open it as soon as the shot id arrives.
   useEffect(()=>{
@@ -105,7 +111,13 @@ export function PrevizStudio({boundShotId=null,sendDshRequest=null}={}){
     const poll=async()=>{
       const s=await (await apiFetch(`api/previz/render/${job.id}`)).json();
       if(s.status==='running'){setTimeout(poll,2000);return;}
-      if(s.status==='done'){setStatus(`Playblast: ${s.result.mp4}`);setPlayblast('/director-studio/api/file?path='+encodeURIComponent(s.result.mp4));reload();loadRefs(shotId);}
+      if(s.status==='done'){
+        setPlayblast('/director-studio/api/file?path='+encodeURIComponent(s.result.mp4));
+        // Every render lands in the Footage library as a previz version of this shot (tags: previz + shot id).
+        const reg=await (await apiFetch('api/previz/register',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({shot_id:shotId})})).json();
+        setStatus(`Playblast rendered and registered as a version: ${reg.footage?.path??s.result.mp4} — approve one below to make it the shot previz.`);
+        reload();loadRefs(shotId);
+      }
       else setStatus('Render failed: '+s.error);
     };
     poll();
@@ -146,6 +158,19 @@ export function PrevizStudio({boundShotId=null,sendDshRequest=null}={}){
         <div className="muted" style={{fontSize:12,marginBottom:4}}>camera / movement wording for the H3 prompt:</div>
         <pre style={{whiteSpace:'pre-wrap',fontSize:12,margin:0}}>{scene0?previzPromptNotes(scene0):''}</pre>
         {playblast?<video src={playblast} controls style={{width:'100%',marginTop:8}}/>:null}
+      </div>
+    </div>:null}
+    {versions.length?<div>
+      <div className="muted" style={{fontSize:12,marginBottom:4}}>Previz versions for this shot (Footage, tag previz + {shotId}):</div>
+      <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+        {versions.map((v)=><div key={v.path} style={{border:'1px solid #2c3546',padding:6,display:'flex',flexDirection:'column',gap:4,width:230}}>
+          <video src={v.url} controls preload="none" style={{width:'100%'}}/>
+          <div style={{fontSize:11,display:'flex',justifyContent:'space-between',gap:6,alignItems:'center'}}>
+            <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{v.path.split('/').pop()}</span>
+            {v.approved?<span className="badge" style={{background:'#2f6f3f',color:'#fff'}}>Shot previz</span>
+              :<button className="btn" onClick={()=>approve(v.path)}>Approve</button>}
+          </div>
+        </div>)}
       </div>
     </div>:null}
     {refsText?<div>

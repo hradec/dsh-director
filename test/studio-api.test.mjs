@@ -838,4 +838,23 @@ test('shot casting: materials PUT assigns Picture indices; previz seed + refs yi
   assert.deepEqual(refs.pictures.map((p)=>[p.picture_index,p.asset_id,p.file_key]),[[1,actor.id,'master'],[2,costume.id,undefined]],'cast Pictures keep their indices');
   assert.equal(refs.extras[0].path,join(dir,`${shot.id}.frame0.png`),'previz frame0 is the non-asset Picture candidate');
   assert.equal(refs.video.path,join(dir,`${shot.id}.previz.mp4`),'playblast is Video 1');
+  assert.deepEqual(refs.versions,[],'no registered versions yet');
+  // Every registered playblast is a Footage version tagged previz + shot id; the human approves one.
+  const reg1=await (await json(base,'/api/previz/register',{method:'POST',body:JSON.stringify({shot_id:shot.id})})).json();
+  assert.deepEqual(reg1.footage.tags,['previz',shot.id]);
+  writeFileSync(join(dir,`${shot.id}.previz.mp4`),Buffer.concat([Buffer.alloc(4),Buffer.from('ftyp'),Buffer.from('take2!')]));
+  const reg2=await (await json(base,'/api/previz/register',{method:'POST',body:JSON.stringify({shot_id:shot.id})})).json();
+  assert.notEqual(reg2.footage.path,reg1.footage.path,'a re-registered render becomes a new version, not an overwrite');
+  const refsV=await (await json(base,`/api/previz/refs?shot_id=${shot.id}`)).json();
+  assert.equal(refsV.versions.length,2);assert.ok(refsV.versions.every((v)=>!v.approved));
+  const approved=await (await json(base,'/api/previz/approve',{method:'POST',body:JSON.stringify({shot_id:shot.id,path:reg1.footage.path})})).json();
+  assert.ok(approved.tags.includes('approved'));
+  const refsA=await (await json(base,`/api/previz/refs?shot_id=${shot.id}`)).json();
+  assert.equal(refsA.versions.filter((v)=>v.approved).length,1,'exactly one approved version per shot');
+  assert.equal(refsA.video.path,refsA.versions.find((v)=>v.approved).abs,'the approved version is Video 1');
+  // Approving another version moves the mark; unknown or foreign paths are refused.
+  await json(base,'/api/previz/approve',{method:'POST',body:JSON.stringify({shot_id:shot.id,path:reg2.footage.path})});
+  const refsB=await (await json(base,`/api/previz/refs?shot_id=${shot.id}`)).json();
+  assert.equal(refsB.video.path,join(await store.libRoot('footage'),reg2.footage.path));
+  assert.equal((await json(base,'/api/previz/approve',{method:'POST',body:JSON.stringify({shot_id:shot.id,path:'somewhere-else.mp4'})})).status,404);
 });

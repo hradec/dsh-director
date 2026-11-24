@@ -1039,11 +1039,29 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
         sendJson(res,201,{footage,image});return;
       }
       // The shot's full H3 reference contract: cast Pictures (asset-derived) + previz frame0/playblast (new refs).
+      // Video 1 is the APPROVED previz version when the human has picked one, else the current on-disk playblast.
       if(path==='/api/previz/refs'&&req.method==='GET'){
         const shotId=slugOf(url.searchParams.get('shot_id')??'');
         const shot=await store.getShot(shotId);
         const row=(await listPreviz(store)).find((r)=>r.shot_id===shotId)??null;
-        sendJson(res,200,h3ReferenceSet(shot,row));return;
+        const [lib,footRoot]=await Promise.all([store.listLib('footage'),store.libRoot('footage')]);
+        const versions=(lib.files??[]).filter((f)=>f.tags?.includes('previz')&&f.tags?.includes(shotId))
+          .map((f)=>{const abs=join(footRoot,f.path);return {path:f.path,abs,approved:f.tags.includes('approved'),tags:f.tags,url:`/director-studio/api/file?path=${encodeURIComponent(abs)}&session=${encodeURIComponent(sessionId)}`};});
+        const approved=versions.find((v)=>v.approved);
+        const set=h3ReferenceSet(shot,{...(row??{}),playblast:approved?.abs??row?.playblast??null});
+        sendJson(res,200,{...set,versions});return;
+      }
+      // Approve one registered playblast as THE shot previz: 'approved' moves to the pick,
+      // previz-tagged siblings lose it (the shot carries exactly one approved version).
+      if(path==='/api/previz/approve'&&req.method==='POST'){
+        const body=await readJson(req,controller.signal);
+        const shotId=slugOf(body.shot_id??''),rel=String(body.path??'');
+        const lib=await store.listLib('footage');
+        const versions=(lib.files??[]).filter((f)=>f.tags?.includes('previz')&&f.tags?.includes(shotId));
+        if(!versions.some((f)=>f.path===rel)){sendJson(res,404,{detail:'That file is not a registered previz version of this shot.'});return;}
+        for(const v of versions)if(v.path!==rel&&v.tags.includes('approved'))await store.tagLib('footage',{path:v.path,tags_remove:['approved']});
+        const tagged=await store.tagLib('footage',{path:rel,tags_add:['approved']});
+        sendJson(res,200,{shot_id:shotId,path:rel,tags:tagged.tags});return;
       }
       // Starter scene built from the shot's cast — returned unsaved so the human/agent edits before baking.
       if(path==='/api/previz/seed'&&req.method==='POST'){
