@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { patchAsset } from "../../shared/api/assets";
 import { useProject } from "../../shared/project/ProjectContext";
 import { AskDshField } from "../../shared/components/AskDshField";
+import { LorekeeperPage } from "../../shared/components/LorekeeperPage";
 import { ReferenceBoard } from "../assets/ReferenceBoard";
 import { listProps, type PropRecord } from "./api";
 
@@ -200,6 +201,8 @@ export function PropsPage({ initialEditId, sendRequest }: Props) {
           <p className="empty-copy">Select a prop above to view and manage its references.</p>
         )}
       </section>
+
+      {prop ? <LorekeeperPage key={prop.id} kind="artifact" queries={[name]} label={prop.name} /> : null}
     </main>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { patchAsset } from "../../shared/api/assets";
 import { useProject } from "../../shared/project/ProjectContext";
 import { AskDshField } from "../../shared/components/AskDshField";
+import { LorekeeperPage } from "../../shared/components/LorekeeperPage";
 import { ReferenceBoard } from "../assets/ReferenceBoard";
 import { listActors, type ActorRecord } from "./api";
 
@@ -222,6 +223,8 @@ export function CastingPage({ initialEditId, sendRequest }: Props) {
           <p className="empty-copy">Select an actor above to view and manage its references.</p>
         )}
       </section>
+
+      {actor ? <LorekeeperPage key={actor.id} kind="figure" queries={[character, name]} label={actor.name} /> : null}
     </main>
   );
 }

@@ -7456,3 +7456,24 @@ select {
 .footage-viewer-close{position:absolute;top:1rem;right:1rem}
 .footage-card img{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;background:#000;pointer-events:none}
 .footage-empty{display:flex;align-items:center;justify-content:center;aspect-ratio:4/3;font-size:.8rem;color:var(--muted,inherit);background:repeating-linear-gradient(45deg,transparent 0 10px,rgba(255,255,255,.05) 10px 20px)}
+
+/* Lorekeeper book-page bookmark (asset pages). */
+.page-bookmark{position:fixed;right:0;top:32%;z-index:40;width:30px;height:130px;padding:0;border:none;cursor:pointer;background:#8a3b2f;color:#f7e9c8;font-size:.68rem;letter-spacing:.08em;writing-mode:vertical-rl;text-orientation:mixed;display:flex;align-items:center;justify-content:center;clip-path:polygon(0 0,100% 0,100% 100%,50% 86%,0 100%);border-radius:6px 0 0 6px;box-shadow:-2px 3px 8px rgba(0,0,0,.25)}
+.page-bookmark:hover{background:#a04a3a}
+.page-bookmark.open{background:#5d2820}
+.lore-page{position:fixed;top:0;right:0;bottom:0;z-index:41;width:min(680px,94vw);display:flex;flex-direction:column;gap:10px;padding:18px 22px;background:#f6efe3;color:#33261c;border-left:6px solid #d9c7a3;box-shadow:-14px 0 30px rgba(0,0,0,.28);transform-origin:left center;animation:lore-page-turn .55s ease-out;overflow:auto}
+@keyframes lore-page-turn{from{transform:perspective(1400px) rotateY(-88deg);opacity:.15}to{transform:none;opacity:1}}
+.lore-page-header{display:flex;align-items:baseline;gap:12px}
+.lore-page-header h2{margin:0;font-size:1.35rem}
+.lore-page-subject{font-style:italic;color:#6b5738;flex:1}
+.lore-page-close{border:none;background:transparent;font-size:1.4rem;cursor:pointer;color:#6b5738}
+.lore-candidates{display:flex;flex-wrap:wrap;gap:8px}
+.lore-candidates button{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:6px 10px;border:1px solid #c9b28a;border-radius:8px;background:#fffdf7;cursor:pointer}
+.lore-candidates button.active{border-color:#8a3b2f;background:#f3e4cf}
+.lore-candidates small{color:#6b5738}
+.lore-facts{display:flex;flex-direction:column;gap:4px;padding:10px 12px;background:#fffdf7;border:1px solid #c9b28a;border-radius:10px}
+.lore-facts small{color:#6b5738}
+.lore-open{align-self:flex-start;color:#8a3b2f;font-weight:600}
+.lore-events{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:.82rem}
+.lore-event-year{display:inline-block;min-width:3.4em;font-weight:700;color:#8a3b2f}
+.lore-viewer{flex:1;min-height:320px;width:100%;border:1px solid #c9b28a;border-radius:10px;background:#fff}
