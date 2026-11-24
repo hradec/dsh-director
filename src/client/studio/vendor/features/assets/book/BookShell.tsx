@@ -100,6 +100,8 @@ export const BookShell = forwardRef<BookShellHandle, {
   const queuedRef = useRef<BookView | null>(null);
   const pendingRef = useRef<{ front: SideSnap | null; holdLeft: SideSnap | null; holdRight: SideSnap | null } | null>(null);
   const [queueActive, setQueueActive] = useState(0);
+  // The bottom symbol ribbon cleans/dirties the parchment (demo hide-stains classes).
+  const [cleanPages, setCleanPages] = useState(false);
   const lastRef = useRef<BookView>(view);
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -370,7 +372,7 @@ export const BookShell = forwardRef<BookShellHandle, {
   const on = (c: BookCategory) => view.category === c;
   return (
     <div className="book-viewport" ref={wrapRef}>
-      <main className="book" ref={bookRef} data-chapter={view.chapter} aria-label="Asset library book">
+      <main className={"book" + (cleanPages ? " hide-stains" : "")} ref={bookRef} data-chapter={view.chapter} aria-label="Asset library book">
         <div className="paper" aria-hidden="true" />
         <div className="frame" ref={frameRef} aria-hidden="true" />
         <div className="decoration" ref={decoRef} aria-hidden="true">
@@ -414,7 +416,7 @@ export const BookShell = forwardRef<BookShellHandle, {
           ))}
         </nav>
         <button type="button" className="queue bookmark" aria-label={`DSH Queue${queueActive ? ` (${queueActive} running)` : ""}`} onClick={queue}><img src={`${B}/tabs/dsh-queue.png`} alt="" />{queueActive ? <span className="queue-badge" aria-hidden="true">{queueActive}</span> : null}</button>
-        <button type="button" className="extra bookmark" aria-label="More" onClick={() => {}}><img src={`${B}/tabs/bottom-symbol.png`} alt="" /></button>
+        <button type="button" className="extra bookmark" aria-label={cleanPages ? "Soil the pages" : "Clean the pages"} aria-pressed={cleanPages} onClick={() => setCleanPages(v => !v)}><img src={`${B}/tabs/bottom-symbol.png`} alt="" /></button>
         <div className="content" ref={contentRef}>{children}</div>
       </main>
     </div>
