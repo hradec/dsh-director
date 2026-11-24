@@ -37,6 +37,8 @@
 .extra{left:calc(50% + 158px * var(--s));bottom:0;width:calc(59px * var(--s))}
 .side-tabs{position:absolute;left:calc(100% - 106px * var(--s));top:calc(138px * var(--s));display:grid;gap:calc(6px * var(--s));z-index:4;--marker-width:64px;--marker-height:84px;justify-items:start}
 .side-tabs button{width:calc(var(--marker-width) * var(--s));height:calc(var(--marker-height) * var(--s));min-width:calc(20px * var(--s));min-height:calc(24px * var(--s))}
+/* Longer Lorekeeper ribbon so the vertical label fits without clipping. */
+.side-tabs button[data-color="burgundy"]{height:calc(110px * var(--s))}
 .side-tabs img{height:100%;object-fit:contain}
 .side-tabs span{pointer-events:none;position:absolute;inset:calc(8px * var(--s)) calc(9px * var(--s)) calc(8px * var(--s)) calc(4px * var(--s));display:grid;place-items:center;writing-mode:vertical-rl;white-space:nowrap;overflow:hidden;font:bold calc(12px * var(--s)) Georgia,serif}
 .marker-grid{position:absolute;inset:0;display:grid;grid-template-columns:calc(10px * var(--s)) minmax(0,1fr) calc(10px * var(--s));grid-template-rows:calc(12px * var(--s)) minmax(0,1fr) calc(12px * var(--s));pointer-events:none}
@@ -44,34 +46,40 @@
 /* Demo parity: no extra filters — the ribbon art carries its own shading. */
 /* 0.2.159: printed look kept, but groups, inputs, tag chips and buttons get a
    70%-transparent parchment wash back for legibility. Ink outlines stay. */
-.book .mobile-library-group{background:rgba(255,251,238,.3);border:1px solid rgba(70,40,20,.45);border-radius:8px}
+/* Demo (REF-v10) palette for controls: cream fills, warm brown ink, soft rules. */
+.book .mobile-library-group{background:rgba(255,245,219,.21);border:1px solid #a88760;border-radius:8px}
 .book .input-panel{background:transparent;border-right:0}
 .book .output-panel{background:transparent}
 .book .panel{box-shadow:none;background:transparent!important}
-.book .content input,.book .content textarea,.book .content select{background:rgba(255,251,238,.35);color:#26120a}
-.book .content input,.book .content textarea{border:0;border-bottom:1px solid rgba(70,40,20,.5);border-radius:0}
-.book .content select{border:1px solid rgba(70,40,20,.5);border-radius:4px}
-.book .content .btn,.book .content button{background:rgba(255,251,238,.4);color:#26120a;border:1px solid rgba(70,40,20,.5);box-shadow:none}
-.book .content .reference-chip{background:rgba(255,251,238,.4)}
-.book .content .reference-board-section,.book .content .footage-menu,.book .content .banner,.book .content .asset-guidance-card{background:transparent}
-.book .content .asset-guidance-card{border:1px solid rgba(70,40,20,.45);border-radius:8px}
-.book .content .reference-board-section{border:1px solid rgba(70,40,20,.45);border-radius:8px}
-.book .content .reference-chip{border:1px solid rgba(70,40,20,.4)}
+.book .content input,.book .content textarea,.book .content select{background:rgba(255,245,219,.5);border:1px solid #ab8658;border-radius:5px;color:#4b2914;font:inherit}
+.book .content .btn,.book .content button{background:#f4deb4;color:#4b2914;border:1px solid #ac8759;border-radius:5px;box-shadow:none}
+.book .content .reference-chip{background:#f4deb4;border:1px solid #ac8759}
+.book .content .footage-menu,.book .content .banner{background:transparent}
+.book .content .asset-guidance-card{background:rgba(255,245,219,.21);border:1px solid #a88760;border-radius:8px}
+.book .content .reference-board-section{background:rgba(255,245,219,.21);border:1px solid #a88760;border-radius:8px}
 /* Library asset tiles: image + name only — no box, no wash (they sit printed). */
 .book .content .folder-file-thumb,.book .content .folder-file-thumb button,.book .content button.folder-file-thumb{background:transparent;border:0}
 .book .content .folder-file-thumb>*{background-color:transparent!important;border:0}
 /* Structural buttons (group headers, collapse carets, chip ×) must not get their
-   own box inside a group — wash and border belong to real actions only. */
+   own box inside a group — fills and borders belong to real actions only. */
 .book .content .mobile-library-group-main,.book .content .mobile-library-group-collapse,.book .content .reference-chip-x,.book .content .lore-toggle,.book .content .lineage-toggle{background:transparent;border:0}
-.book .content ::placeholder{color:rgba(50,26,12,.55)}
+.book .content ::placeholder{color:rgba(75,41,20,.5)}
 /* The queue bookmark replaces the floating queue pill on this page. */
 .app.area-assets .dsh-agent-toggle{display:none}
 /* The content spread lives between the pages; the existing workspace panels are
    display:contents so their own sections land in the two page columns directly.
    Bigger print area: titles share the top band with the dragon instead of
    waiting under it. */
-.content{position:absolute;z-index:3;inset:calc(215px * var(--s)) calc(140px * var(--s)) calc(285px * var(--s));display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-auto-rows:min-content;align-content:start;column-gap:calc(106px * var(--s));row-gap:calc(26px * var(--s));color:#26120a;text-shadow:0 0 1px rgba(255,248,222,.85),0 1px 0 rgba(255,248,222,.5);font:15px system-ui,sans-serif}
-.book .content h1,.book .content h2,.book .content h3,.book .content .reference-board-title{color:#26120a}
+.content{position:absolute;z-index:3;inset:calc(215px * var(--s)) calc(140px * var(--s)) calc(285px * var(--s));display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-auto-rows:min-content;align-content:start;column-gap:calc(106px * var(--s));row-gap:calc(26px * var(--s));color:#4b2914;font:calc(16px * var(--s)) Georgia,serif}
+/* Demo typography: italic Georgia page titles, italic block headings carrying a
+   ruled line with a hollow diamond, small warm labels. */
+.book .content h1,.book .content h2{font-style:italic;font-weight:400;font-size:calc(30px * var(--s));line-height:1.15;margin:0 0 calc(6px * var(--s));color:#3f2412}
+.book .content h3{font-style:italic;font-weight:400;font-size:calc(20px * var(--s));margin:0 0 calc(4px * var(--s))}
+.book .content .reference-board-title{color:#3f2412;font-weight:700}
+.book .content .block-title{position:relative;display:flex;align-items:center;gap:calc(10px * var(--s));font:italic 400 calc(17px * var(--s)) Georgia,serif;text-transform:none;letter-spacing:0;color:#3f2412;margin-bottom:calc(10px * var(--s))}
+.book .content .block-title::after{content:"";order:2;flex:1;border-top:1px solid rgba(160,115,65,.55)}
+.book .content .block-title::before{content:"";order:1;margin:0 calc(6px * var(--s));width:calc(7px * var(--s));height:calc(7px * var(--s));background:#fcdaa1;border:1px solid rgba(160,115,65,.75);transform:rotate(45deg)}
+.book .content .field span:first-child{color:#5a3a22;font-size:calc(13px * var(--s))}
 /* Both page titles ride at the very top of the sheet. */
 .book .output-panel,.book .lore-page,.book .lineage-page,.book .input-panel,.book .mobile-library-overview>header{margin-top:calc(-70px * var(--s))}
 .content[hidden]{display:none}
