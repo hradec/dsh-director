@@ -4,6 +4,7 @@ import {ProductionPage} from './vendor/features/production/ProductionPage.tsx';
 import {StoryWall} from './StoryWall.jsx';
 import {AgentTaskWindow} from './agent-queue.jsx';
 import {TimelineStudio} from './TimelineStudio.jsx';
+import {PrevizStudio} from './PrevizStudio.jsx';
 import {FootageBoard} from './FootageBoard.jsx';
 import {ProjectProvider,useProject} from './vendor/shared/project/ProjectContext.tsx';
 import {MediaRail} from './MediaRail.jsx';
@@ -136,7 +137,7 @@ function StudioContent({area,sendDshRequest}){
     {settingsOpen?<AppSettingsPanel onClose={()=>setSettingsOpen(false)}/>:null}
     <WorkspaceHeader/>
     <AgentTaskWindow/>
-    {area==='story'?<StoryWall sendDshRequest={sendDshRequest}/>:area==='timeline'?<TimelineStudio/>:area==='footage'?<FootageBoard/>:area==='images'?<FootageBoard lib="images"/>:area==='assets'?<AssetWorkspace sendAssetRequest={sendDshRequest}/>:<ProductionPage requestProduction={sendDshRequest}/>}
+    {area==='story'?<StoryWall sendDshRequest={sendDshRequest}/>:area==='timeline'?<TimelineStudio/>:area==='previz'?<PrevizStudio/>:area==='footage'?<FootageBoard/>:area==='images'?<FootageBoard lib="images"/>:area==='assets'?<AssetWorkspace sendAssetRequest={sendDshRequest}/>:<ProductionPage requestProduction={sendDshRequest}/>}
     {railOpen?<MediaRail onClose={()=>setRailOpen(false)}/>:null}
   </div>;
 }

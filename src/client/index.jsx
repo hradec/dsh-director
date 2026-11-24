@@ -3,7 +3,7 @@ import {askDshAgent} from './studio/agent-queue.jsx';
 import {GpuUsageSettings} from './GpuUsageSettings.jsx';
 import {setComfyTabOpener} from './studio/ComfyFrame.jsx';
 import {PresetAwareGpuStatus} from './GpuStatus.jsx';
-import {AssetsTab,ComfyTab,FootageTab,ImagesTab,ProductionTab,StoryTab,TimelineTab} from './studio/StudioSidebar.jsx';
+import {AssetsTab,ComfyTab,FootageTab,ImagesTab,ProductionTab,PrevizTab,StoryTab,TimelineTab} from './studio/StudioSidebar.jsx';
 import {createMediaBody,MEDIA_KINDS} from './MediaBodies.jsx';
 import {startMediaPathFixer} from './markdown-media.mjs';
 import {startMediaFenceTakeover} from './media-fence-enhancer.mjs';
@@ -44,6 +44,7 @@ export function apply(ctx){
      {id:'dsh-director-studio-assets',kind:'director-studio-assets',title:()=>'Assets',Body:AssetsTab,guide:[{id:'assets',order:30,title:()=>'Assets — Director Studio',description:()=>'Actors, scenes, props, voices, and reusable media.'}]},
      {id:'dsh-director-studio-production',kind:'director-studio-production',title:()=>'Production',Body:ProductionTab,guide:[{id:'production',order:40,title:()=>'Production — Director Studio',description:()=>'Project shots, references, dialogue, and generation review.'}]},
      {id:'dsh-director-studio-timeline',kind:'director-studio-timeline',title:()=>'Timeline',Body:TimelineTab,guide:[{id:'timeline',order:45,title:()=>'Timeline — Director Studio',description:()=>'Episode timeline: sequence buttons, shot blocks, take switching, watch the whole cut before rendering it.'}]},
+     {id:'dsh-director-studio-previz',kind:'director-studio-previz',title:()=>'Previz',Body:PrevizTab,guide:[{id:'previz',order:44,title:()=>'Previz — Director Studio',description:()=>'Single-file animated previsualization per shot: three.js stage over the scene JSON, playblast mp4 with the scene embedded in metadata, register as footage for H3 <Video N> guidance.'}]},
      {id:'dsh-director-studio-footage',kind:'director-studio-footage',title:()=>'Footage',Body:FootageTab,guide:[{id:'footage',order:42,title:()=>'Footage — Director Studio',description:()=>'Every video under media/ with tags: asset groups, custom tag groups, filter, right-click copy path.'}]},
      {id:'dsh-director-studio-comfy',kind:'director-studio-comfy',title:()=><span style={{color:'#ff8c3b'}}>ComfyUI</span>,Body:ComfyTab,guide:[{id:'comfy',order:43,title:()=>'ComfyUI — Director Studio',description:()=>'This project\u0027s ComfyUI embedded in the sidebar: host switcher, dsh-studio-link bridge (library, asset staging, node picker) and in-tab workflow loading from Open in ComfyUI.'}]},
      {id:'dsh-director-studio-images',kind:'director-studio-images',title:()=>'Images',Body:ImagesTab,guide:[{id:'images',order:41,title:()=>'Images — Director Studio',description:()=>'Every image under images/ with tags: asset groups, custom tag groups, filter, AI tagging, Open in ComfyUI for embedded graphs.'}]},

@@ -93,6 +93,43 @@ export function TimelineStudio(){
     const created=(await c.json());const entry=created.id?created:created.editing;
     if(entry){setEdits(list=>[entry,...list]);await mountEdit(entry);}
   },[edits.length,mountEdit]);
+  // Assemble from Production: sequence order → shot order, selected take's clip,
+  // real media durations (the seed probes them server-side). Layers get the
+  // shot/sequence/episode tags, so later take swaps relink without moving cuts.
+  const assembling=useRef(false);
+  const assembleFromProduction=useCallback(async()=>{
+    if(assembling.current)return;
+    assembling.current=true;
+    setNote('Assembling from Production…');
+    try{
+      const r=await apiFetch('/api/library/timeline');
+      if(!r.ok){setNote('Production timeline unavailable.');return;}
+      const data=await r.json();
+      const rank=new Map((data.sequences??[]).map((item,i)=>[item.id,i]));
+      const LAST=Number.MAX_SAFE_INTEGER;
+      const shots=(data.shots??[]).slice().sort((a,b)=>{
+        const sa=a.sequence_id&&rank.has(a.sequence_id)?rank.get(a.sequence_id):LAST;
+        const sb=b.sequence_id&&rank.has(b.sequence_id)?rank.get(b.sequence_id):LAST;
+        if(sa!==sb)return sa-sb;
+        return ((a.order??0)-(b.order??0))||String(a.created_at).localeCompare(String(b.created_at));
+      });
+      const clips=data.clips??{};
+      const bound=shots.filter(item=>clips[item.id]?.path);
+      if(!bound.length){setNote('Nothing to assemble — no Production shot has a bound video clip yet.');return;}
+      const c=await jsonFetch('/api/editing',{method:'POST',body:JSON.stringify({name:`production cut ${new Date().toISOString().slice(0,10)}`})});
+      const created=await c.json();const entry=created.id?created:created.editing;
+      if(!entry){setNote('Could not create the edit document.');return;}
+      // duration_s = the shot's INTENT: every deployed server version honors it.
+      // Once the probe-upgraded store boots, dropping this field makes seeds
+      // use the real clip length instead (editing-store.probeDuration).
+      const s=await jsonFetch(`/api/editing/${entry.id}/seed`,{method:'POST',body:JSON.stringify({shots:bound.map(item=>({shot_id:item.id,...(item.sequence_id?{sequence_id:item.sequence_id}:{}),...(item.episode_id?{episode_id:item.episode_id}:{}),...(Number.isFinite(item.duration_s)?{duration_s:item.duration_s}:{}),path:clips[item.id].path}))})});
+      const res=await s.json().catch(()=>({}));
+      if(!res.ok){setNote('Assemble failed: '+(res.error?.detail??res.error?.code??'unknown error'));return;}
+      setEdits(list=>[entry,...list]);
+      await mountEdit(entry);
+      setNote(`Assembled ${res.added.length} shot${res.added.length===1?'':'s'} (${shots.length-bound.length} without a clip skipped).`);
+    }finally{assembling.current=false;}
+  },[mountEdit]);
   const current=edits.find(item=>item.id===currentId);
   // dockview sizes itself off an explicit height: the Studio tab body is an
   // auto-height scroll container, so `height:100%` collapses the whole dock.
@@ -114,6 +151,7 @@ export function TimelineStudio(){
         {edits.map(item=><option key={item.id} value={item.id}>{item.name}{(item.tags??[]).length?` — ${(item.tags??[]).join(' ')}`:''}</option>)}
       </select>}
       {ready&&<button className="btn ghost sm" onClick={newEdit}>+ New edit</button>}
+      {ready&&<button className="btn ghost sm" onClick={assembleFromProduction} title="Build a new edit from Production: sequences in order, selected takes, real clip lengths">✂ Assemble from Production</button>}
       {note&&<span style={{opacity:.7,fontSize:12}}>{note}</span>}
     </div>
     {view==='edit'&&<div ref={hostRef} style={{flex:'1 1 auto',minHeight:0,position:'relative',height:hostH}}/>}

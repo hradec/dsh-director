@@ -790,3 +790,27 @@ test('pool-ensure: idempotently adds one library file to the editing media pool 
   const raw = await json(base, `/api/editing/${ed.id}/pool-ensure`, { method: 'POST', body: JSON.stringify({ path: 'nope.mp4' }) });
   assert.equal(raw.status, 404, 'missing library file answers 404 honestly');
 });
+
+// Previz routes: the scene JSON bakes into ONE self-contained .previz.html (player bundle
+// inlined); GET reads it back; register guards on an existing playblast. The mp4 render
+// itself is the heavy leg (Playwright+ffmpeg) exercised by the demo, not this file.
+test('previz scene bake, read-back and register routes',async(t)=>{
+  const {base}=await setup(t);
+  assert.deepEqual((await (await json(base,'/api/previz')).json()).previz,[],'no previz files in a fresh workspace');
+  const scene={shot_id:'c99',fps:24,duration_s:2,camera:{keys:[{t:0,pos:[0,1,5],look:[0,1,0]},{t:2,pos:[1,1,4],look:[0,1,0]}]},actors:[{id:'a',shape:'biped',keys:[{t:0,pos:[0,0,0]}]}]};
+  const post=await json(base,'/api/previz/scene',{method:'POST',body:JSON.stringify({shot_id:'c99',scene})});
+  assert.equal(post.status,201);
+  const baked=await post.json();
+  const html=await readFile(baked.file,'utf8');
+  assert.ok(html.includes('application/previz'),'scene block present');
+  assert.ok(html.length>100000,'player bundle inlined — the file plays standalone');
+  const got=await (await json(base,'/api/previz/scene?shot_id=c99')).json();
+  assert.equal(got.scene.actors[0].id,'a');
+  const list=(await (await json(base,'/api/previz')).json()).previz;
+  assert.equal(list[0].shot_id,'c99');assert.equal(list[0].playblast,null);
+  assert.equal((await json(base,'/api/previz/register',{method:'POST',body:JSON.stringify({shot_id:'c99'})})).status,404,'register needs a rendered playblast');
+  // a '</script' inside scene data must not break the block or the read-back
+  await json(base,'/api/previz/scene',{method:'POST',body:JSON.stringify({shot_id:'c99',scene:{...scene,title:'x</script>y'}})});
+  const reread=await (await json(base,'/api/previz/scene?shot_id=c99')).json();
+  assert.equal(reread.scene.title,'x</script>y');
+});

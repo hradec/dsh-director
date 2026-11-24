@@ -2,6 +2,9 @@ import {agentTaskStoreRootFor} from './agent-task.mjs';
 import {StudioStoreError,isStudioAssetKind,studioStoreConstants} from './studio-store.mjs';
 import {storyStoreFor} from './story-store.mjs';
 import {editingStoreFor,EditingStore} from './editing-store.mjs';
+import {normalizeScene,frameCount} from './previz-format.mjs';
+import {bakeStandaloneHtml,readEmbeddedScene} from './previz-standalone.mjs';
+import {createPrevizRenderJobs,extractSceneFromMp4} from './previz-render.mjs';
 import {ensureWaveform,readWaveformTile} from './media-waveform.mjs';
 import {ensureConform,readConformRange} from './media-conform.mjs';
 import {Readable} from 'node:stream';
@@ -325,7 +328,25 @@ async function serveFileRoute(req,res,url,{workspace,sessionIndex=defaultSession
 }
 
 function createNullAgentTasks(){return {async submit(){throw Error('agent tasks not configured');},async submitJob(){throw Error('agent tasks not configured');},latest(){return null;},list(){return [];},cancel(){return null;}};}
+// Previz lives in the project as <workspace>/previz/<shot_id>.previz.html (+ <shot_id>.previz.mp4
+// playblasts and .frame0.png stills) — one folder, hand-editable, mirrors the media/ and images/ idea.
+const previzDirFor=(store)=>join(store.workspaceRoot??join(store.root,'..'),'previz');
+// Filename identity hygiene only (shot ids from the store already match); no capability limits.
+const slugOf=(v)=>{const s=String(v??'').trim().toLowerCase().replace(/[^a-z0-9_-]+/g,'-').replace(/^-+|-+$/g,'');if(!s)throw new StudioStoreError('A shot_id is required (letters, digits, dash, underscore).');return s;};
+async function listPreviz(store){
+  const dir=previzDirFor(store);let names=[];
+  try{names=readdirSync(dir);}catch{}
+  const rows=[];
+  for(const name of names){
+    if(!name.endsWith('.previz.html'))continue;
+    const shotId=name.slice(0,-'.previz.html'.length);
+    const mp4=join(dir,`${shotId}.previz.mp4`),frame0=join(dir,`${shotId}.frame0.png`),file=join(dir,name);
+    rows.push({shot_id:shotId,file,mtime:statSync(file).mtime.toISOString(),playblast:existsSync(mp4)?mp4:null,frame0:existsSync(frame0)?frame0:null});
+  }
+  rows.sort((a,b)=>b.mtime.localeCompare(a.mtime));return rows;
+}
 export function createStudioApiHandler({resolveSession,requestRejection,comfyBaseUrl='http://127.0.0.1:8188',comfyHosts=async()=>[],sessionIndex=defaultSessionIndex,fetchImpl=globalThis.fetch,maxUploadBytes=studioStoreConstants.maxAssetBytes,agentTasks=createNullAgentTasks(),controllers=new Set()}={}){
+  const previzJobs=createPrevizRenderJobs(); // in-process render registry; mp4s on disk are the truth
   return async(req,res)=>{
     const controller=new AbortController();controllers.add(controller);const abort=()=>controller.abort();res.once('close',abort);
     try{
@@ -963,6 +984,59 @@ export function createStudioApiHandler({resolveSession,requestRejection,comfyBas
        if(match&&req.method==='GET'){const job=await store.getVideoAssetJob(match[1]);if(!job){sendJson(res,404,{detail:'Completed video asset was not found.'});return;}sendJson(res,200,{id:job.id,status:'succeeded',outputs:{master:{key:'master',filename:job.filename,url:fileUrl('layouts',job.asset_id,'master',sessionId)}}});return;}
        if(path==='/api/h3-ref2va/provider'&&req.method==='GET'){sendJson(res,200,{default_provider:'local',minimax_configured:false,minimax_resolution:'704x1280'});return;}
       if(path==='/api/h3-ref2va/resolutions'&&req.method==='GET'){sendJson(res,200,{presets:[{id:'704x1280',label:'Portrait · 704 × 1280',width:704,height:1280},{id:'1280x704',label:'Landscape · 1280 × 704',width:1280,height:704}]});return;}
+      // ---- Previz: one self-animated .previz.html per shot + playblast render/recover/register ----
+      if(path==='/api/previz'&&req.method==='GET'){sendJson(res,200,{previz:await listPreviz(store)});return;}
+      if(path==='/api/previz/scene'&&req.method==='GET'){
+        const shotId=slugOf(url.searchParams.get('shot_id')??'');
+        const file=join(previzDirFor(store),`${shotId}.previz.html`);
+        if(!existsSync(file)){sendJson(res,404,{detail:'No previz file for that shot yet.'});return;}
+        sendJson(res,200,{shot_id:shotId,file,scene:readEmbeddedScene(readFileSync(file,'utf8'))});return;
+      }
+      if(path==='/api/previz/scene'&&req.method==='POST'){
+        const body=await readJson(req,controller.signal,maxUploadBytes);
+        const shotId=slugOf(body.shot_id??'');
+        const scene=normalizeScene({...body.scene??{},shot_id:shotId});
+        const dir=previzDirFor(store);mkdirSync(dir,{recursive:true});
+        const file=join(dir,`${shotId}.previz.html`);
+        writeFileSync(file,bakeStandaloneHtml(scene));
+        sendJson(res,201,{shot_id:shotId,file,duration_s:scene.duration_s,frames:frameCount(scene)});return;
+      }
+      if(path==='/api/previz/render'&&req.method==='POST'){
+        const body=await readJson(req,controller.signal);
+        const shotId=slugOf(body.shot_id??'');
+        const file=join(previzDirFor(store),`${shotId}.previz.html`);
+        if(!existsSync(file)){sendJson(res,404,{detail:'Bake the scene first (POST /api/previz/scene).'});return;}
+        const scene=readEmbeddedScene(readFileSync(file,'utf8'));
+        sendJson(res,202,previzJobs.start({html:file,outDir:previzDirFor(store),scene}));return;
+      }
+      const previzRenderMatch=/^\/api\/previz\/render\/([A-Za-z0-9_-]+)$/.exec(path);
+      if(previzRenderMatch&&req.method==='GET'){
+        const job=previzJobs.status(previzRenderMatch[1]);
+        if(!job){sendJson(res,404,{detail:'No such previz render job (server restart forgets finished rows; the mp4s remain on disk).'});return;}
+        sendJson(res,200,job);return;
+      }
+      if(path==='/api/previz/register'&&req.method==='POST'){
+        const body=await readJson(req,controller.signal);
+        const shotId=slugOf(body.shot_id??'');
+        const dir=previzDirFor(store);
+        const mp4=join(dir,`${shotId}.previz.mp4`),frame0=join(dir,`${shotId}.frame0.png`);
+        if(!existsSync(mp4)){sendJson(res,404,{detail:'Render the playblast before registering it.'});return;}
+        const tags=['previz',shotId];
+        const footage=await store.addLib('footage',{path:mp4,tags,subfolder:'previz'});
+        const image=existsSync(frame0)?await store.addLib('images',{path:frame0,tags,subfolder:'previz'}):null;
+        sendJson(res,201,{footage,image});return;
+      }
+      if(path==='/api/previz/recover'&&req.method==='POST'){
+        const body=await readJson(req,controller.signal);
+        const raw=String(body.path??'');
+        const mp4=isAbsolute(raw)?raw:resolve(store.workspaceRoot??join(store.root,'..'),raw);
+        const scene=await extractSceneFromMp4(mp4);
+        const shotId=slugOf(body.shot_id??scene.shot_id??'');
+        const dir=previzDirFor(store);mkdirSync(dir,{recursive:true});
+        const file=join(dir,`${shotId}.previz.html`);
+        writeFileSync(file,bakeStandaloneHtml({...scene,shot_id:shotId}));
+        sendJson(res,201,{shot_id:shotId,file,scene});return;
+      }
       if(req.method==='OPTIONS'){res.writeHead(204,{Allow:'GET, HEAD, POST, PATCH, DELETE, OPTIONS'});res.end();return;}
       sendJson(res,404,{detail:'Director Studio API route is not implemented.'});
     }catch(error){try{const p=new URL(req.url,'http://localhost').pathname;if(p.endsWith('/api/file')||p.endsWith('/api/comfy-view'))mediaLog(req,'err',String(error?.message??error));}catch{}if(!res.headersSent&&!res.destroyed)routeError(res,error);else if(!res.destroyed)res.destroy();}

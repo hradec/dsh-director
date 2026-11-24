@@ -10,6 +10,10 @@ const runtime=(await readdir(resolve(root,'src'))).filter(name=>name.endsWith('.
 for(const name of await readdir(resolve(root,'lib')))if(name.endsWith('.mjs')&&!runtime.includes(name))await rm(resolve(root,'lib',name));
 for(const name of runtime)await copyFile(resolve(root,'src',name),resolve(root,'lib',name));
 const result=await build({absWorkingDir:root,entryPoints:['src/client/index.jsx'],bundle:true,write:false,format:'cjs',platform:'browser',jsx:'automatic',loader:{'.css':'text'},define:{__DSH_VERSION__:JSON.stringify(version)},external:['react','react/jsx-runtime','react-dom','react-dom/client'],inject:['src/client/studio/fetch-inject.mjs'],minify:false});
+// previz standalone player: one minified IIFE (three + format + shape kit + UI glue),
+// baked verbatim into every .previz.html so the single file self-plays anywhere —
+// and driven frame-by-frame by the headless playblast renderer.
+await build({absWorkingDir:root,entryPoints:['scripts/previz-entry.js'],bundle:true,outfile:'lib/previz-player.js',format:'iife',platform:'browser',target:'es2021',minify:true,logLevel:'warning'});
 // timeline core: the vendored WeftCut state machine (headless) as one ESM bundle
 await build({absWorkingDir:root,entryPoints:['scripts/core-entry.ts'],bundle:true,outfile:'lib/timeline-core.mjs',format:'esm',platform:'node',target:'node20',logLevel:'warning'});
 // timeline engine: the vendored WeftCut Timeline renderer as one self-contained

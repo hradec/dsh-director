@@ -19,6 +19,7 @@ export function AssetsTab({sessionId,sendDshRequest}={}){return <StudioTab area=
 export function ProductionTab({sessionId,sendDshRequest}={}){return <StudioTab area="production" label="Production" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
 export function StoryTab({sessionId,sendDshRequest}={}){return <StudioTab area="story" label="Story" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
 export function TimelineTab({sessionId,sendDshRequest}={}){return <StudioTab area="timeline" label="Timeline" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
+export function PrevizTab({sessionId,sendDshRequest}={}){return <StudioTab area="previz" label="Previz" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
 export function FootageTab({sessionId,sendDshRequest}={}){return <StudioTab area="footage" label="Footage" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
 export function ImagesTab({sessionId,sendDshRequest}={}){return <StudioTab area="images" label="Images" sessionId={sessionId} sendDshRequest={sendDshRequest}/>}
 import {ComfyFrame} from './ComfyFrame.jsx';

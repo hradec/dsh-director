@@ -1,14 +1,14 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';import {readFile} from 'node:fs/promises';import vm from 'node:vm';import {createRequire} from 'node:module';
+import {readFile} from 'node:fs/promises';import vm from 'node:vm';import {createRequire} from 'node:module';
+// The lib/ bundles are built ONCE by `pretest` — rebuilding inside tests raced with
+// parallel test files reading lib/timeline-engine.js mid-write (flaky 404s, 2026-12).
 test('built lazy browser factory exposes activation without executing UI side effects',async()=>{
-  execFileSync(process.execPath,['scripts/build.mjs']);
   let factory;const require=createRequire(import.meta.url);
   vm.runInNewContext(await readFile('lib/client.js','utf8'),{window:{__ModuleLoader__:{load(row){assert.equal(row.id,'dsh-director');factory=row.factory;}}}});
   const client=factory(require);assert.equal(typeof client.apply,'function');assert.deepEqual(Array.from(client.inject),['slots','conversation','connection','sessions','sidebarRight','sidebarRightTabs','documentPreviews']);
 });
 
 test('declared sidebar service activates every Studio tab and opens ComfyUI after activation',async()=>{
-  execFileSync(process.execPath,['scripts/build.mjs']);
   let factory,active=true;const require=createRequire(import.meta.url),opened=[],tabs=[],disposers=[];
   const sandbox={window:{__ModuleLoader__:{load(row){factory=row.factory;}}}};
   vm.runInNewContext(await readFile('lib/client.js','utf8'),sandbox);
@@ -29,7 +29,7 @@ test('declared sidebar service activates every Studio tab and opens ComfyUI afte
   }});
   client.apply(ctx);active=false;
   await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(tabs.length,7);assert.ok(tabs.includes('director-studio-comfy'));
+  assert.equal(tabs.length,8);assert.ok(tabs.includes('director-studio-comfy'));assert.ok(tabs.includes('director-studio-previz'));
   assert.equal(sandbox.__DSH_COMFY_BRIDGE__({type:'load-workflow',workflow:{nodes:[]}}),true);
   assert.deepEqual(JSON.parse(JSON.stringify(opened)),[{kind:'director-studio-comfy',options:{params:{}}}]);
   for(const dispose of disposers.reverse())dispose?.();
@@ -37,7 +37,6 @@ test('declared sidebar service activates every Studio tab and opens ComfyUI afte
 });
 
 test('the single Director Studio ask door queues every request as an agent task with no connection or GPU gates',async()=>{
-  execFileSync(process.execPath,['scripts/build.mjs']);
   let factory;const require=createRequire(import.meta.url),posted=[],registrations=[],effects=[];
   let connection='connected';
   vm.runInNewContext(await readFile('lib/client.js','utf8'),{window:{__ModuleLoader__:{load(row){factory=row.factory;}}},URL,fetch:async(input,init)=>{if(init?.body)posted.push({url:String(input),body:JSON.parse(init.body)});return {ok:true,json:async()=>[]};},AbortSignal:{timeout:()=>new AbortController().signal},setInterval:()=>0,clearInterval:()=>0,console});

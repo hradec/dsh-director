@@ -90,6 +90,15 @@ export class EditingStore {
       });
     });
   }
+  // real media length in seconds — seeding from Production passes no duration:
+  // shot.duration_s is the INTENT, but the EDL must lay out to the actual clip.
+  probeDuration(source) {
+    return new Promise((done) => {
+      execFile('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', source], { timeout: 20000 }, (error, stdout) => {
+        done(error ? null : Number(String(stdout).trim()) || null);
+      });
+    });
+  }
   async #init() {
     await mkdir(this.dir, { recursive: true });
     if (!this.core) this.core = await loadCore();
@@ -365,7 +374,8 @@ export class EditingStore {
     const list = Array.isArray(shots) ? shots : (shots && Array.isArray(shots.shots) ? shots.shots : []);
     for (const shot of list) {
       if (!shot || !shot.path || !shot.shot_id) continue;
-      const durUs = Math.round(Number(shot.duration_us ?? Number(shot.duration_s) * 1e6) || 5e6);
+      let durUs = Math.round(Number(shot.duration_us ?? (shot.duration_s != null ? Number(shot.duration_s) * 1e6 : null)) || 0);
+      if (!durUs) { const sec = await this.probeDuration(this.mediaAbs(String(shot.path))); durUs = Math.round(Number(sec) * 1e6) || 5e6; }
       const dims = await this.probeDims(this.mediaAbs(String(shot.path)));
       const aud = await this.probeAudio(this.mediaAbs(String(shot.path)));
       const med = await this.dispatchOp(id, 'add_media_item', { media: EditingStore.poolEntry(randomUUID(), String(shot.path), durUs, dims, aud) });

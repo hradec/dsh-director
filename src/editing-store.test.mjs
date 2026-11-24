@@ -75,6 +75,27 @@ test('editing store: commands mutate, tags derive, undo re-derives, find-by-tag 
   }
 });
 
+test('seed probe: no duration passed -> real clip length from ffprobe (Production assemble)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-editing-probe-'));
+  try {
+    const { execFileSync } = await import('node:child_process');
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(join(dir, 'media'), { recursive: true });
+    execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=64x64:d=1:r=10', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', join(dir, 'media', 'one.mp4')]);
+    const store = new EditingStore(dir, core);
+    const created = await store.create({ name: 'probe' });
+    const seed = await store.seedShots(created.id, [{ shot_id: 'p1', path: 'media/one.mp4' }, { shot_id: 'p2', path: 'media/one.mp4' }]);
+    assert.ok(seed.ok, JSON.stringify(seed.error ?? seed));
+    assert.equal(seed.added.length, 2);
+    for (const item of seed.added) {
+      assert.ok(item.duration_us > 900000 && item.duration_us < 1100000, `real ~1s length, got ${item.duration_us}`);
+    }
+    assert.equal(seed.added[1].t_start_us, seed.added[0].duration_us, 'second shot starts where the first really ends');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('A/B roll skeleton: new edits get role-stamped lanes, seed lands on A roll, legacy docs migrate on open', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-editing-ab-'));
   try {
