@@ -80,6 +80,13 @@
 .book .content .block-title::after{content:"";order:2;flex:1;border-top:1px solid rgba(160,115,65,.55)}
 .book .content .block-title::before{content:"";order:1;margin:0 calc(6px * var(--s));width:calc(7px * var(--s));height:calc(7px * var(--s));background:#fcdaa1;border:1px solid rgba(160,115,65,.75);transform:rotate(45deg)}
 .book .content .field span:first-child{color:#5a3a22;font-size:calc(13px * var(--s))}
+/* Lorekeeper/Lineage are pages of the spread, not viewport drawers: undo the
+   fixed chrome and let the .content grid place them on the right page while
+   their chapter replaces References. */
+.book .lore-page,.book .lineage-page{position:static;width:auto;max-height:none;transform:none;animation:none;background:transparent;border-left:0;box-shadow:none;padding:0;color:#4b2914;font:inherit;overflow:visible}
+.book .content .lore-page,.book .content .lineage-page{min-width:0;overflow:auto;max-height:calc(620px * var(--s));padding:0 3px 6px}
+.book[data-chapter="lorekeeper"] .output-panel,.book[data-chapter="lineage"] .output-panel{display:none}
+.book .lore-page-header{margin-bottom:calc(8px * var(--s))}
 /* Both page titles ride at the very top of the sheet. */
 .book .output-panel,.book .lore-page,.book .lineage-page,.book .input-panel,.book .mobile-library-overview>header{margin-top:calc(-70px * var(--s))}
 .content[hidden]{display:none}
