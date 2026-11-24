@@ -307,6 +307,9 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
               </button>
             </span>
           ))}
+        </div>
+        {/* +tag and DSH auto-tag are ONE component: always the same row. */}
+        <div className="reference-tag-row">
           <input
             className="reference-tag-add"
             placeholder="+ tag ↵"
@@ -392,17 +395,21 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
     const src = slot.thumb ?? (video ? null : slot.url);
     return (
       <div key={slot.key} className="reference-tile reference-tile-library" title="Linked by tag from the Images/Footage library — edits write to the library entry itself" onContextMenu={openMenu(slot)}>
-        <div className="reference-thumb-wrap">
-          <button
-            type="button"
-            className="folder-file-card"
-            title="Open in lightbox"
-            onClick={() => setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)))}
-          >
-            <div className="folder-file-thumb">{src ? <img loading="lazy" src={src} alt={slot.label} /> : <div className="output-empty">🎞</div>}</div>
-            <div className="folder-file-label ellipsis" title={slot.filename}>{slot.filename}</div>
-          </button>
-          {cornerToggle(slot)}
+        <div
+          role="button"
+          tabIndex={0}
+          className="folder-file-card"
+          title="Open in lightbox"
+          onClick={() => setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)))}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)));
+            }
+          }}
+        >
+          <div className="folder-file-thumb">{src ? <img loading="lazy" src={src} alt={slot.label} /> : <div className="output-empty">🎞</div>}{cornerToggle(slot)}</div>
+          <div className="folder-file-label ellipsis" title={slot.filename}>{slot.filename}</div>
         </div>
         {refControls(slot)}
       </div>
@@ -447,7 +454,10 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
         title={approved ? "Disapprove — moves this image back to Brainstorming" : "Approve — this image may condition shots"}
         aria-label={(approved ? "Disapprove " : "Approve ") + slot.label}
         disabled={busyKey === slot.key}
-        onClick={() => void (approved ? unapproveSlot : approveSlot)(slot.key)}
+        onClick={(event) => {
+          event.stopPropagation(); // the pill lives over the image: don't also open the lightbox
+          void (approved ? unapproveSlot : approveSlot)(slot.key);
+        }}
       >
         {approved ? "⊘ Disapprove" : "✓ Approve"}
       </button>
@@ -468,21 +478,26 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
     if (slot.key.startsWith("lib:")) return libTile(slot);
     return (
       <div key={slot.key} className="reference-tile" onContextMenu={openMenu(slot)}>
-        <div className="reference-thumb-wrap">
-          <button
-            type="button"
-            className="folder-file-card"
-            title="Open in lightbox"
-            onClick={() => setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)))}
-          >
-            <div className="folder-file-thumb">
-              {slot.url ? <img loading="lazy" src={slot.url} alt={slot.label} /> : <div className="output-empty">—</div>}
-            </div>
-            <div className="folder-file-label ellipsis" title={slot.filename || slot.key}>
-              {slot.filename || slot.key}
-            </div>
-          </button>
-          {cornerToggle(slot)}
+        <div
+          role="button"
+          tabIndex={0}
+          className="folder-file-card"
+          title="Open in lightbox"
+          onClick={() => setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)))}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)));
+            }
+          }}
+        >
+          <div className="folder-file-thumb">
+            {slot.url ? <img loading="lazy" src={slot.url} alt={slot.label} /> : <div className="output-empty">—</div>}
+            {cornerToggle(slot)}
+          </div>
+          <div className="folder-file-label ellipsis" title={slot.filename || slot.key}>
+            {slot.filename || slot.key}
+          </div>
         </div>
         <button
           type="button"

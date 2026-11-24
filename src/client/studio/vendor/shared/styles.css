@@ -7333,12 +7333,12 @@ select {
   border-radius: 999px;
   line-height: 1;
 }
-/* Trust toggle floating on the image bottom-right: green Approve / red Disapprove. */
-.reference-thumb-wrap { position: relative; }
+/* Trust toggle floating ON the image bottom-right corner: green Approve / red Disapprove. */
+.folder-file-thumb { position: relative; }
 .tile-corner {
   position: absolute;
   right: 0.45rem;
-  bottom: 2.05rem;
+  bottom: 0.45rem;
   z-index: 2;
   padding: 0.15rem 0.65rem;
   border: 1px solid rgba(255, 255, 255, 0.4);
@@ -7354,6 +7354,10 @@ select {
 .tile-corner-approve:hover { background: #4a9159; }
 .tile-corner-disapprove { background: #a4443a; }
 .tile-corner-disapprove:hover { background: #b8544a; }
+/* +tag and DSH auto-tag are one unit: never split across rows. */
+.reference-tag-row { display: flex; flex-wrap: nowrap; align-items: center; gap: 0.35rem; }
+.reference-tag-row .reference-tag-add { flex: 1 1 auto; width: auto; min-width: 0; }
+.reference-tag-row .btn { flex: 0 0 auto; }
 .reference-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
 .reference-chips .btn { margin-left: auto; white-space: nowrap; flex: 0 0 auto; }
 .reference-chip {

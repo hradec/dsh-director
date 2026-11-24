@@ -1,4 +1,4 @@
-import {useEffect,useState} from 'react';
+import {useEffect,useRef,useState} from 'react';
 import {fetch as apiFetch} from './fetch-inject.mjs';
 
 // One door for every Director Studio → DSH request (0.2.65): the server queues them FIFO and each
@@ -26,10 +26,17 @@ const WINDOW_STYLE=`
 .dsh-agent-toggle{border:none;border-radius:999px;padding:.35rem .8rem;background:#e8b64a;color:#2c2a26;font-weight:700;cursor:pointer;}
 .dsh-agent-toggle.busy{background:#d98c2f;color:#fff;}
 .dsh-agent-panel{background:#fffdf8;border:1px solid #c8beac;border-radius:10px;box-shadow:0 10px 32px rgba(0,0,0,.18);padding:.55rem .65rem;min-width:20rem;max-width:28rem;max-height:50vh;overflow:auto;display:flex;flex-direction:column;gap:.4rem;}
+/* Opened in browser fullscreen (same promotion as the Lightbox): the dock panel is far too narrow to read the queue log. */
+.dsh-agent-panel:fullscreen{min-width:0;max-width:none;width:100%;height:100%;max-height:none;border-radius:0;font-size:1.05rem;padding:1.2rem 1.6rem;}
+.dsh-agent-head{display:none;}
+.dsh-agent-panel:fullscreen .dsh-agent-head{display:flex;align-items:center;justify-content:space-between;font-weight:700;}
+.dsh-agent-close{border:1px solid #c8beac;background:#f4efe6;border-radius:8px;padding:.2rem .8rem;cursor:pointer;font-weight:700;}
 .dsh-agent-row{display:flex;align-items:center;gap:.45rem;}
-.dsh-agent-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.dsh-agent-cancel{border:none;background:#c0392b;color:#fff;border-radius:6px;width:1.35rem;height:1.35rem;cursor:pointer;font-weight:700;line-height:1;}
+.dsh-agent-label{flex:1;min-width:0;white-space:normal;word-break:break-word;}
+.dsh-agent-panel:fullscreen .dsh-agent-row{gap:.8rem;padding:.35rem 0;border-bottom:1px solid #eee5d6;}
+.dsh-agent-cancel{border:none;background:#c0392b;color:#fff;border-radius:6px;width:1.35rem;height:1.35rem;cursor:pointer;font-weight:700;line-height:1;flex:0 0 auto;}
 .dsh-agent-result{white-space:pre-wrap;background:#f4efe6;border-radius:6px;padding:.4rem .5rem;max-height:14rem;overflow:auto;}
+.dsh-agent-panel:fullscreen .dsh-agent-result{max-height:none;flex:1;font-size:1rem;}
 .dsh-agent-pending .dsh-agent-label{color:#7d766b;}
 .dsh-agent-running .dsh-agent-label{color:#b07414;font-weight:650;}
 .dsh-agent-done .dsh-agent-label{color:#2e6b3f;}
@@ -40,11 +47,24 @@ export function AgentTaskWindow(){
   const [list,setList]=useState([]);
   const [open,setOpen]=useState(false);
   const [showResult,setShowResult]=useState(null);
+  const panelRef=useRef(null);
   useEffect(()=>subscribeAgentTasks(setList),[]);
+  useEffect(()=>{
+    if(!open)return undefined;
+    // Fullscreen the panel; refusal keeps the old compact popover (never worse).
+    const el=panelRef.current;
+    if(el?.requestFullscreen)el.requestFullscreen().catch(()=>{});
+    const onFs=()=>{if(!document.fullscreenElement)setOpen(false);};
+    const onKey=(e)=>{if(e.key==='Escape')setOpen(false);};
+    document.addEventListener('fullscreenchange',onFs);
+    window.addEventListener('keydown',onKey);
+    return ()=>{document.removeEventListener('fullscreenchange',onFs);window.removeEventListener('keydown',onKey);if(document.fullscreenElement===el)void document.exitFullscreen().catch(()=>{});};
+  },[open]);
   const active=list.filter((t)=>t.status==='running'||t.status==='pending').length;
   return <div className="dsh-agent-window">
     <style>{WINDOW_STYLE}</style>
-    {open?<div className="dsh-agent-panel">
+    {open?<div className="dsh-agent-panel" ref={panelRef}>
+      <div className="dsh-agent-head"><span>DSH queue</span><button className="dsh-agent-close" onClick={()=>setOpen(false)}>Close ✕</button></div>
       {!list.length?<span className="dsh-agent-pending">Queue empty — studio requests run as background DSH workers.</span>:null}
       {[...list].reverse().map((t)=><div key={t.id} className={`dsh-agent-row dsh-agent-${t.status}`}>
         <span>{t.status==='pending'?'⏳':t.status==='running'?'⚙':t.status==='done'?'✓':t.status==='cancelled'?'∅':'✗'}</span>
