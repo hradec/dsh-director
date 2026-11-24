@@ -1,0 +1,93 @@
+/* Layered Director Studio Book UI — port of layered_book_ui_v10 book.css.
+   Art is served by studio-api from /director-studio/book/* (copied by scripts/build.mjs).
+   Resting pages and turning leaves share ONE buildSurface() path. */
+.book-viewport{position:relative;height:100%;min-height:0;overflow:auto;background:#160b0e;color:#efd5a0}
+.book{--s:1;position:relative;isolation:isolate;margin:auto;width:100%;min-width:680px;height:940px}
+.paper,.frame,.decoration{position:absolute;inset:0;pointer-events:none}
+.paper{background:#fcdaa1 url(/director-studio/book/texture/parchment-tile.png) repeat;background-size:512px 512px;z-index:0}
+.frame{display:grid;grid-template-columns:calc(150px * var(--s)) minmax(0,1fr) calc(102px * var(--s)) minmax(0,1fr) calc(150px * var(--s));grid-template-rows:calc(485px * var(--s)) minmax(0,1fr) calc(315px * var(--s));z-index:1}
+.frame img{width:100%;height:100%;min-width:0;min-height:0;display:block}
+.decoration{z-index:2}
+.sheet{position:absolute;top:calc(108px * var(--s));bottom:calc(150px * var(--s));width:calc(50% - 145px * var(--s));overflow:hidden}
+.sheet.left{left:calc(127px * var(--s))}
+.sheet.right{right:calc(127px * var(--s))}
+.sheet img{position:absolute;display:block;height:auto;max-width:100%;pointer-events:none}
+.dragon{top:0;left:0;width:153px}
+.landscape{bottom:0;max-width:100%;width:610px}
+.left .landscape{left:0}
+.right .landscape{right:0;width:607px}
+.stain{opacity:.9}
+.s1{top:13%;left:0;width:235px}
+.s2{bottom:16%;left:0;width:260px}
+.s3{right:0;top:29%;width:195px}
+.right .s1{top:0;left:0;width:240px}
+.right .s2{left:auto;right:0;bottom:14%;width:280px}
+.top-tabs{position:absolute;left:10%;right:9%;top:0;display:flex;justify-content:space-between;align-items:start;gap:3px;z-index:4}
+.bookmark,.top-tabs button,.side-tabs button{position:relative;appearance:none;border:0;background:none;padding:0;cursor:pointer;color:#ffe1a0}
+.top-tabs button{flex:0 1 calc(172px * var(--s));min-width:0;aspect-ratio:172/105}
+.top-tabs img{display:block;width:100%;height:100%;object-fit:contain}
+.top-tabs button[aria-pressed=false],.top-tabs button.action{clip-path:inset(0 0 38% 0)}
+.bookmark img,.side-tabs img{display:block;width:100%;height:auto}
+.bookmark:focus-visible,.top-tabs button:focus-visible,.side-tabs button:focus-visible{outline:2px solid gold;outline-offset:2px}
+.library,.queue,.extra{position:absolute;z-index:4}
+.library{left:calc(55px * var(--s));top:calc(180px * var(--s));width:calc(58px * var(--s))}
+.queue{left:calc(50% + 58px * var(--s));bottom:0;width:calc(96px * var(--s))}
+.extra{left:calc(50% + 158px * var(--s));bottom:0;width:calc(59px * var(--s))}
+.side-tabs{position:absolute;left:calc(100% - 106px * var(--s));top:calc(138px * var(--s));display:grid;gap:calc(6px * var(--s));z-index:4;--marker-width:64px;--marker-height:84px;justify-items:start}
+.side-tabs button{width:calc(var(--marker-width) * var(--s));height:calc(var(--marker-height) * var(--s));min-width:calc(20px * var(--s));min-height:calc(24px * var(--s))}
+.side-tabs img{height:100%;object-fit:contain}
+.side-tabs span{pointer-events:none;position:absolute;inset:calc(8px * var(--s)) calc(9px * var(--s)) calc(8px * var(--s)) calc(4px * var(--s));display:grid;place-items:center;writing-mode:vertical-rl;white-space:nowrap;overflow:hidden;font:bold calc(12px * var(--s)) Georgia,serif}
+.side-tabs button[aria-pressed=true]{filter:brightness(1.35) saturate(1.1)}
+.marker-grid{position:absolute;inset:0;display:grid;grid-template-columns:calc(10px * var(--s)) minmax(0,1fr) calc(10px * var(--s));grid-template-rows:calc(12px * var(--s)) minmax(0,1fr) calc(12px * var(--s));pointer-events:none}
+.marker-grid i{display:block;background-repeat:repeat;background-position:top left;background-size:calc(var(--tile-w) * var(--s)) calc(var(--tile-h) * var(--s));min-width:0;min-height:0}
+/* The content spread lives between the pages; the existing workspace panels are
+   display:contents so their own sections land in the two page columns directly. */
+.content{position:absolute;z-index:3;inset:calc(210px * var(--s)) calc(150px * var(--s)) calc(285px * var(--s));display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:calc(106px * var(--s));color:#4b2914;font:15px system-ui,sans-serif}
+.content[hidden]{display:none}
+.content section,.content aside{min-width:0;overflow:auto;padding:0 3px 6px}
+.asset-preparation-panel,.asset-preparation-panel>main.workspace,.asset-library-overview-panel,.content .asset-category-content{display:contents}
+.book [hidden]{display:none!important}
+.content .panel.input-panel{grid-column:1}
+.content .panel.output-panel{grid-column:2}
+.content .lore-page,.content .lineage-page{grid-column:2}
+.book[data-chapter="lorekeeper"] .panel.output-panel,.book[data-chapter="lineage"] .panel.output-panel{display:none}
+.content .asset-guidance-card{grid-column:1/-1}
+.asset-library-overview-panel>*{grid-column:1/-1}
+.asset-book{height:100%;min-height:0;padding:0!important}
+.book .asset-workflow-toolbar{display:none}
+.book .page-bookmark{display:none}
+.book .asset-category-rail,.book .asset-workspace-header{display:none}
+
+/* Page turn: a flexible leaf approximated with independent 3D strips. */
+.turn-layer{position:absolute;inset:0;z-index:20;pointer-events:none;perspective:3000px;perspective-origin:50% 42%;overflow:visible}
+.turn-world{position:absolute;inset:0;transform-style:preserve-3d}
+.leaf-strip{position:absolute;left:50%;transform-origin:0 50%;transform-style:preserve-3d}
+.leaf-skin{position:absolute;inset:0;overflow:hidden;-webkit-backface-visibility:hidden}
+.leaf-skin.back{transform:rotateY(180deg)}
+.leaf-skin[hidden]{display:none!important}
+.leaf-art{position:absolute;top:0;overflow:hidden;background:#fcdaa1 url(/director-studio/book/texture/parchment-tile.png) repeat;background-size:512px 512px;color:#4b2914}
+.leaf-art .stain{opacity:1}
+.leaf-art>.leaf-border{z-index:0;pointer-events:none}
+.leaf-art>.edge-aging{z-index:1}
+.leaf-art>.sheet{z-index:2}
+.leaf-art:before{content:'';position:absolute;inset:0;z-index:5;pointer-events:none;background:#46250d;opacity:calc(var(--shade,0) * .65)}
+.leaf-content{position:absolute;display:grid;grid-auto-rows:min-content;align-content:start;gap:14px;inset:auto;z-index:3;pointer-events:none}
+.leaf-content section,.leaf-content aside{height:auto;max-height:none}
+.turn-shadow{position:absolute;background:linear-gradient(90deg,transparent,#31170099 30%,#311700aa 50%,transparent);opacity:0;z-index:0;filter:blur(15px)}
+.edge-aging{position:absolute;pointer-events:none;overflow:hidden}
+.leaf-art>.edge-aging{inset:0;border-radius:inherit}
+.edge-aging i{position:absolute;display:block;background-repeat:repeat;pointer-events:none}
+.edge-aging .edge-top,.edge-aging .edge-bottom{left:0;right:0;height:calc(100px * var(--s));background-size:calc(768px * var(--s)) calc(100px * var(--s))}
+.edge-top{top:0;background-image:url(/director-studio/book/stains/edge-top.png);background-position:0 0}
+.edge-bottom{bottom:calc(39px * var(--s));background-image:url(/director-studio/book/stains/edge-bottom.png);background-position:0 100%;mask-image:linear-gradient(to bottom,black 70%,transparent 100%)}
+.edge-aging .edge-outer{top:0;bottom:0;width:calc(100px * var(--s));background-size:calc(100px * var(--s)) calc(768px * var(--s))}
+.edge-aging.left .edge-outer{left:0;background-image:url(/director-studio/book/stains/edge-left.png)}
+.edge-aging.right .edge-outer{right:0;background-image:url(/director-studio/book/stains/edge-right.png)}
+/* The turning paper occludes all bookmarks; the frame never moves. */
+.book[aria-busy=true] .top-tabs{z-index:4}
+.book[aria-busy=true] .content{pointer-events:none}
+.resting-surfaces{position:absolute;inset:0;z-index:2;pointer-events:none}
+.resting-surfaces .leaf-art:before{display:none}
+.hide-stains .edge-aging,.hide-stains .stain{display:none}
+.hide-art .art{display:none}
+@media(prefers-reduced-motion:reduce){.turn-layer{display:none}}

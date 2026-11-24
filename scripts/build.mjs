@@ -1,5 +1,5 @@
 import {build} from 'esbuild';
-import {readdir,mkdir,copyFile,writeFile,rm} from 'node:fs/promises';
+import {readdir,mkdir,copyFile,writeFile,rm,cp} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {readFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
@@ -21,6 +21,9 @@ await build({absWorkingDir:root,entryPoints:['scripts/core-entry.ts'],bundle:tru
 // vendor/react19 ships no node_modules in git; install on first build.
 try{readFileSync(resolve(root,'vendor/react19/node_modules/react/package.json'));}
 catch{execFileSync('npm',['i','react@19','react-dom@19','@pixi/react'],{cwd:resolve(root,'vendor/react19')});}
+// 0.2.151: layered book UI art — served verbatim by studio-api at /director-studio/book/*
+await rm(resolve(root,'lib/book'),{recursive:true,force:true});
+await cp(resolve(root,'src/client/studio/book'),resolve(root,'lib/book'),{recursive:true,filter:(src)=>!src.includes('REF-v10')});
 execFileSync(resolve(root,'node_modules/.bin/tailwindcss'),['-i','src/renderer/app.css','-o','/tmp/codex/tw.css','--content','src/renderer/**/*.{tsx,ts}','scripts/*.{tsx,ts}'],{cwd:root});
 const legacy=await build({absWorkingDir:root,entryPoints:['src/renderer/styles.css'],bundle:true,write:false,loader:{'.css':'css'}});
 await writeFile(resolve(root,'scripts/timeline-css.generated.mjs'),'export default '+JSON.stringify(readFileSync('/tmp/codex/tw.css','utf8')+'\n'+legacy.outputFiles[0].text)+';\n');

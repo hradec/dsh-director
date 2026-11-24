@@ -1,0 +1,73 @@
+{
+  "sourceSize": [
+    1522,
+    940
+  ],
+  "xCuts": [
+    0,
+    150,
+    710,
+    812,
+    1372,
+    1522
+  ],
+  "yCuts": [
+    0,
+    485,
+    625,
+    940
+  ],
+  "columns": [
+    150,
+    "flex",
+    102,
+    "flex",
+    150
+  ],
+  "rows": [
+    485,
+    "flex",
+    315
+  ],
+  "art": {
+    "dragon": [
+      153,
+      92
+    ],
+    "landscape-left": [
+      610,
+      135
+    ],
+    "landscape-right": [
+      607,
+      110
+    ]
+  },
+  "tile": [
+    512,
+    512
+  ],
+  "cropFromOriginal": {
+    "left": 75,
+    "right": 75
+  },
+  "sideMarkers": {
+    "sourceSize": [
+      64,
+      84
+    ],
+    "xCuts": [
+      0,
+      10,
+      54,
+      64
+    ],
+    "yCuts": [
+      0,
+      12,
+      72,
+      84
+    ],
+    "repeat": "mirror-tiled center and flexible edges; fixed end caps and corners"
+  }
+}

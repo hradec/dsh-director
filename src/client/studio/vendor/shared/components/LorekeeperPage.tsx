@@ -62,8 +62,11 @@ function factLine(hit: CanonHit): string {
   return hit.type || "";
 }
 
-export function LorekeeperPage({ kind, queries, label }: { kind: CanonKind; queries: string[]; label: string }) {
-  const [open, setOpen] = useState(false);
+// forceOpen: the book UI's side bookmark drives the page externally; without it
+// the ribbon keeps its original internal toggle.
+export function LorekeeperPage({ kind, queries, label, forceOpen }: { kind: CanonKind; queries: string[]; label: string; forceOpen?: boolean }) {
+  const [openState, setOpen] = useState(false);
+  const open = forceOpen ?? openState;
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
   const [hits, setHits] = useState<CanonHit[]>([]);

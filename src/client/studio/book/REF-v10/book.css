@@ -1,0 +1,67 @@
+*{box-sizing:border-box}body{margin:0;background:#160b0e;color:#efd5a0;font:15px system-ui,sans-serif}.controls{display:flex;align-items:center;flex-wrap:wrap;gap:12px 18px;padding:8px 12px}.controls label{display:flex;gap:6px;align-items:center}.controls input[type=range]{width:125px}.viewport{overflow:auto;padding:0 4px 12px}.book{--s:1;position:relative;isolation:isolate;margin:auto;width:100%;min-width:680px;height:940px}.paper,.frame,.decoration{position:absolute;inset:0;pointer-events:none}.paper{background:#fcdaa1 url(texture/parchment-tile.png) repeat;background-size:512px 512px;z-index:0}.frame{display:grid;grid-template-columns:calc(150px * var(--s)) minmax(0,1fr) calc(102px * var(--s)) minmax(0,1fr) calc(150px * var(--s));grid-template-rows:calc(485px * var(--s)) minmax(0,1fr) calc(315px * var(--s));z-index:1}.frame img{width:100%;height:100%;min-width:0;min-height:0;display:block}.decoration{z-index:2}.sheet{position:absolute;top:calc(108px * var(--s));bottom:calc(150px * var(--s));width:calc(50% - 145px * var(--s));overflow:hidden}.sheet.left{left:calc(127px * var(--s))}.sheet.right{right:calc(127px * var(--s))}.sheet img{position:absolute;display:block;height:auto;max-width:100%;pointer-events:none}.dragon{top:0;left:0;width:153px}.landscape{bottom:0;max-width:100%;width:610px}.left .landscape{left:0}.right .landscape{right:0;width:607px}.stain{opacity:.9}.s1{top:13%;left:0;width:235px}.s2{bottom:16%;left:0;width:260px}.s3{right:0;top:29%;width:195px}.right .s1{top:0;left:0;width:240px}.right .s2{left:auto;right:0;bottom:14%;width:280px}.hide-art .art,.hide-stains .stain{display:none}.top-tabs{position:absolute;left:10%;right:9%;top:0;display:flex;justify-content:space-between;align-items:start;gap:3px;z-index:4}.bookmark,.top-tabs button,.side-tabs button{position:relative;appearance:none;border:0;background:none;padding:0;cursor:pointer;color:#ffe1a0}.top-tabs button{flex:0 1 calc(172px * var(--s));min-width:0;aspect-ratio:172/105}.top-tabs img{display:block;width:100%;height:100%;object-fit:contain}.top-tabs button[aria-pressed=false],.top-tabs button.action{clip-path:inset(0 0 38% 0)}.bookmark img,.side-tabs img{display:block;width:100%;height:auto}.bookmark:focus-visible,.top-tabs button:focus-visible,.side-tabs button:focus-visible{outline:2px solid gold;outline-offset:2px}.library,.queue,.extra{position:absolute;z-index:4}.library{left:calc(55px * var(--s));top:calc(180px * var(--s));width:calc(58px * var(--s))}.queue{left:calc(50% + 58px * var(--s));bottom:0;width:calc(96px * var(--s))}.extra{left:calc(50% + 158px * var(--s));bottom:0;width:calc(59px * var(--s))}.side-tabs{position:absolute;left:calc(100% - 106px * var(--s));top:calc(138px * var(--s));display:grid;gap:calc(6px * var(--s));z-index:4}.side-tabs button{width:calc(64px * var(--s));height:calc(84px * var(--s))}.side-tabs img{height:100%;object-fit:contain}.side-tabs span{position:absolute;inset:0;display:grid;place-items:center;writing-mode:vertical-rl;font:bold calc(12px * var(--s)) Georgia,serif}.content{position:absolute;z-index:3;inset:calc(210px * var(--s)) calc(150px * var(--s)) calc(285px * var(--s));display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:calc(106px * var(--s));color:#4b2914;font:16px Georgia,serif}.content section{min-width:0;overflow:auto;padding:0 3px 6px}.content h1{font-size:clamp(21px,2vw,32px);margin:0 0 5px}.content p{margin:0 0 12px}.content label{display:block;margin:9px 0}.content input,.content textarea{width:100%;display:block;background:#fff5db80;border:1px solid #ab8658;border-radius:5px;color:#4b2914;padding:7px;font:inherit}.content button{background:#f4deb4;border:1px solid #ac8759;color:#4b2914;border-radius:5px;padding:5px 10px}.reference,details{border:1px solid #a88760;border-radius:8px;padding:12px;margin:12px 0;background:#fff5db35}.content hr{border:0;border-top:1px solid #a47845}.content[hidden]{display:none}
+.stain{opacity:1}
+
+/* Independent nine-slice leather markers: pixel-native texture tiling, no anisotropic scaling. */
+.side-tabs{--marker-width:64px;--marker-height:84px;justify-items:start;}
+.side-tabs button{width:calc(var(--marker-width) * var(--s));height:calc(var(--marker-height) * var(--s));min-width:calc(20px * var(--s));min-height:calc(24px * var(--s));}
+.marker-grid{position:absolute;inset:0;display:grid;grid-template-columns:calc(10px * var(--s)) minmax(0,1fr) calc(10px * var(--s));grid-template-rows:calc(12px * var(--s)) minmax(0,1fr) calc(12px * var(--s));pointer-events:none;}
+.marker-grid i{display:block;background-repeat:repeat;background-position:top left;background-size:calc(var(--tile-w) * var(--s)) calc(var(--tile-h) * var(--s));min-width:0;min-height:0;}
+.side-tabs span{pointer-events:none;inset:calc(8px * var(--s)) calc(9px * var(--s)) calc(8px * var(--s)) calc(4px * var(--s));white-space:nowrap;overflow:hidden;}
+
+/* The book frame never moves. Only the leaf is projected in 3D. */
+.turn-layer{position:absolute;inset:0;z-index:20;pointer-events:none;perspective:3000px;perspective-origin:50% 42%;overflow:visible;}
+.turn-world{position:absolute;inset:0;transform-style:preserve-3d;}
+.leaf-strip{position:absolute;left:50%;transform-origin:0 50%;transform-style:preserve-3d;}
+.leaf-skin{position:absolute;inset:0;overflow:hidden;backface-visibility:hidden;-webkit-backface-visibility:hidden;}
+.leaf-skin.back{transform:rotateY(180deg);}
+.leaf-art{position:absolute;top:0;overflow:hidden;background:#fcdaa1 url(texture/parchment-tile.png) repeat;background-size:512px 512px;color:#4b2914;}
+.leaf-art:after{content:'';position:absolute;inset:9px;border:1px solid #a77943aa;border-radius:10px;pointer-events:none;box-shadow:inset 0 0 18px #78471744;}
+.leaf-art.left{border-radius:10px 1px 1px 10px;box-shadow:inset -18px 0 22px -12px #744019;}
+.leaf-art.right{border-radius:1px 10px 10px 1px;box-shadow:inset 18px 0 22px -12px #744019;}
+.leaf-content{position:absolute;display:block;inset:auto;z-index:3;pointer-events:none;}
+.leaf-content section{height:100%;}
+.leaf-shade{position:absolute;inset:0;background:#46250d;opacity:var(--shade,0);pointer-events:none;}
+.leaf-skin.back .leaf-shade{background:#46250d;opacity:calc(var(--shade,0) * .65);}
+.turn-shadow{position:absolute;background:linear-gradient(90deg,transparent,#31170099 30%,#311700aa 50%,transparent);opacity:0;z-index:0;filter:blur(15px);}
+/* The turning paper must occlude all bookmarks. */
+.book[aria-busy=true] .top-tabs{z-index:4;}
+.book[aria-busy=true] .content{pointer-events:none;}
+@media(prefers-reduced-motion:reduce){.turn-layer{display:none}}
+
+/* V6: the active skin is a fully opaque, isolated plane. The inactive skin
+   is not painted at all, avoiding coplanar front/back compositing artifacts. */
+.leaf-skin{background:#fcdaa1;isolation:isolate;backface-visibility:visible;-webkit-backface-visibility:visible;}
+.leaf-skin[hidden]{display:none!important;}
+.leaf-art{background-color:#fcdaa1;}
+.leaf-art .stain{opacity:1;}
+
+/* V7: native-resolution edge-aging layers on the turning leaf.
+   Background repetition lengthens the wash without stretching the stain pattern. */
+.edge-aging{position:absolute;pointer-events:none;overflow:hidden;}
+.leaf-art>.edge-aging{inset:0;border-radius:inherit;}
+.edge-aging i{position:absolute;display:block;background-repeat:repeat;pointer-events:none;}
+.edge-aging .edge-top,.edge-aging .edge-bottom{left:0;right:0;height:calc(100px * var(--s));background-size:calc(768px * var(--s)) calc(100px * var(--s));}
+.edge-top{top:0;background-image:url(stains/edge-top.png);background-position:0 0;}
+.edge-bottom{bottom:0;background-image:url(stains/edge-bottom.png);background-position:0 100%;}
+.edge-aging .edge-outer{top:0;bottom:0;width:calc(100px * var(--s));background-size:calc(100px * var(--s)) calc(768px * var(--s));}
+.edge-aging.left .edge-outer{left:0;background-image:url(stains/edge-left.png);}
+.edge-aging.right .edge-outer{right:0;background-image:url(stains/edge-right.png);}
+.hide-stains .edge-aging{display:none;}
+
+/* v8: the genuine page perimeter is part of each moving face, not an approximate CSS line. */
+.leaf-art:after{content:none;}
+.leaf-art.left,.leaf-art.right{border-radius:0;box-shadow:none;}
+.leaf-skin{background:transparent;isolation:auto;}
+.leaf-art>.leaf-border{z-index:0;pointer-events:none;}
+.leaf-art>.edge-aging{z-index:1;}
+.leaf-art>.sheet{z-index:2;}
+.leaf-shade{display:none;}
+/* Shade the opaque face itself without painting outside its paper silhouette. */
+.leaf-art:before{content:'';position:absolute;inset:0;z-index:5;pointer-events:none;background:#46250d;opacity:calc(var(--shade,0) * .65);}
+
+/* V10: identical, contour-clipped page surface in both render paths. */
+.resting-surfaces{position:absolute;inset:0;z-index:2;pointer-events:none;}
+/* Age the outer edge, not the spine. Bottom stain follows the lower page region. */
+.edge-aging .edge-bottom{bottom:calc(39px * var(--s));mask-image:linear-gradient(to bottom,black 70%,transparent 100%);}
+/* No rectangular overlay outline, no extra box shadow. */
+.resting-surfaces .leaf-art:before{display:none;}

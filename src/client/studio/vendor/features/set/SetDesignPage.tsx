@@ -11,11 +11,13 @@ interface Props {
   onOpenLibrary: () => void;
   initialEditId?: string;
   sendRequest?: (text: string, label: string) => void;
+  // Book UI: which right-page chapter the side bookmarks opened.
+  chapter?: "references" | "lorekeeper";
 }
 
 // Filesystem-first: no more multi-angle generation form. This page edits one
 // library scene's identity text and manages every stored image as a tagged reference.
-export function SetDesignPage({ initialEditId, sendRequest }: Props) {
+export function SetDesignPage({ initialEditId, sendRequest, chapter }: Props) {
   const { projectId } = useProject();
 
   const [scenes, setScenes] = useState<SceneRecord[]>([]);
@@ -202,7 +204,7 @@ export function SetDesignPage({ initialEditId, sendRequest }: Props) {
         )}
       </section>
 
-      {scene ? <LorekeeperPage key={scene.id} kind="site" queries={[name]} label={scene.name} /> : null}
+      {scene ? <LorekeeperPage key={scene.id} kind="site" queries={[name]} label={scene.name} forceOpen={chapter ? chapter === "lorekeeper" : undefined} /> : null}
     </main>
   );
 }

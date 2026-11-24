@@ -37,8 +37,9 @@ const GEN_ORDER = [-2, -1, 0, 1];
 // Within a generation: subject first, then spouses, then the rest by birth year.
 const REL_ORDER: Record<string, number> = { self: 0, spouse: 1, parent: 2, grandparent: 3, child: 4 };
 
-export function FamilyTreePage({ queries, label }: { queries: string[]; label: string }) {
-  const [open, setOpen] = useState(false);
+export function FamilyTreePage({ queries, label, forceOpen }: { queries: string[]; label: string; forceOpen?: boolean }) {
+  const [openState, setOpen] = useState(false);
+  const open = forceOpen ?? openState;
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
   const [nodes, setNodes] = useState<FamNode[]>([]);

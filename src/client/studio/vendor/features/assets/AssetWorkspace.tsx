@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { useEffect } from "react";
 import { useProject } from "../../shared/project/ProjectContext";
@@ -10,17 +10,14 @@ import { AssetImportDialog } from "../library/AssetImportDialog";
 import { CastingPage } from "../casting/CastingPage";
 import { SetDesignPage } from "../set/SetDesignPage";
 import { PropsPage } from "../props/PropsPage";
+import { BookShell } from "./book/BookShell";
+import type { BookCategory, BookView, BookShellHandle } from "./book/BookShell";
+import { openAgentQueue } from "../../../agent-queue.jsx";
 
+// 0.2.151: the Assets tab is the layered book. Navigation lives in the bookmarks:
+// top tabs = Actors/Scenes/Props/Voices + Ask DSH + Import + gear, left bookmark =
+// Library, right markers = per-asset chapters (Lorekeeper, Lineage), bottom = DSH queue.
 type PreparedAssetCategory = Exclude<LibraryKind, "layouts" | "costumes">;
-type AssetCategory = "library" | PreparedAssetCategory;
-
-const CATEGORIES: { id: AssetCategory; label: string; eyebrow: string }[] = [
-  { id: "library", label: "Library", eyebrow: "All reusable assets" },
-  { id: "actors", label: "Actors", eyebrow: "Cast identity" },
-  { id: "scenes", label: "Scenes", eyebrow: "World and locations" },
-  { id: "props", label: "Props", eyebrow: "Story objects" },
-  { id: "voices", label: "Voices", eyebrow: "Performance reference" },
-];
 
 const IMPORT_LABELS: Record<PreparedAssetCategory, string> = {
   actors: "actor",
@@ -61,7 +58,9 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
   // 0.2.65: every DSH ask goes through the single agent door (shared queue window bottom-right).
   const askRequest = (text: string, label: string) => void sendAssetRequest(text, label);
   const { projectId, project } = useProject();
-  const [category, setCategory] = useState<AssetCategory>("library");
+  const [view, setView] = useState<BookView>({ category: "library", chapter: "references" });
+  const bookNav = useRef<BookShellHandle>(null);
+  const [gearOpen, setGearOpen] = useState(false);
   const [importKind, setImportKind] = useState<PreparedAssetCategory | null>(null);
   const [requestKind, setRequestKind] = useState<PreparedAssetCategory>("actors");
   const [requestOpen, setRequestOpen] = useState(false);
@@ -71,12 +70,11 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
   const [busy, setBusy] = useState(false);
   // Library "Edit" jumps to the kind's studio page with this asset pre-selected.
   const [editTarget, setEditTarget] = useState<{ kind: "actors" | "scenes" | "props"; id: string } | null>(null);
-  // Plugin: per-kind DSH generation instructions, gear at the left of each studio toolbar.
+  // Plugin: per-kind DSH generation instructions, opened by the book's settings bookmark.
   const [genSettings, setGenSettings] = useState<Record<string, string> | null>(null);
   useEffect(() => {
     getGenerationSettings().then(setGenSettings).catch(() => setGenSettings({}));
   }, []);
-  const visibleCategory = category;
 
   const openRequest = (kind: PreparedAssetCategory = "actors") => {
     setRequestKind(kind);
@@ -101,98 +99,66 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
     }
   };
 
-  return (
-    <main className="asset-workspace" aria-label="Asset preparation">
-      <header className="asset-workspace-header">
-        <div>
-          <h1>Assets</h1>
-          <p>Build the reusable cast, locations, objects, and voices the Director can assign across every Shot.</p>
-        </div>
-        <button type="button" className="btn primary" disabled={!projectId} onClick={() => openRequest()}>
-          Ask DSH
-        </button>
-      </header>
+  // Bookmark-driven navigation keeps the page-turn animation (BookShell snapshots the DOM).
+  const goto = (category: BookCategory) => bookNav.current?.navigate(category);
+  const currentKind: PreparedAssetCategory = view.category === "library" ? "actors" : (view.category as PreparedAssetCategory);
 
+  return (
+    <main className="asset-workspace asset-book" aria-label="Asset preparation">
       {!projectId ? <div className="banner">Select a project to prepare its assets.</div> : null}
 
-      <div className="asset-workspace-body">
-        <nav className="asset-category-rail" aria-label="Asset categories">
-          {CATEGORIES.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`asset-category-main ${visibleCategory === item.id ? "active" : ""}`}
-              aria-label={item.label}
-              aria-current={visibleCategory === item.id ? "page" : undefined}
-              onClick={() => setCategory(item.id)}
-            >
-              <strong>{item.label}</strong>
-              <span>{item.eyebrow}</span>
-            </button>
-          ))}
-        </nav>
-
+      <BookShell
+        ref={bookNav}
+        view={view}
+        onView={setView}
+        askDsh={() => openRequest(currentKind)}
+        importActor={() => setImportKind(currentKind)}
+        settings={() => setGearOpen(true)}
+        queue={() => openAgentQueue()}
+      >
         <section className="asset-category-content" aria-live="polite">
-          {visibleCategory === "library" ? (
-            <div className="asset-library-overview-panel">
-              <LibraryOverview onSelectKind={setCategory} onEditInStudio={(kind, id) => { setEditTarget({ kind, id }); setCategory(kind); }} />
-            </div>
-          ) : null}
-          {CATEGORIES.filter((item) => item.id !== "library").map((item) => {
-            const workflowCategory = item.id as PreparedAssetCategory;
-            return (
-              <div
-                key={workflowCategory}
-                className="asset-preparation-panel"
-                hidden={visibleCategory !== workflowCategory}
-              >
-                <div className="asset-workflow-toolbar">
-                  {workflowCategory === "actors" || workflowCategory === "scenes" || workflowCategory === "props" ? (
-                    genSettings ? (
-                      <GenerationSettings
-                        initial={genSettings[workflowCategory] ?? ""}
-                        onSave={(t) => saveGenerationSettings(workflowCategory, t).then(() => setGenSettings({ ...genSettings, [workflowCategory]: t }))}
-                      />
-                    ) : null
-                  ) : null}
-                  <span>{workflowCategory === "voices" ? "Create with DSH or import an audio sample." : workflowCategory === "actors" ? "Create with DSH; actor images are imported in the Images tab." : "Create with DSH or import an existing reference."}</span>
-                  <button
-                    type="button"
-                    className="btn primary"
-                    disabled={!projectId}
-                    onClick={() => openRequest(workflowCategory)}
-                  >
-                    Ask DSH
-                  </button>
-                  {/* Human ruling (2026-11-23): no Import actor — the Images tab covers image import. */}
-                  {workflowCategory !== "actors" ? (
-                    <button
-                      type="button"
-                      className="btn secondary"
-                      disabled={!projectId}
-                      onClick={() => setImportKind(workflowCategory)}
-                    >
-                      Import {IMPORT_LABELS[workflowCategory]}
-                    </button>
-                  ) : null}
-                </div>
-                {/* Plugin: actors/scenes/props show the full generation studio (Casting, Set, Props). Queued jobs go to the DSH session agent, which generates with a reviewed local ComfyUI workflow and imports results under the same job token. */}
-                {workflowCategory === "actors" || workflowCategory === "scenes" || workflowCategory === "props" ? (
-                  workflowCategory === "actors" ? <CastingPage onOpenLibrary={() => setCategory("library")} sendRequest={askRequest} initialEditId={editTarget?.kind === "actors" ? editTarget.id : undefined} />
-                    : workflowCategory === "scenes" ? <SetDesignPage onOpenLibrary={() => setCategory("library")} sendRequest={askRequest} initialEditId={editTarget?.kind === "scenes" ? editTarget.id : undefined} />
-                    : <PropsPage onOpenLibrary={() => setCategory("library")} sendRequest={askRequest} initialEditId={editTarget?.kind === "props" ? editTarget.id : undefined} />
-                ) : (
+          <div className="asset-library-overview-panel" hidden={view.category !== "library"}>
+            <LibraryOverview onSelectKind={goto} onEditInStudio={(kind, id) => { setEditTarget({ kind, id }); goto(kind); }} />
+          </div>
+          {PREPARED_CATEGORIES.map((item) => (
+            <div key={item.id} className="asset-preparation-panel" hidden={view.category !== item.id}>
+              {/* Plugin: actors/scenes/props show the full generation studio (Casting, Set, Props). Queued jobs go to the DSH session agent, which generates with a reviewed local ComfyUI workflow and imports results under the same job token. */}
+              {item.id === "actors" ? <CastingPage chapter={view.chapter} onOpenLibrary={() => goto("library")} sendRequest={askRequest} initialEditId={editTarget?.kind === "actors" ? editTarget.id : undefined} />
+                : item.id === "scenes" ? <SetDesignPage chapter={view.chapter === "lineage" ? "references" : view.chapter} onOpenLibrary={() => goto("library")} sendRequest={askRequest} initialEditId={editTarget?.kind === "scenes" ? editTarget.id : undefined} />
+                : item.id === "props" ? <PropsPage chapter={view.chapter === "lineage" ? "references" : view.chapter} onOpenLibrary={() => goto("library")} sendRequest={askRequest} initialEditId={editTarget?.kind === "props" ? editTarget.id : undefined} />
+                : (
                   <div className="asset-guidance-card">
-                    <div className="workspace-kicker">{IMPORT_LABELS[workflowCategory]} preparation</div>
-                    <h2>{workflowCategory === "voices" ? "Create or import a performance sample" : `Create or import ${workflowCategory === "actors" ? "a character" : workflowCategory === "scenes" ? "a location" : "a story object"}`}</h2>
-                    <p>{workflowCategory === "voices" ? "Describe the speaker and delivery; DSH can use a compatible local ComfyUI audio workflow and save the verified output to this project's library." : "Describe the look and continuity needs; DSH can inspect a compatible local ComfyUI workflow, generate a reference, and register the exact output in the project library."}</p>
+                    <div className="workspace-kicker">{IMPORT_LABELS[item.id]} preparation</div>
+                    <h2>Create or import a performance sample</h2>
+                    <p>Describe the speaker and delivery; DSH can use a compatible local ComfyUI audio workflow and save the verified output to this project's library.</p>
                   </div>
                 )}
-              </div>
-            );
-          })}
+            </div>
+          ))}
         </section>
-      </div>
+      </BookShell>
+
+      {gearOpen && projectId ? (
+        <div className="folder-modal" role="dialog" aria-modal="true" onClick={() => setGearOpen(false)}>
+          <div className="folder-modal-panel" onClick={(event) => event.stopPropagation()}>
+            <div className="folder-modal-head">
+              <div>
+                <span className="mobile-eyebrow">DSH generation instructions</span>
+                <h2 className="folder-modal-title">Settings — {view.category === "library" ? "every kind" : view.category}</h2>
+              </div>
+              <button type="button" className="btn secondary sm" onClick={() => setGearOpen(false)}>Close</button>
+            </div>
+            {view.category !== "library" && view.category !== "voices" && genSettings ? (
+              <GenerationSettings
+                initial={genSettings[view.category] ?? ""}
+                onSave={(t) => saveGenerationSettings(view.category, t).then(() => setGenSettings({ ...genSettings, [view.category]: t }))}
+              />
+            ) : (
+              <p className="field-hint">Standing generation instructions are set per kind on the Actors, Scenes and Props pages.</p>
+            )}
+          </div>
+        </div>
+      ) : null}
 
       {requestOpen ? (
         <div className="folder-modal asset-import-modal" role="dialog" aria-modal="true" aria-labelledby="dsh-asset-request-title" onClick={() => !busy && setRequestOpen(false)}>

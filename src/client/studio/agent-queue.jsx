@@ -46,10 +46,13 @@ const WINDOW_STYLE=`
 .dsh-agent-failed .dsh-agent-label{color:#c0392b;}
 `;
 
+let openAgentQueueSetter=null; // 0.2.151: the book UI's DSH Queue bookmark opens the same panel
+export function openAgentQueue(){if(openAgentQueueSetter)openAgentQueueSetter(true);}
 export function AgentTaskWindow(){
   const [list,setList]=useState([]);
   const [open,setOpen]=useState(false);
   const [showResult,setShowResult]=useState(null);
+  useEffect(()=>{openAgentQueueSetter=setOpen;return()=>{if(openAgentQueueSetter===setOpen)openAgentQueueSetter=null;};},[]);
   useEffect(()=>subscribeAgentTasks(setList),[]);
   useEffect(()=>{
     if(!open)return undefined;

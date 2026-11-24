@@ -10,6 +10,7 @@ import {ProjectProvider,useProject} from './vendor/shared/project/ProjectContext
 import {MediaRail} from './MediaRail.jsx';
 import {fetch as apiFetch} from './fetch-inject.mjs';
 import css from './vendor/shared/styles.css';
+import bookCss from './vendor/features/assets/book/book.css';
 
 // The DSH session workspace IS the project: no picker, no "New project". The host auto-creates the single project named after the folder.
 function WorkspaceHeader(){
@@ -151,6 +152,8 @@ export function mountStudioFrame(frame,area,createRoot,React,sendDshRequest){
   if(!doc)throw new Error('Director Studio side-panel frame is unavailable.');
   doc.open();doc.write('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Director Studio</title></head><body><div id="root"></div></body></html>');doc.close();
   const style=doc.createElement('style');style.textContent=css;doc.head.append(style);
+  // 0.2.151: layered book UI for the Assets tab; after the vendor css so its overrides win.
+  const bookStyle=doc.createElement('style');bookStyle.textContent=bookCss;doc.head.append(bookStyle);
   doc.title='Director Studio';doc.documentElement.dataset.theme='oat-walnut';doc.documentElement.style.height='100%';doc.body.style.cssText='height:100%;min-height:100%;overflow:auto;margin:0';
   const root=createRoot(doc.getElementById('root'));
   root.render(React.createElement(StudioRoot,{area,sendDshRequest}));

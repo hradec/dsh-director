@@ -12,11 +12,13 @@ interface Props {
   onOpenLibrary: () => void;
   initialEditId?: string;
   sendRequest?: (text: string, label: string) => void;
+  // Book UI: which right-page chapter the side bookmarks opened.
+  chapter?: "references" | "lorekeeper" | "lineage";
 }
 
 // Filesystem-first: this page no longer generates. It edits one library actor's
 // identity text and manages every stored image as a tagged reference.
-export function CastingPage({ initialEditId, sendRequest }: Props) {
+export function CastingPage({ initialEditId, sendRequest, chapter }: Props) {
   const { projectId } = useProject();
 
   const [actors, setActors] = useState<ActorRecord[]>([]);
@@ -225,8 +227,8 @@ export function CastingPage({ initialEditId, sendRequest }: Props) {
         )}
       </section>
 
-      {actor ? <LorekeeperPage key={actor.id} kind="figure" queries={[character, name]} label={actor.name} /> : null}
-      {actor ? <FamilyTreePage key={`lineage-${actor.id}`} queries={[character, name]} label={actor.name} /> : null}
+      {actor ? <LorekeeperPage key={actor.id} kind="figure" queries={[character, name]} label={actor.name} forceOpen={chapter ? chapter === "lorekeeper" : undefined} /> : null}
+      {actor ? <FamilyTreePage key={`lineage-${actor.id}`} queries={[character, name]} label={actor.name} forceOpen={chapter ? chapter === "lineage" : undefined} /> : null}
     </main>
   );
 }
