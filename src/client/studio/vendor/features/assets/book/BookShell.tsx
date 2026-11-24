@@ -4,6 +4,7 @@
 // a flexible sheet approximated with 22 independent strips. The frame never moves.
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { subscribeAgentTasks } from "../../../../agent-queue.jsx";
 
 const B = "/director-studio/book";
 const TURN_MS = 850;
@@ -97,7 +98,8 @@ export const BookShell = forwardRef<BookShellHandle, {
   const turningRef = useRef(false);
   const finishRef = useRef<null | (() => void)>(null);
   const queuedRef = useRef<BookView | null>(null);
-  const pendingRef = useRef<{ front: SideSnap | null; holdLeft: SideSnap | null } | null>(null);
+  const pendingRef = useRef<{ front: SideSnap | null; holdLeft: SideSnap | null; holdRight: SideSnap | null } | null>(null);
+  const [queueActive, setQueueActive] = useState(0);
   const lastRef = useRef<BookView>(view);
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -194,11 +196,11 @@ export const BookShell = forwardRef<BookShellHandle, {
     return face;
   }
 
-  function runTurn(prev: BookView, next: BookView, frontSnap: SideSnap | null, holdLeft: SideSnap | null) {
+  function runTurn(prev: BookView, next: BookView, frontSnap: SideSnap | null, holdLeft: SideSnap | null, holdRight: SideSnap | null) {
     const book = bookRef.current!;
-    // ponytail: every bookmark flips the right leaf leftward (v10 geometry); a
-    // back-ward flip would need the left page to carry the outgoing chapter.
-    const forward = true;
+    // Bookmark physics: entering a category lifts the RIGHT leaf leftward;
+    // returning to the Library spread lifts the LEFT leaf rightward.
+    const forward = next.category !== "library";
     const side: "left" | "right" = forward ? "right" : "left";
     const backSide: "left" | "right" = forward ? "left" : "right";
     // The real DOM already shows the NEW view (React committed): clone it for the back face.
@@ -222,14 +224,16 @@ export const BookShell = forwardRef<BookShellHandle, {
     const world = document.createElement("div");
     world.className = "turn-world";
     layer.append(world);
-    // The LEFT page keeps the OLD spread until the leaf lands on it (opaque paper
-    // face + old clones); the right page under the lifting leaf is the committed NEW page.
+    // The landing page keeps the OLD spread until the leaf covers it (opaque paper
+    // face + old clones); the page under the lifting leaf is the committed NEW view.
     const holds: HTMLElement[] = [];
-    if (holdLeft) {
-      const lb = rects[0];
-      const h = makeFace("left", holdLeft);
+    const hold = forward ? holdLeft : holdRight;
+    if (hold) {
+      const hi = forward ? 0 : 1;
+      const hb = rects[hi];
+      const h = makeFace(backSide, hold);
       h.classList.add("hold-layer");
-      Object.assign(h.style, { zIndex: "19", pointerEvents: "none", left: (lb.left - b.left) + "px", top: (lb.top - b.top) + "px" });
+      Object.assign(h.style, { zIndex: "19", pointerEvents: "none", left: (hb.left - b.left) + "px", top: (hb.top - b.top) + "px" });
       book.append(h);
       holds.push(h);
     }
@@ -311,11 +315,15 @@ export const BookShell = forwardRef<BookShellHandle, {
     const items = gridItems(content);
     const right = items.filter((el) => { const q = el.getBoundingClientRect(); return q.left + q.width / 2 > spine; });
     const left = items.filter((el) => { const q = el.getBoundingClientRect(); return q.left + q.width / 2 <= spine; });
-    // Book physics (v10 demo): the NEW right page is what sits UNDER the lifting leaf,
-    // so only the LEFT page needs an old-content hold (until the leaf lands on it).
-    // The leaf front carries the old right page; its back carries the new left content.
-    const frontSrc = right.length ? right : items;
-    pendingRef.current = { front: snapSide(frontSrc), holdLeft: snapSide(left) };
+    // Book physics (v10 demo): turning INTO a category lifts the right leaf leftward —
+    // its front carries the old right page, the LEFT page holds old content until the
+    // leaf lands. Returning to the LIBRARY spread mirrors it: the left leaf lifts and
+    // flips rightward, the RIGHT page holds until covered.
+    const toLibrary = category === "library";
+    const frontSrc = toLibrary ? (left.length ? left : items) : (right.length ? right : items);
+    pendingRef.current = toLibrary
+      ? { front: snapSide(frontSrc), holdLeft: null, holdRight: snapSide(right.length ? right : items) }
+      : { front: snapSide(frontSrc), holdLeft: snapSide(left), holdRight: null };
     lastRef.current = prev;
     onView({ category, chapter });
   }
@@ -356,6 +364,9 @@ export const BookShell = forwardRef<BookShellHandle, {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // DSH Queue bookmark carries a live count of pending+running studio jobs.
+  useEffect(() => subscribeAgentTasks((list) => setQueueActive(list.filter((t: { status: string }) => t.status === "running" || t.status === "pending").length)), []);
+
   const on = (c: BookCategory) => view.category === c;
   return (
     <div className="book-viewport" ref={wrapRef}>
@@ -393,16 +404,16 @@ export const BookShell = forwardRef<BookShellHandle, {
             <button key={m.id} type="button" data-color={m.color} aria-label={m.label || `Bookmark ${MARKERS.indexOf(m) + 1}`}
               aria-pressed={view.chapter === m.id} disabled={!chapterEnabled(view.category, m.id)}
               onClick={() => navigate(view.category, view.chapter === m.id ? "references" : (m.id as BookChapter))}>
-              <span className="marker-grid" aria-hidden="true">
+              <div className="marker-grid" aria-hidden="true">
                 {[1, 2, 3].map((r) => [1, 2, 3].map((c) => (
                   <i key={c} style={{ backgroundImage: `url(${B}/marker-slices/${m.color}/r${r}-c${c}.png)`, ["--tile-w" as string]: c === 2 ? "88px" : "10px", ["--tile-h" as string]: r === 2 ? "120px" : "12px" }} />
                 )))}
-              </span>
+              </div>
               {m.label ? <span>{m.label}</span> : null}
             </button>
           ))}
         </nav>
-        <button type="button" className="queue bookmark" aria-label="DSH Queue" onClick={queue}><img src={`${B}/tabs/dsh-queue.png`} alt="" /></button>
+        <button type="button" className="queue bookmark" aria-label={`DSH Queue${queueActive ? ` (${queueActive} running)` : ""}`} onClick={queue}><img src={`${B}/tabs/dsh-queue.png`} alt="" />{queueActive ? <span className="queue-badge" aria-hidden="true">{queueActive}</span> : null}</button>
         <button type="button" className="extra bookmark" aria-label="More" onClick={() => {}}><img src={`${B}/tabs/bottom-symbol.png`} alt="" /></button>
         <div className="content" ref={contentRef}>{children}</div>
       </main>
