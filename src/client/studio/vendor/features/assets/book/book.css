@@ -39,25 +39,26 @@
 .side-tabs span{pointer-events:none;position:absolute;inset:calc(8px * var(--s)) calc(9px * var(--s)) calc(8px * var(--s)) calc(4px * var(--s));display:grid;place-items:center;writing-mode:vertical-rl;white-space:nowrap;overflow:hidden;font:bold calc(12px * var(--s)) Georgia,serif}
 .side-tabs button[aria-pressed=true]{filter:brightness(1.35) saturate(1.1)}
 .marker-grid{position:absolute;inset:0;display:grid;grid-template-columns:calc(10px * var(--s)) minmax(0,1fr) calc(10px * var(--s));grid-template-rows:calc(12px * var(--s)) minmax(0,1fr) calc(12px * var(--s));pointer-events:none}
-.marker-grid i{display:block;background-repeat:repeat;background-position:top left;background-size:calc(var(--tile-w) * var(--s)) calc(var(--tile-h) * var(--s));min-width:0;min-height:0}
+.marker-grid i{display:block;width:100%;height:100%;background-repeat:repeat;background-position:top left;background-size:calc(var(--tile-w) * var(--s)) calc(var(--tile-h) * var(--s));min-width:0;min-height:0}
 /* The frame band is dark leather; a shadow separates the ribbons from it (human: right bookmarks read as missing). */
 .side-tabs button{filter:drop-shadow(0 2px 4px rgba(0,0,0,.65))}
 .side-tabs button:disabled{filter:drop-shadow(0 2px 4px rgba(0,0,0,.65)) saturate(.6) brightness(.8)}
-/* 0.2.155: everything reads as PRINTED on the pages — no panel or control
-   backgrounds at all, only ink outlines, darker text with a light emboss. */
-.book .mobile-library-group{background:transparent;border:1px solid rgba(70,40,20,.45);border-radius:8px}
+/* 0.2.159: printed look kept, but groups, inputs, tag chips and buttons get a
+   70%-transparent parchment wash back for legibility. Ink outlines stay. */
+.book .mobile-library-group{background:rgba(255,251,238,.3);border:1px solid rgba(70,40,20,.45);border-radius:8px}
 .book .input-panel{background:transparent;border-right:0}
 .book .output-panel{background:transparent}
 .book .panel{box-shadow:none;background:transparent!important}
-.book .content input,.book .content textarea,.book .content select{background:transparent;color:#26120a}
+.book .content input,.book .content textarea,.book .content select{background:rgba(255,251,238,.35);color:#26120a}
 .book .content input,.book .content textarea{border:0;border-bottom:1px solid rgba(70,40,20,.5);border-radius:0}
 .book .content select{border:1px solid rgba(70,40,20,.5);border-radius:4px}
-.book .content .btn,.book .content button{background:transparent;color:#26120a;border:1px solid rgba(70,40,20,.5);box-shadow:none}
-.book .content .reference-board-section,.book .content .reference-chip,.book .content .folder-file-thumb,.book .content .footage-menu,.book .content .banner,.book .content .asset-guidance-card{background:transparent}
+.book .content .btn,.book .content button{background:rgba(255,251,238,.4);color:#26120a;border:1px solid rgba(70,40,20,.5);box-shadow:none}
+.book .content .reference-chip,.book .content .folder-file-thumb{background:rgba(255,251,238,.4)}
+.book .content .reference-board-section,.book .content .footage-menu,.book .content .banner,.book .content .asset-guidance-card{background:transparent}
 .book .content .asset-guidance-card{border:1px solid rgba(70,40,20,.45);border-radius:8px}
 .book .content .reference-board-section{border:1px solid rgba(70,40,20,.45);border-radius:8px}
 .book .content .reference-chip,.book .content .folder-file-thumb{border:1px solid rgba(70,40,20,.4)}
-.book .content .folder-file-thumb,.book .content .folder-file-thumb>*{background-color:transparent!important}
+.book .content .folder-file-thumb>*{background-color:transparent!important}
 .book .content ::placeholder{color:rgba(50,26,12,.55)}
 /* The queue bookmark replaces the floating queue pill on this page. */
 .app.area-assets .dsh-agent-toggle{display:none}
@@ -67,8 +68,8 @@
    waiting under it. */
 .content{position:absolute;z-index:3;inset:calc(215px * var(--s)) calc(140px * var(--s)) calc(285px * var(--s));display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-auto-rows:min-content;align-content:start;column-gap:calc(106px * var(--s));row-gap:calc(26px * var(--s));color:#26120a;text-shadow:0 0 1px rgba(255,248,222,.85),0 1px 0 rgba(255,248,222,.5);font:15px system-ui,sans-serif}
 .book .content h1,.book .content h2,.book .content h3,.book .content .reference-board-title{color:#26120a}
-/* The right page has no dragon, so its title rides higher, at the very top of the sheet. */
-.book .output-panel,.book .lore-page,.book .lineage-page{margin-top:calc(-70px * var(--s))}
+/* Both page titles ride at the very top of the sheet. */
+.book .output-panel,.book .lore-page,.book .lineage-page,.book .input-panel,.book .mobile-library-overview>header{margin-top:calc(-70px * var(--s))}
 .content[hidden]{display:none}
 .content section,.content aside{min-width:0;overflow:auto;padding:0 3px 6px}
 .asset-preparation-panel,.asset-preparation-panel>main.workspace,.asset-library-overview-panel,.content .asset-category-content{display:contents}
