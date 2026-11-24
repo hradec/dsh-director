@@ -44,7 +44,13 @@ export function assetPreviewUrl(asset: LibraryAsset): string | null {
   for (const key of PREVIEW_KEYS) {
     if (urls[key]) return urls[key];
   }
-  return Object.values(urls).find(Boolean) || null;
+  const own = Object.values(urls).find(Boolean);
+  if (own) return own;
+  // Filesystem-first: an asset whose pictures live in the tag-linked libraries (0.2.58)
+  // still deserves a thumbnail — approved refs win, then any ref.
+  const refs = asset.library_refs || [];
+  const ref = refs.find((r) => r.approved) || refs[0];
+  return (ref && (ref.thumb || ref.url)) || null;
 }
 
 export function assetSlots(asset: LibraryAsset): OutputSlot[] {

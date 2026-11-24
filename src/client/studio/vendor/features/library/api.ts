@@ -27,6 +27,8 @@ export interface LibraryAsset {
   folder?: string | null;
   sources?: string[];
   ref_meta?: Record<string, RefMetaEntry>;
+  /** Tag-linked files from the images/ and media/ libraries (0.2.58); /api/library presents them with url+thumb. */
+  library_refs?: { library: string; path: string; approved: boolean; url: string; thumb: string | null }[];
 }
 
 export async function listLibraryAssets(
