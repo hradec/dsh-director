@@ -65,7 +65,7 @@
    display:contents so their own sections land in the two page columns directly.
    Bigger print area: titles share the top band with the dragon instead of
    waiting under it. */
-.content{position:absolute;z-index:3;inset:calc(215px * var(--s)) calc(140px * var(--s)) calc(285px * var(--s));display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:calc(106px * var(--s));color:#26120a;text-shadow:0 0 1px rgba(255,248,222,.85),0 1px 0 rgba(255,248,222,.5);font:15px system-ui,sans-serif}
+.content{position:absolute;z-index:3;inset:calc(215px * var(--s)) calc(140px * var(--s)) calc(285px * var(--s));display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-auto-rows:min-content;align-content:start;column-gap:calc(106px * var(--s));row-gap:calc(26px * var(--s));color:#26120a;text-shadow:0 0 1px rgba(255,248,222,.85),0 1px 0 rgba(255,248,222,.5);font:15px system-ui,sans-serif}
 .book .content h1,.book .content h2,.book .content h3,.book .content .reference-board-title{color:#26120a}
 /* The right page has no dragon, so its title rides higher, at the very top of the sheet. */
 .book .output-panel,.book .lore-page,.book .lineage-page{margin-top:calc(-70px * var(--s))}
@@ -83,7 +83,7 @@
    side on its own page. The header line still runs across the top of the spread. */
 .book .asset-library-overview-panel,.book .library-overview,.book .mobile-library-groups{display:contents}
 .book .mobile-library-overview>header{grid-column:1/-1}
-.book .mobile-library-group{grid-row:auto;grid-column:auto}
+.book .mobile-library-group{grid-row:auto;grid-column:auto;align-self:start}
 /* Page titles print beside the dragon instead of waiting under it. */
 .book .input-panel>h2,.book .input-panel>.block:first-of-type>.block-title,.book .mobile-library-overview>header{margin-left:calc(172px * var(--s))}
 .asset-book{position:relative;height:100%;min-height:0;padding:0!important;background:#160b0e}
