@@ -109,7 +109,7 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
           <p>Build the reusable cast, locations, objects, and voices the Director can assign across every Shot.</p>
         </div>
         <button type="button" className="btn primary" disabled={!projectId} onClick={() => openRequest()}>
-          Ask DSH to create
+          Ask DSH
         </button>
       </header>
 
@@ -155,23 +155,26 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
                       />
                     ) : null
                   ) : null}
-                  <span>{workflowCategory === "voices" ? "Create with DSH or import an audio sample." : "Create with DSH or import an existing reference."}</span>
+                  <span>{workflowCategory === "voices" ? "Create with DSH or import an audio sample." : workflowCategory === "actors" ? "Create with DSH; actor images are imported in the Images tab." : "Create with DSH or import an existing reference."}</span>
                   <button
                     type="button"
                     className="btn primary"
                     disabled={!projectId}
                     onClick={() => openRequest(workflowCategory)}
                   >
-                    Ask DSH to create {REQUEST_LABELS[workflowCategory]}
+                    Ask DSH
                   </button>
-                  <button
-                    type="button"
-                    className="btn secondary"
-                    disabled={!projectId}
-                    onClick={() => setImportKind(workflowCategory)}
-                  >
-                    Import {IMPORT_LABELS[workflowCategory]}
-                  </button>
+                  {/* Human ruling (2026-11-23): no Import actor — the Images tab covers image import. */}
+                  {workflowCategory !== "actors" ? (
+                    <button
+                      type="button"
+                      className="btn secondary"
+                      disabled={!projectId}
+                      onClick={() => setImportKind(workflowCategory)}
+                    >
+                      Import {IMPORT_LABELS[workflowCategory]}
+                    </button>
+                  ) : null}
                 </div>
                 {/* Plugin: actors/scenes/props show the full generation studio (Casting, Set, Props). Queued jobs go to the DSH session agent, which generates with a reviewed local ComfyUI workflow and imports results under the same job token. */}
                 {workflowCategory === "actors" || workflowCategory === "scenes" || workflowCategory === "props" ? (
@@ -197,7 +200,7 @@ export function AssetWorkspace({ sendAssetRequest }: { sendAssetRequest: (text: 
             <div className="folder-modal-head">
               <div>
                 <span className="mobile-eyebrow">Generate using this DSH session</span>
-                <h2 className="folder-modal-title" id="dsh-asset-request-title">Ask DSH to create an asset</h2>
+                <h2 className="folder-modal-title" id="dsh-asset-request-title">Ask DSH</h2>
               </div>
               <button type="button" className="btn secondary sm" onClick={() => setRequestOpen(false)} disabled={busy}>Close</button>
             </div>

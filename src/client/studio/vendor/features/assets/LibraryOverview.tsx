@@ -117,16 +117,19 @@ export function LibraryOverview({ onSelectKind, onEditInStudio }: {
                   <strong>{group.label}</strong>
                   <span>{assets.length} · Prepare →</span>
                 </button>
-                <button
-                  type="button"
-                  className="asset-import-button"
-                  aria-label={`Import ${group.label}`}
-                  title={`Import ${group.label}`}
-                  disabled={!projectId}
-                  onClick={() => setImportKind(group.id)}
-                >
-                  +
-                </button>
+                {/* Human ruling (2026-11-23): no actor import here either — the Images tab covers it. */}
+                {group.id !== "actors" ? (
+                  <button
+                    type="button"
+                    className="asset-import-button"
+                    aria-label={`Import ${group.label}`}
+                    title={`Import ${group.label}`}
+                    disabled={!projectId}
+                    onClick={() => setImportKind(group.id)}
+                  >
+                    +
+                  </button>
+                ) : null}
               </header>
               {!collapsed[group.id] && assets.length ? (
                 <div className="mobile-library-preview-strip">

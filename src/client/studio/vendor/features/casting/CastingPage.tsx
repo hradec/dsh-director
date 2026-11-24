@@ -102,8 +102,8 @@ export function CastingPage({ initialEditId, sendRequest }: Props) {
             </select>
           </label>
           <p className="field-hint">
-            New actors come from “Ask DSH to create” or “Import actor” in the toolbar above; every
-            stored image of this actor is a reference in the board on the right.
+            New actors come from “Ask DSH” in the toolbar above, and actor images are imported in
+            the Images tab; every stored image of this actor is a reference in the board on the right.
           </p>
         </div>
 

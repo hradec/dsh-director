@@ -99,7 +99,7 @@ export function SetDesignPage({ initialEditId, sendRequest }: Props) {
             </select>
           </label>
           <p className="field-hint">
-            New scenes come from “Ask DSH to create” or “Import scene” in the toolbar above; every
+            New scenes come from “Ask DSH” or “Import scene” in the toolbar above; every
             stored image of this scene is a reference in the board on the right.
           </p>
         </div>
