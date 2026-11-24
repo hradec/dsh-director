@@ -1,4 +1,4 @@
-import {useEffect,useRef,useState} from 'react';
+import {useEffect,useState} from 'react';
 import {fetch as apiFetch} from './fetch-inject.mjs';
 
 // One door for every Director Studio → DSH request (0.2.65): the server queues them FIFO and each
@@ -25,18 +25,19 @@ const WINDOW_STYLE=`
 .dsh-agent-window{position:fixed;right:1rem;bottom:1rem;z-index:80;display:flex;flex-direction:column;gap:.4rem;font-size:.82rem;}
 .dsh-agent-toggle{border:none;border-radius:999px;padding:.35rem .8rem;background:#e8b64a;color:#2c2a26;font-weight:700;cursor:pointer;}
 .dsh-agent-toggle.busy{background:#d98c2f;color:#fff;}
-.dsh-agent-panel{background:#fffdf8;border:1px solid #c8beac;border-radius:10px;box-shadow:0 10px 32px rgba(0,0,0,.18);padding:.55rem .65rem;min-width:20rem;max-width:28rem;max-height:50vh;overflow:auto;display:flex;flex-direction:column;gap:.4rem;}
-/* Opened in browser fullscreen (same promotion as the Lightbox): the dock panel is far too narrow to read the queue log. */
-.dsh-agent-panel:fullscreen{min-width:0;max-width:none;width:100%;height:100%;max-height:none;border-radius:0;font-size:1.05rem;padding:1.2rem 1.6rem;}
-.dsh-agent-head{display:none;}
-.dsh-agent-panel:fullscreen .dsh-agent-head{display:flex;align-items:center;justify-content:space-between;font-weight:700;}
+/* Human ruling (2026-11-23): NO fullscreen promotion — the pull-down itself must be readable. */
+/* ponytail: fixed ceiling sizing (viewport-relative, not a content clamp); list + log scroll inside. */
+.dsh-agent-panel{background:#fffdf8;border:1px solid #c8beac;border-radius:10px;box-shadow:0 10px 32px rgba(0,0,0,.18);padding:.55rem .65rem;width:min(46rem,calc(100vw - 2rem));max-height:min(72vh,46rem);display:flex;flex-direction:column;gap:.4rem;position:relative;}
+.dsh-agent-head{display:flex;align-items:center;justify-content:space-between;font-weight:700;}
 .dsh-agent-close{border:1px solid #c8beac;background:#f4efe6;border-radius:8px;padding:.2rem .8rem;cursor:pointer;font-weight:700;}
+.dsh-agent-list{display:flex;flex-direction:column;gap:.35rem;overflow:auto;min-height:0;}
 .dsh-agent-row{display:flex;align-items:center;gap:.45rem;}
 .dsh-agent-label{flex:1;min-width:0;white-space:normal;word-break:break-word;}
-.dsh-agent-panel:fullscreen .dsh-agent-row{gap:.8rem;padding:.35rem 0;border-bottom:1px solid #eee5d6;}
 .dsh-agent-cancel{border:none;background:#c0392b;color:#fff;border-radius:6px;width:1.35rem;height:1.35rem;cursor:pointer;font-weight:700;line-height:1;flex:0 0 auto;}
-.dsh-agent-result{white-space:pre-wrap;background:#f4efe6;border-radius:6px;padding:.4rem .5rem;max-height:14rem;overflow:auto;}
-.dsh-agent-panel:fullscreen .dsh-agent-result{max-height:none;flex:1;font-size:1rem;}
+/* The log covers the task rows INSIDE this same window (absolute overlay, own scroll). */
+.dsh-agent-log{position:absolute;inset:.55rem .65rem;background:#fffdf8;border:1px solid #c8beac;border-radius:8px;display:flex;flex-direction:column;min-height:0;}
+.dsh-agent-log-head{display:flex;align-items:center;gap:.5rem;padding:.4rem .6rem;border-bottom:1px solid #eee5d6;font-weight:700;}
+.dsh-agent-log-body{white-space:pre-wrap;overflow:auto;padding:.5rem .6rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.8rem;line-height:1.45;min-height:0;flex:1;}
 .dsh-agent-pending .dsh-agent-label{color:#7d766b;}
 .dsh-agent-running .dsh-agent-label{color:#b07414;font-weight:650;}
 .dsh-agent-done .dsh-agent-label{color:#2e6b3f;}
@@ -47,32 +48,33 @@ export function AgentTaskWindow(){
   const [list,setList]=useState([]);
   const [open,setOpen]=useState(false);
   const [showResult,setShowResult]=useState(null);
-  const panelRef=useRef(null);
   useEffect(()=>subscribeAgentTasks(setList),[]);
   useEffect(()=>{
     if(!open)return undefined;
-    // Fullscreen the panel; refusal keeps the old compact popover (never worse).
-    const el=panelRef.current;
-    if(el?.requestFullscreen)el.requestFullscreen().catch(()=>{});
-    const onFs=()=>{if(!document.fullscreenElement)setOpen(false);};
-    const onKey=(e)=>{if(e.key==='Escape')setOpen(false);};
-    document.addEventListener('fullscreenchange',onFs);
+    // Esc closes the log overlay first, then the panel — no fullscreen anywhere.
+    const onKey=(e)=>{if(e.key!=='Escape')return;if(showResult!==null)setShowResult(null);else setOpen(false);};
     window.addEventListener('keydown',onKey);
-    return ()=>{document.removeEventListener('fullscreenchange',onFs);window.removeEventListener('keydown',onKey);if(document.fullscreenElement===el)void document.exitFullscreen().catch(()=>{});};
-  },[open]);
+    return ()=>window.removeEventListener('keydown',onKey);
+  },[open,showResult]);
   const active=list.filter((t)=>t.status==='running'||t.status==='pending').length;
+  const logTask=showResult!==null?list.find((t)=>t.id===showResult)??{}:null;
   return <div className="dsh-agent-window">
     <style>{WINDOW_STYLE}</style>
-    {open?<div className="dsh-agent-panel" ref={panelRef}>
+    {open?<div className="dsh-agent-panel">
       <div className="dsh-agent-head"><span>DSH queue</span><button className="dsh-agent-close" onClick={()=>setOpen(false)}>Close ✕</button></div>
-      {!list.length?<span className="dsh-agent-pending">Queue empty — studio requests run as background DSH workers.</span>:null}
-      {[...list].reverse().map((t)=><div key={t.id} className={`dsh-agent-row dsh-agent-${t.status}`}>
-        <span>{t.status==='pending'?'⏳':t.status==='running'?'⚙':t.status==='done'?'✓':t.status==='cancelled'?'∅':'✗'}</span>
-        <span className="dsh-agent-label" title={t.preview??t.label}>{t.label}</span>
-        {t.status==='pending'?<button className="dsh-agent-cancel" title="cancel" onClick={()=>cancelAgentTask(t.id)}>✕</button>:null}
-        {(t.status==='done'||t.status==='failed')&&<button className="dsh-agent-cancel" style={{background:'#8a9ba8'}} title="show result" onClick={()=>setShowResult(showResult===t.id?null:t.id)}>≡</button>}
-      </div>)}
-      {showResult&&<div className="dsh-agent-result">{(list.find((t)=>t.id===showResult)||{}).result??''}</div>}
+      <div className="dsh-agent-list">
+        {!list.length?<span className="dsh-agent-pending">Queue empty — studio requests run as background DSH workers.</span>:null}
+        {[...list].reverse().map((t)=><div key={t.id} className={`dsh-agent-row dsh-agent-${t.status}`}>
+          <span>{t.status==='pending'?'⏳':t.status==='running'?'⚙':t.status==='done'?'✓':t.status==='cancelled'?'∅':'✗'}</span>
+          <span className="dsh-agent-label" title={t.preview??t.label}>{t.label}</span>
+          {t.status==='pending'?<button className="dsh-agent-cancel" title="cancel" onClick={()=>cancelAgentTask(t.id)}>✕</button>:null}
+          {(t.status==='done'||t.status==='failed')&&<button className="dsh-agent-cancel" style={{background:'#8a9ba8'}} title="show result" onClick={()=>setShowResult(showResult===t.id?null:t.id)}>≡</button>}
+        </div>)}
+      </div>
+      {logTask&&<div className="dsh-agent-log">
+        <div className="dsh-agent-log-head"><button className="dsh-agent-cancel" style={{background:'#8a9ba8'}} title="back to queue" onClick={()=>setShowResult(null)}>‹</button><span className="dsh-agent-label">{logTask.label??''}</span></div>
+        <div className="dsh-agent-log-body">{logTask.result??''}</div>
+      </div>}
     </div>:null}
     <button className={`dsh-agent-toggle${active?' busy':''}`} onClick={()=>setOpen(!open)}>{active?`DSH workers: ${active} active`:'DSH queue'}</button>
   </div>;
