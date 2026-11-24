@@ -95,7 +95,7 @@ export const BookShell = forwardRef<BookShellHandle, {
   const turningRef = useRef(false);
   const finishRef = useRef<null | (() => void)>(null);
   const queuedRef = useRef<BookView | null>(null);
-  const pendingRef = useRef<{ front: SideSnap | null; holdLeft: SideSnap | null; holdRight: SideSnap | null } | null>(null);
+  const pendingRef = useRef<{ front: SideSnap | null; holdLeft: SideSnap | null } | null>(null);
   const lastRef = useRef<BookView>(view);
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -192,7 +192,7 @@ export const BookShell = forwardRef<BookShellHandle, {
     return face;
   }
 
-  function runTurn(prev: BookView, next: BookView, frontSnap: SideSnap | null, holdLeft: SideSnap | null, holdRight: SideSnap | null) {
+  function runTurn(prev: BookView, next: BookView, frontSnap: SideSnap | null, holdLeft: SideSnap | null) {
     const book = bookRef.current!;
     // ponytail: every bookmark flips the right leaf leftward (v10 geometry); a
     // back-ward flip would need the left page to carry the outgoing chapter.
@@ -220,13 +220,12 @@ export const BookShell = forwardRef<BookShellHandle, {
     const world = document.createElement("div");
     world.className = "turn-world";
     layer.append(world);
-    // Both resting pages keep the OLD spread (opaque paper + old clones) for the whole
-    // turn; the NEW view rides ONLY on the leaf's back face and lands over the old UI.
+    // The LEFT page keeps the OLD spread until the leaf lands on it (opaque paper
+    // face + old clones); the right page under the lifting leaf is the committed NEW page.
     const holds: HTMLElement[] = [];
-    for (const [i, side, snap] of [[0, "left", holdLeft], [1, "right", holdRight]] as const) {
-      if (!snap) continue;
-      const lb = rects[i];
-      const h = makeFace(side, snap);
+    if (holdLeft) {
+      const lb = rects[0];
+      const h = makeFace("left", holdLeft);
       h.classList.add("hold-layer");
       Object.assign(h.style, { zIndex: "19", pointerEvents: "none", left: (lb.left - b.left) + "px", top: (lb.top - b.top) + "px" });
       book.append(h);
@@ -310,11 +309,11 @@ export const BookShell = forwardRef<BookShellHandle, {
     const items = gridItems(content);
     const right = items.filter((el) => { const q = el.getBoundingClientRect(); return q.left + q.width / 2 > spine; });
     const left = items.filter((el) => { const q = el.getBoundingClientRect(); return q.left + q.width / 2 <= spine; });
-    // Book physics (v10 demo): the NEW view exists ONLY on the turning leaf's back face;
-    // both resting pages keep holding the OLD spread (paper + old clones) until the leaf lands.
-    // Library/voices cards span both pages: the leaf carries the whole spread instead of skipping.
+    // Book physics (v10 demo): the NEW right page is what sits UNDER the lifting leaf,
+    // so only the LEFT page needs an old-content hold (until the leaf lands on it).
+    // The leaf front carries the old right page; its back carries the new left content.
     const frontSrc = right.length ? right : items;
-    pendingRef.current = { front: snapSide(frontSrc), holdLeft: snapSide(left), holdRight: snapSide(frontSrc) };
+    pendingRef.current = { front: snapSide(frontSrc), holdLeft: snapSide(left) };
     lastRef.current = prev;
     onView({ category, chapter });
   }

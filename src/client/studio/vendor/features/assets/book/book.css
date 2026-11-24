@@ -62,7 +62,13 @@
 .content .lore-page,.content .lineage-page{grid-column:2}
 .book[data-chapter="lorekeeper"] .panel.output-panel,.book[data-chapter="lineage"] .panel.output-panel{display:none}
 .content .asset-guidance-card{grid-column:1/-1}
-.asset-library-overview-panel>*{grid-column:1/-1}
+/* Library lives ONE GROUP PER PAGE: the wrappers dissolve so the content grid places
+   each card in a page column — nothing paints over the spine, and a turn keeps each
+   side on its own page. The header line still runs across the top of the spread. */
+.book .asset-library-overview-panel,.book .library-overview,.book .mobile-library-groups{display:contents}
+.book [hidden]{display:none!important}
+.book .mobile-library-overview>header{grid-column:1/-1}
+.book .mobile-library-group{grid-row:auto;grid-column:auto}
 .asset-book{position:relative;height:100%;min-height:0;padding:0!important;background:#160b0e}
 .book .asset-workflow-toolbar{display:none}
 .book .page-bookmark{display:none}
