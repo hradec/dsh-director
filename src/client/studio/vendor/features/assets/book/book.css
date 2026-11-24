@@ -156,8 +156,10 @@
 .hide-art .art{display:none}
 @media(prefers-reduced-motion:reduce){.turn-layer{display:none}}
 /* ---- 0.2.164 batch ---- */
-/* Library preview tiles: the vendor's dark frame was the black line — warm demo border. */
-.book .content .mobile-library-preview{background:rgba(255,245,219,.5);border:1px solid #ab8658;border-radius:5px}
+/* Library preview tiles: NO line at all — even the warm one read as black at tile scale.
+   Fills only; cards print straight on the parchment (the generic button border must not catch them). */
+.book .content .mobile-library-preview-card{background:transparent;border:0}
+.book .content .mobile-library-preview{background:rgba(255,245,219,.5);border:0;border-radius:5px}
 .book .content .mobile-library-preview.empty span{color:#6b4a2f}
 /* Brainstorm heading must read like Approved's — a plain heading, not a boxed button. */
 .book .content .reference-board-toggle{background:transparent!important;border:0!important;border-radius:0;padding:0;margin:0;font:700 calc(15px * var(--s)) Georgia,serif;color:#3f2412}
