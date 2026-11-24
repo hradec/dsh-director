@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { OutputSlot } from "../api/types";
 import { ZoomPanImage } from "./ImageCanvas";
 
@@ -10,8 +10,26 @@ interface Props {
   onApprove?: () => void;    // when set and not approved: Approve button over the image, top-right
 }
 
-export function Lightbox({ slots, index, onClose, onIndex }: Props) {
+export function Lightbox({ slots, index, onClose, onIndex, onApprove }: Props) {
   const slot = slots[index];
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    // position:fixed here only covers the studio iframe panel; asking the browser to
+    // fullscreen the root promotes the whole iframe to the screen (iframe needs allow="fullscreen").
+    // A refusal falls back silently to the panel lightbox — never worse than before.
+    const el = rootRef.current;
+    if (el?.requestFullscreen) el.requestFullscreen().catch(() => {});
+    // Escape in fullscreen is consumed by the browser (exits fullscreen, no keydown here):
+    // treat that exit as a close so one Escape fully leaves the viewer.
+    const onFsChange = () => { if (!document.fullscreenElement) onClose(); };
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      if (document.fullscreenElement === el) void document.exitFullscreen().catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -26,7 +44,7 @@ export function Lightbox({ slots, index, onClose, onIndex }: Props) {
   if (!slot?.url) return null;
 
   return (
-    <div className="lightbox" onClick={onClose} role="dialog" aria-modal="true">
+    <div ref={rootRef} className="lightbox" onClick={onClose} role="dialog" aria-modal="true">
       <div className="lightbox-inner" onClick={(e) => e.stopPropagation()}>
         <div className="lightbox-top">
           <span>{slot.label}</span>

@@ -307,18 +307,6 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
               </button>
             </span>
           ))}
-          {!slot.tags.includes("approved") ? (
-            <button
-              type="button"
-              className="btn ghost sm reference-approve"
-              title="Approve this reference"
-              aria-label={`Approve ${slot.label}`}
-              disabled={busyKey === slot.key}
-              onClick={() => void approveSlot(slot.key)}
-            >
-              ✓ Approve
-            </button>
-          ) : null}
           <input
             className="reference-tag-add"
             placeholder="+ tag ↵"
@@ -404,15 +392,18 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
     const src = slot.thumb ?? (video ? null : slot.url);
     return (
       <div key={slot.key} className="reference-tile reference-tile-library" title="Linked by tag from the Images/Footage library — edits write to the library entry itself" onContextMenu={openMenu(slot)}>
-        <button
-          type="button"
-          className="folder-file-card"
-          title="Open in lightbox"
-          onClick={() => setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)))}
-        >
-          <div className="folder-file-thumb">{src ? <img loading="lazy" src={src} alt={slot.label} /> : <div className="output-empty">🎞</div>}</div>
-          <div className="folder-file-label ellipsis" title={slot.filename}>{slot.filename}</div>
-        </button>
+        <div className="reference-thumb-wrap">
+          <button
+            type="button"
+            className="folder-file-card"
+            title="Open in lightbox"
+            onClick={() => setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)))}
+          >
+            <div className="folder-file-thumb">{src ? <img loading="lazy" src={src} alt={slot.label} /> : <div className="output-empty">🎞</div>}</div>
+            <div className="folder-file-label ellipsis" title={slot.filename}>{slot.filename}</div>
+          </button>
+          {cornerToggle(slot)}
+        </div>
         {refControls(slot)}
       </div>
     );
@@ -422,13 +413,45 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
     setBusyKey(key);
     setError(null);
     try {
-      const result = await writeRef(key, { tags_add: ["approved"] });
+      // The trust pair is written explicitly: library files (tagLib) have no server-side exclusivity.
+      const result = await writeRef(key, { tags_add: ["approved"], tags_remove: ["brainstorming"] });
       applyRef(key, result);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusyKey(null);
     }
+  }
+
+  async function unapproveSlot(key: string) {
+    setBusyKey(key);
+    setError(null);
+    try {
+      // Add brainstorming first: a library ref with no trust tag would unlink from the asset entirely.
+      const result = await writeRef(key, { tags_add: ["brainstorming"], tags_remove: ["approved"] });
+      applyRef(key, result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  // Approve/Disapprove pill floating on the image's bottom-right corner (0.2.145 human ask).
+  function cornerToggle(slot: BoardSlot) {
+    const approved = slot.tags.includes("approved");
+    return (
+      <button
+        type="button"
+        className={`tile-corner ${approved ? "tile-corner-disapprove" : "tile-corner-approve"}`}
+        title={approved ? "Disapprove — moves this image back to Brainstorming" : "Approve — this image may condition shots"}
+        aria-label={(approved ? "Disapprove " : "Approve ") + slot.label}
+        disabled={busyKey === slot.key}
+        onClick={() => void (approved ? unapproveSlot : approveSlot)(slot.key)}
+      >
+        {approved ? "⊘ Disapprove" : "✓ Approve"}
+      </button>
+    );
   }
 
   function askNote(slot: BoardSlot, instruction: string) {
@@ -445,19 +468,22 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
     if (slot.key.startsWith("lib:")) return libTile(slot);
     return (
       <div key={slot.key} className="reference-tile" onContextMenu={openMenu(slot)}>
-        <button
-          type="button"
-          className="folder-file-card"
-          title="Open in lightbox"
-          onClick={() => setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)))}
-        >
-          <div className="folder-file-thumb">
-            {slot.url ? <img loading="lazy" src={slot.url} alt={slot.label} /> : <div className="output-empty">—</div>}
-          </div>
-          <div className="folder-file-label ellipsis" title={slot.filename || slot.key}>
-            {slot.filename || slot.key}
-          </div>
-        </button>
+        <div className="reference-thumb-wrap">
+          <button
+            type="button"
+            className="folder-file-card"
+            title="Open in lightbox"
+            onClick={() => setLightboxIndex(Math.max(0, visibleSlots.findIndex((entry) => entry.key === slot.key)))}
+          >
+            <div className="folder-file-thumb">
+              {slot.url ? <img loading="lazy" src={slot.url} alt={slot.label} /> : <div className="output-empty">—</div>}
+            </div>
+            <div className="folder-file-label ellipsis" title={slot.filename || slot.key}>
+              {slot.filename || slot.key}
+            </div>
+          </button>
+          {cornerToggle(slot)}
+        </div>
         <button
           type="button"
           className="btn ghost sm reference-delete"
@@ -541,7 +567,7 @@ export function ReferenceBoard({ kind, asset, onAsset, onDeleted, sendRequest, o
           onIndex={setLightboxIndex}
           onApprove={() => {
             const cur = visibleSlots[lightboxIndex];
-            if (cur && !cur.tags.includes("approved") && !cur.key.startsWith("lib:")) void approveSlot(cur.key);
+            if (cur && !cur.tags.includes("approved")) void approveSlot(cur.key);
           }}
         />
       ) : null}

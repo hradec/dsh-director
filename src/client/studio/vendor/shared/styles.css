@@ -7333,6 +7333,27 @@ select {
   border-radius: 999px;
   line-height: 1;
 }
+/* Trust toggle floating on the image bottom-right: green Approve / red Disapprove. */
+.reference-thumb-wrap { position: relative; }
+.tile-corner {
+  position: absolute;
+  right: 0.45rem;
+  bottom: 2.05rem;
+  z-index: 2;
+  padding: 0.15rem 0.65rem;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.tile-corner:disabled { opacity: 0.55; cursor: default; }
+.tile-corner-approve { background: #3f7d4e; }
+.tile-corner-approve:hover { background: #4a9159; }
+.tile-corner-disapprove { background: #a4443a; }
+.tile-corner-disapprove:hover { background: #b8544a; }
 .reference-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
 .reference-chips .btn { margin-left: auto; white-space: nowrap; flex: 0 0 auto; }
 .reference-chip {
